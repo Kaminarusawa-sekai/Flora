@@ -1,0 +1,7 @@
+chromadb
+sqlcipher3
+cryptography
+dashscope  # 阿里云百炼平台 SDK，用于调用Qwen
+
+
+
