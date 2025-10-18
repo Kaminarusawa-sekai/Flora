@@ -1,19 +1,17 @@
-# neo4j_registry.py（增强版：支持全量加载）
+# neo4j_registry.py（最终优化版 - 使用 MarketingTreeDemo1 节点）
 
 from neo4j import GraphDatabase, Driver
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Set
 import logging
-from typing import List, Dict, Any, Optional, Tuple
 import threading
+from thespian.actors import ActorAddress
 
 logger = logging.getLogger(__name__)
 
 
 class AgentRegistry:
-
     _instance = None
     _init_lock = threading.Lock()
-
 
     def __new__(cls, uri: str = None, user: str = None, password: str = None):
         if cls._instance is None:
@@ -26,11 +24,22 @@ class AgentRegistry:
                     cls._instance = super(AgentRegistry, cls).__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
-    def __init__(self, uri: str, user: str, password: str):
 
+    def __init__(self, uri: str, user: str, password: str):
         if self._initialized:
             return
         self.driver: Driver = GraphDatabase.driver(uri, auth=(user, password))
+
+        # 运行时 Actor 地址映射
+        self._actor_refs: Dict[str, ActorAddress] = {}
+        
+        # 缓存元数据：key 是 code（作为 agent_id）
+        self._agent_meta_cache: Optional[Dict[str, Dict]] = None
+        self._parent_map: Dict[str, str] = {}          # code -> parent_code
+        self._children_map: Dict[str, List[str]] = {}  # parent_code -> [child_code, ...]
+        
+        self._lock = threading.RLock()
+        self._initialized = True
 
     @classmethod
     def get_instance(
@@ -39,175 +48,239 @@ class AgentRegistry:
         user: str = None,
         password: str = None
     ) -> "AgentRegistry":
-        """
-        获取全局单例实例。
-
-        - 首次调用必须提供 uri, user, password。
-        - 后续调用可不传参。
-        """
         if cls._instance is not None:
             return cls._instance
-        # 触发 __new__ 和 __init__
         return cls(uri, user, password)
 
     def close(self):
-        """关闭 Neo4j 驱动连接（谨慎使用，通常在应用退出时调用）"""
         if hasattr(self, 'driver') and self.driver:
             self.driver.close()
 
     def __del__(self):
-        # 可选：自动清理，但不保证及时执行
         try:
             self.close()
         except Exception:
             pass
 
+    # ==============================
+    # 【Actor 引用管理】
+    # ==============================
+    # def register_actor_ref(self, agent_id: str, actor_ref: ActorAddress):
+    #     with self._lock:
+    #         if agent_id in self._actor_refs:
+    #             logger.warning(f"Actor ref for {agent_id} is being overwritten.")
+    #         self._actor_refs[agent_id] = actor_ref
+    #         logger.debug(f"Registered actor ref for {agent_id}: {actor_ref}")
+
+    # def get_actor_ref(self, agent_id: str) -> Optional[ActorAddress]:
+    #     with self._lock:
+    #         return self._actor_refs.get(agent_id)
+
+    # def get_actor_refs_by_ids(self, agent_ids: List[str]) -> Dict[str, Optional[ActorAddress]]:
+    #     with self._lock:
+    #         return {aid: self._actor_refs.get(aid) for aid in agent_ids}
+
+    # def has_actor_ref(self, agent_id: str) -> bool:
+    #     with self._lock:
+    #         return agent_id in self._actor_refs
 
     # ==============================
-    # 【新增】从 Neo4j 全量加载智能体结构（含父子关系）
+    # 【Actor 引用管理 - 支持角色区分】
+    # ==============================
+    def register_actor_ref(self, agent_id: str,  actor_ref: ActorAddress,role: str="business",):
+        """
+        注册指定角色的 Actor 引用。
+        常见 role: "business", "data"
+        """
+        with self._lock:
+            if agent_id not in self._actor_refs:
+                self._actor_refs[agent_id] = {}
+            if role in self._actor_refs[agent_id]:
+                logger.warning(f"Actor ref for {agent_id}[{role}] is being overwritten.")
+            self._actor_refs[agent_id][role] = actor_ref
+            logger.debug(f"Registered {role} actor ref for {agent_id}: {actor_ref}")
+
+    def get_actor_ref(self, agent_id: str, role: str = "business") -> Optional[ActorAddress]:
+        """默认 role="business" 保持向后兼容（如果你需要）"""
+        with self._lock:
+            return self._actor_refs.get(agent_id, {}).get(role)
+
+    def get_actor_refs_by_ids(self, agent_ids: List[str], role: str = "business") -> Dict[str, Optional[ActorAddress]]:
+        with self._lock:
+            return {
+                aid: self._actor_refs.get(aid, {}).get(role)
+                for aid in agent_ids
+            }
+
+    def has_actor_ref(self, agent_id: str, role: str = "business") -> bool:
+        with self._lock:
+            return agent_id in self._actor_refs and role in self._actor_refs[agent_id]
+
+    # 可选：获取某个 agent 的所有角色映射
+    def get_all_actor_refs(self, agent_id: str) -> Dict[str, ActorAddress]:
+        with self._lock:
+            return self._actor_refs.get(agent_id, {}).copy()
+    # ==============================
+    # 【缓存加载与元数据】
+    # ==============================
+    def _rebuild_maps(self, agents: Dict[str, Dict]):
+        self._parent_map.clear()
+        self._children_map.clear()
+        for code, meta in agents.items():
+            parent_code = meta.get("parent_code")
+            if parent_code:
+                self._parent_map[code] = parent_code
+                self._children_map.setdefault(parent_code, []).append(code)
+
+    def ensure_meta_loaded(self):
+        with self._lock:
+            if self._agent_meta_cache is None:
+                raw_agents = self.load_all_agents()
+                self._agent_meta_cache = raw_agents
+                self._rebuild_maps(raw_agents)
+
+    def get_agent_meta(self, agent_id: str) -> Optional[Dict]:
+        self.ensure_meta_loaded()
+        with self._lock:
+            return self._agent_meta_cache.get(agent_id)
+
+    def get_all_agent_ids(self) -> Set[str]:
+        self.ensure_meta_loaded()
+        with self._lock:
+            return set(self._agent_meta_cache.keys())
+
+    # ==============================
+    # 【关系导航】
+    # ==============================
+    def get_parent(self, agent_id: str) -> Optional[str]:
+        self.ensure_meta_loaded()
+        with self._lock:
+            return self._parent_map.get(agent_id)
+
+    def get_children(self, agent_id: str) -> List[str]:
+        self.ensure_meta_loaded()
+        with self._lock:
+            return list(self._children_map.get(agent_id, []))
+
+    def get_siblings(self, agent_id: str) -> List[str]:
+        parent = self.get_parent(agent_id)
+        if not parent:
+            return []
+        children = self.get_children(parent)
+        return [cid for cid in children if cid != agent_id]
+
+    # ==============================
+    # 【Actor 地址按关系获取】
+    # ==============================
+    def get_parent_actor(self, agent_id: str) -> Optional[ActorAddress]:
+        parent_id = self.get_parent(agent_id)
+        return self.get_actor_ref(parent_id) if parent_id else None
+
+    def get_children_actors(self, agent_id: str) -> Dict[str, Optional[ActorAddress]]:
+        child_ids = self.get_children(agent_id)
+        return self.get_actor_refs_by_ids(child_ids)
+
+    def get_siblings_actors(self, agent_id: str) -> Dict[str, Optional[ActorAddress]]:
+        sibling_ids = self.get_siblings(agent_id)
+        return self.get_actor_refs_by_ids(sibling_ids)
+
+    # ==============================
+    # 【Neo4j 数据操作 - 使用 MarketingTreeDemo1】
     # ==============================
     def load_all_agents(self) -> Dict[str, Dict]:
-        """
-        从 Neo4j 中加载所有智能体，并返回一个字典：
-        {
-          "agent_id": {
-            "agent_id": str,
-            "capabilities": List[str],
-            "data_scope": Dict,
-            "is_leaf": bool,
-            "parent": Optional[str]   # 父 agent_id（如果有）
-          },
-          ...
-        }
-        """
         with self.driver.session() as session:
-            result = session.read_transaction(self._load_all_agents_tx)
-            return result
+            return session.execute_read(self._load_all_agents_tx)
 
     @staticmethod
     def _load_all_agents_tx(tx):
-        # 查询所有 Agent 节点及其父节点（如果有）
         res = tx.run("""
-            MATCH (a:Agent)
-            OPTIONAL MATCH (a)-[:CHILD_OF]->(p:Agent)
-            RETURN a.agent_id AS agent_id,
-                   a.capabilities AS capabilities,
-                   a.data_scope AS data_scope,
-                   a.is_leaf AS is_leaf,
-                   p.agent_id AS parent_id
-            ORDER BY a.agent_id
+            MATCH (n:MarketingTreeDemo1)
+            OPTIONAL MATCH (parent:MarketingTreeDemo1)-[:SUB_ITEM1]->(n)
+            OPTIONAL MATCH (n)-[:SUB_ITEM1]->(child:MarketingTreeDemo1)
+            RETURN 
+                n.code AS code,
+                n.name AS name,
+                n.businessId AS businessId,
+                n.strength AS strength,
+                n.seq AS seq,
+                n.capability AS capability,
+                n.datascope AS datascope,
+                n.database AS database,
+                n.dify_code AS dify_code,
+                parent.code AS parent_code,
+                count(child) = 0 AS is_leaf
+            ORDER BY n.code
         """)
-        
         agents = {}
         for record in res:
-            agent_id = record["agent_id"]
-            agents[agent_id] = {
-                "agent_id": agent_id,
-                "capabilities": record["capabilities"] or [],
-                "data_scope": record["data_scope"] or {},
-                "is_leaf": bool(record["is_leaf"]),
-                "parent": record["parent_id"]  # 可能为 None
+            code = record["code"]
+            agents[code] = {
+                "agent_id": record["businessId"],  # 统一用 code 作为 agent_id
+                "code": code,
+                "name": record["name"],
+                "businessId": record["businessId"],
+                "strength": record["strength"],
+                "seq": record["seq"],
+                "capability": record["capability"] or '',
+                "datascope": record["datascope"] or '',
+                "database": (record["database"] or ''),
+                "is_leaf": record["is_leaf"],  # 新增字段：是否为叶子节点
+                "dify_code": record["dify_code"] or '',  # 新增字段：Dify Workflow 代码
+                "parent_code": record["parent_code"]
             }
         return agents
 
-    # ==============================
-    # 原有 API（保持不变）
-    # ==============================
     def register_agent(
         self,
-        agent_id: str,
+        agent_id: str,  # 实际是 code
         capabilities: List[str],
         data_scope: Dict[str, Any],
         is_leaf: bool = False,
-        parent_agent_id: Optional[str] = None
+        parent_agent_id: Optional[str] = None  # parent code
     ):
         with self.driver.session() as session:
             session.write_transaction(
                 self._register_agent_tx,
                 agent_id, capabilities, data_scope, is_leaf, parent_agent_id
             )
+        with self._lock:
+            self._agent_meta_cache = None
+            self._parent_map.clear()
+            self._children_map.clear()
 
     @staticmethod
     def _register_agent_tx(tx, agent_id, capabilities, data_scope, is_leaf, parent_agent_id):
+        # 确保节点存在（根据 code）
         tx.run("""
-            MERGE (a:Agent {agent_id: $agent_id})
-            SET a.capabilities = $capabilities,
-                a.data_scope = $data_scope,
-                a.is_leaf = $is_leaf,
-                a.updated_at = datetime()
+            MERGE (n:MarketingTreeDemo1 {code: $code})
+            SET 
+                n.capabilities = $capabilities,
+                n.data_scope = $data_scope,
+                n.is_leaf = $is_leaf,
+                n.updated_at = datetime()
             """,
-            agent_id=agent_id,
+            code=agent_id,
             capabilities=capabilities,
             data_scope=data_scope,
             is_leaf=is_leaf
         )
         if parent_agent_id:
             tx.run("""
-                MATCH (child:Agent {agent_id: $child_id})
-                MATCH (parent:Agent {agent_id: $parent_id})
+                MATCH (child:MarketingTreeDemo1 {code: $child_code})
+                MATCH (parent:MarketingTreeDemo1 {code: $parent_code})
                 MERGE (child)-[:CHILD_OF]->(parent)
                 """,
-                child_id=agent_id,
-                parent_id=parent_agent_id
+                child_code=agent_id,
+                parent_code=parent_agent_id
             )
 
-    def get_agent_by_id(self, agent_id: str) -> Optional[Dict]:
-        with self.driver.session() as session:
-            result = session.read_transaction(self._get_agent_by_id_tx, agent_id)
-            return result
+    def has_agent(self, agent_id: str) -> bool:
+        self.ensure_meta_loaded()
+        with self._lock:
+            return agent_id in self._agent_meta_cache
 
-    @staticmethod
-    def _get_agent_by_id_tx(tx, agent_id):
-        res = tx.run("""
-            MATCH (a:Agent {agent_id: $agent_id})
-            RETURN a.agent_id AS agent_id,
-                   a.capabilities AS capabilities,
-                   a.data_scope AS data_scope,
-                   a.is_leaf AS is_leaf
-            """, agent_id=agent_id)
-        record = res.single()
-        return record.data() if record else None
-
-    def get_direct_children(self, parent_agent_id: str) -> List[Dict]:
-        with self.driver.session() as session:
-            return session.read_transaction(self._get_direct_children_tx, parent_agent_id)
-
-    @staticmethod
-    def _get_direct_children_tx(tx, parent_agent_id):
-        res = tx.run("""
-            MATCH (child:Agent)-[:CHILD_OF]->(:Agent {agent_id: $parent_id})
-            RETURN child.agent_id AS agent_id,
-                   child.capabilities AS capabilities,
-                   child.data_scope AS data_scope,
-                   child.is_leaf AS is_leaf
-            ORDER BY child.agent_id
-            """, parent_id=parent_agent_id)
-        return [record.data() for record in res]
-
-    def find_direct_child_by_capability(
-        self,
-        parent_agent_id: str,
-        capability: str,
-        context: Dict[str, Any]
-    ) -> Optional[Dict]:
-        children = self.get_direct_children(parent_agent_id)
-        for child in children:
-            if (capability in child["capabilities"] and
-                self._matches_data_scope(child["data_scope"], context)):
-                return child
-        return None
-
-    @staticmethod
-    def _matches_data_scope(data_scope: Dict, context: Dict) -> bool:
-        return all(context.get(k) == v for k, v in data_scope.items())
-    
-
-    def get_agent_id_by_user(self, x_tenant_id:str,user_id: str) -> Optional[str]:
-       return "root_router"  # TODO:实现用户到根智能体的映射逻辑
-    
-
-    def has_agent(self,agent_id: str) -> bool:
-        return True
-        with self.driver.session() as session:
-            result = session.read_transaction(AgentRegistry._has_agent_tx, agent_id)
-            return result
+    # ==============================
+    # 【兼容：通过 businessId 查节点】
+    # ==============================
+    def get_agent_id_by_user(self, x_tenant_id: str, user_id: str) -> Optional[str]:
+        return "private_domain"

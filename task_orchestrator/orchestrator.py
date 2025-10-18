@@ -38,6 +38,7 @@ class TaskOrchestrator:
         self.graphs: Dict[str, TaskExecutionGraph] = {}
         self._futures: Dict[str, asyncio.Future] = {}      # frame_id → future
         self._task_done_futures: Dict[str, asyncio.Future] = {}  # task_id → future
+        self._task_graphs: Dict[str, TaskExecutionGraph] = {}
         self.max_task_duration = 300
 
     @classmethod
@@ -63,17 +64,16 @@ class TaskOrchestrator:
     ) -> str:
         task_id = f"task_{uuid.uuid4().hex}"
         token = current_task_id.set(task_id)
-
-        # 确保上下文包含必要字段（用于子帧继承）
-        context = {
-            "task_id": task_id,
-            "tenant_id": tenant_id,
-            **initial_context
-        }
-
-
+        frame_id = f"frame_{task_id}_root"
         try:
-            frame_id = f"frame_{task_id}_root"
+            # 确保上下文包含必要字段（用于子帧继承）
+            context = {
+                "task_id": task_id,
+                "tenant_id": tenant_id,
+                **initial_context
+            }
+
+
             root_frame = TaskFrame(
                 frame_id=frame_id,
                 task_id=task_id,
@@ -83,15 +83,15 @@ class TaskOrchestrator:
                 context=context,
                 parent_frame_id=None,
                 tenant_id=tenant_id,
-                # status="pending"
             )
 
-            orchestrator = await TaskOrchestrator.get_instance()
-            graph = orchestrator.get_graph(task_id)
+            graph = self.get_or_create_graph(task_id)
             graph.add_frame(root_frame)
+            self._task_graphs[task_id] = graph
 
-            # 注册 future（可选）
-            orchestrator.register_future_for_frame(frame_id)
+            # 注册完成 future（当所有帧完成时 set_result）
+            done_future = asyncio.Future()
+            self._task_done_futures[task_id] = done_future
 
             # 👇 关键：Orchestrator 主动向根 Agent 发送执行消息
             actor_manager = ActorManager.get_instance()
@@ -100,13 +100,17 @@ class TaskOrchestrator:
                 "type": "execute_frame",
                 "frame_id": frame_id,
                 "task_id": task_id,
-                "tenant_id": tenant_id
+                "tenant_id": tenant_id,
             })
 
             return task_id
         finally:
             current_task_id.reset(token)
 
+    def get_or_create_graph(self, task_id: str) -> TaskExecutionGraph:
+        if task_id not in self._task_graphs:
+            self._task_graphs[task_id] = TaskExecutionGraph(task_id=task_id)
+        return self._task_graphs[task_id]
     def mark_frame_completed(self, frame_id: str, result: Any):
         graph = self._get_graph_by_frame(frame_id)
         frame = graph.get_frame(frame_id)
@@ -311,7 +315,88 @@ class TaskOrchestrator:
                     "tenant_id": child.tenant_id
                 })
 
+    async def on_frame_ready_to_schedule_children(self, frame_id: str):
+        graph = self.get_graph_by_frame(frame_id)
+        frame = graph.get_frame(frame_id)
 
+        # 获取 ordered 子帧列表
+        children = frame.ordered_child_frame_ids
+
+        if not children:
+            # 无子帧 → 尝试完成父任务
+            await self._try_complete_task(frame.task_id)
+            return
+
+        # 按顺序调度第一个子帧（深度优先）
+        first_child_id = children[0]
+        first_child = graph.get_frame(first_child_id)
+
+        if first_child.status == "pending":
+            await self._send_execute_message(first_child)
+
+        # 后续子帧将在前一个完成后由 on_frame_ready_to_schedule_children 递归触发
+        # （见 _on_child_completed）
+
+    # 当一个子帧完成时，检查是否要调度下一个兄弟
+    async def _on_child_completed(self, child_frame_id: str):
+        graph = self.get_graph_by_frame(child_frame_id)
+        child = graph.get_frame(child_frame_id)
+
+        if child.parent_frame_id is None:
+            return  # 根帧，已在别处处理
+
+        parent = graph.get_frame(child.parent_frame_id)
+        try:
+            idx = parent.ordered_child_frame_ids.index(child_frame_id)
+        except ValueError:
+            return
+
+        # 检查是否有下一个兄弟
+        next_idx = idx + 1
+        if next_idx < len(parent.ordered_child_frame_ids):
+            next_child_id = parent.ordered_child_frame_ids[next_idx]
+            next_child = graph.get_frame(next_child_id)
+            if next_child.status == "pending":
+                await self._send_execute_message(next_child)
+        else:
+            # 所有子帧完成 → 尝试完成任务
+            await self._try_complete_task(child.task_id)
+
+
+    async def _send_execute_message(self, frame: TaskFrame):
+        frame.status = "scheduled"
+        actor_manager = ActorManager.get_instance()
+        actor = actor_manager.get_or_create_actor(frame.tenant_id, frame.target_agent_id)
+        actor.send_message({
+            "type": "execute_frame",
+            "frame_id": frame.frame_id,
+            "task_id": frame.task_id,
+            "tenant_id": frame.tenant_id,
+        })
+
+
+    async def _try_complete_task(self, task_id: str):
+        graph = self.get_graph(task_id)
+        if graph.is_all_frames_terminal():
+            results = graph.get_all_results()
+            future = self._task_done_futures.get(task_id)
+            if future and not future.done():
+                future.set_result(results)
+
+def _resolve_tenant_id(task_id: str, parent_frame_id: Optional[str], context: Dict[str, Any]) -> str:
+    # 优先从 context 显式传入
+    if context.get("tenant_id"):
+        return context["tenant_id"]
+    
+    # 如果有父帧，从父帧继承
+    if parent_frame_id:
+        orchestrator = TaskOrchestrator.get_instance_sync()  # 假设有同步获取方式
+        graph = orchestrator.get_graph(task_id)
+        parent_frame = graph.get_frame(parent_frame_id)
+        return parent_frame.tenant_id
+
+    # 否则报错（根帧必须提供 tenant_id）
+    raise ValueError("Root frame must include 'tenant_id' in context")
 
 
 async def execute_frame(
@@ -323,19 +408,16 @@ async def execute_frame(
     caller_agent_id: str = "system"
 ) -> str:
     task_id = current_task_id.get()
+    
     if task_id is None:
-        raise RuntimeError("execute_frame() must be called inside a task context")
+        raise RuntimeError("Must be in task context")
 
-    # 从当前帧或任务上下文获取 tenant_id
-    tenant_id = context.get("tenant_id")
-    if not tenant_id:
-        # 或从 parent_frame 推导
-        if parent_frame_id:
-            graph = (await TaskOrchestrator.get_instance()).get_graph(task_id)
-            parent = graph.get_frame(parent_frame_id)
-            tenant_id = parent.tenant_id
-        else:
-            raise ValueError("tenant_id required in root call")
+    current_frame_id_val = current_frame_id.get()
+    if parent_frame_id is None and current_frame_id_val is not None:
+        parent_frame_id = current_frame_id_val
+
+    # 获取 tenant_id（从 parent 或 context）
+    tenant_id = _resolve_tenant_id(task_id, parent_frame_id, context)
 
     frame_id = f"frame_{task_id}_{uuid.uuid4().hex}"
     frame = TaskFrame(
@@ -347,18 +429,21 @@ async def execute_frame(
         context=context,
         parent_frame_id=parent_frame_id,
         tenant_id=tenant_id,
-        status="pending",
     )
 
     orchestrator = await TaskOrchestrator.get_instance()
     graph = orchestrator.get_graph(task_id)
     graph.add_frame(frame)
 
+    # 👇 关键：如果当前在某个帧中，将其加入父帧的 ordered_children
+    if current_frame_id_val:
+        parent_frame = graph.get_frame(current_frame_id_val)
+        parent_frame.ordered_child_frame_ids.append(frame_id)
+
+    # 注册 future（供等待）
     orchestrator.register_future_for_frame(frame_id)
 
-    # ❌ 不发消息！由 orchestrator 在父帧完成后统一触发
     return frame_id
-
 async def _run_frame(frame_id: str):
     task_id = current_task_id.get()
     if task_id is None:

@@ -32,4 +32,6 @@ class TaskFrame:
         self.result: Any = None
         self.error: Optional[str] = None
         self.created_at = time.time()
+         # 👇 新增：显式记录子帧的执行顺序（由 Agent 声明）
+        self.ordered_child_frame_ids: List[str] = []
 

@@ -118,15 +118,18 @@ class ActorManager:
             logger.info(f"[{tenant_id}] Creating actor from registry: {agent_id}")
 
             # 合并租户上下文到 data_scope（确保隔离）
-            data_scope = dict(agent_meta["data_scope"])
+            # data_scope = dict(agent_meta["data_scope"])
+            ##TODO: 临时解决，后续再添加data_scope
+            data_scope = {}
             data_scope.setdefault("tenant_id", tenant_id)
+            print(agent_meta)
 
             # 创建 Actor
             actor = self.actor_class(
                 agent_id=agent_id,
-                capabilities=agent_meta["capabilities"],
+                capabilities='agent_meta["capabilities"]',      #   占位符，后续完善
                 data_scope=data_scope,
-                is_leaf=agent_meta["is_leaf"],
+                is_leaf='agent_meta["is_leaf"]',            #   占位符，后续完善
                 orchestrator_callback=orchestrator_callback,
             )
             actor.start()

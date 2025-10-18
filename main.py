@@ -124,6 +124,15 @@ class GenerateResponse(BaseModel):
 #         logger.error(f"Execution failed: {e}")
 #         raise RuntimeError(f"Agent execution error: {e}")
 
+def submit_task(self, agent_id, capability, context):
+    root_actor = self.asys.createActor(AgentActorThespian)
+    init_msg = build_init(agent_id, ...)
+    self.asys.tell(root_actor, init_msg)
+    task_msg = TaskMessage(frame_id="root", capability=capability, context=context)
+    self.asys.tell(root_actor, task_msg)
+    # 后续结果直接发给用户或回调地址，不经过 Orchestrator
+
+
 
 # ----------------------------
 # 路由
@@ -188,6 +197,8 @@ async def generate(
     tenant_token = current_tenant_id.set(x_tenant_id)
     user_token = current_user_id.set(user_id)
 
+    # Orchestrator 现在极简：
+
     try:
         # 1. 提交任务（返回 task_id）
 
@@ -223,10 +234,81 @@ async def generate(
         current_user_id.reset(user_token)
 
 
+# 全局 ActorSystem 和 Observer 引用
+# asys: ActorSystem = None
+# observer_ref = None
+
+# @app.on_event("startup")
+# async def startup_event():
+#     global asys, observer_ref
+#     asys = ActorSystem('multiprocTCPBase')
+#     observer_ref = asys.createActor(TaskObserver)
+
+# @app.on_event("shutdown")
+# async def shutdown_event():
+#     global asys
+#     if asys:
+#         asys.shutdown()
+
+# @app.get("/tasks/active")
+# async def get_active_tasks() -> Dict[str, Any]:
+#     global asys, observer_ref
+#     if not observer_ref:
+#         return {"error": "Observer not initialized"}
+#     response = asys.ask(observer_ref, {"query": "active_tasks"}, timeout=2)
+#     return response
+
+# @app.get("/tasks/history")
+# async def get_task_history() -> Dict[str, Any]:
+#     global asys, observer_ref
+#     if not observer_ref:
+#         return {"error": "Observer not initialized"}
+#     response = asys.ask(observer_ref, {"query": "task_history"}, timeout=2)
+#     return response
+
+# # 用于获取 observer_ref 注入到 AgentActor
+# def get_observer_ref():
+#     return observer_ref
+
 async def test():
-    await generate(GenerateRequest(input="hello", user_id="1"))
+    # await generate(GenerateRequest(input="hello", user_id="1"))
+    import thespian.actors as actors
+    system = actors.ActorSystem("simpleSystemBase")
+
+    handler = system.createActor(DataActor)
+
 
 if __name__ == "__main__":
     # uvicorn.run(app, host="0.0.0.0", port=8000)
-    asyncio.run(init_global_components())
-    asyncio.run(test())
+    # asyncio.run(init_global_components())
+    # asyncio.run(test())
+    import thespian.actors as actors
+    system = actors.ActorSystem("simpleSystemBase")
+    from agent.agent_actor import AgentActor
+    from agent.agent_registry import AgentRegistry
+    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, ACTOR_CLASS
+    registry = AgentRegistry.get_instance(
+        uri=NEO4J_URI,
+        user=NEO4J_USER,
+        password=NEO4J_PASSWORD
+    )
+    # agent_id=registry.get_agent_id_by_user("tenant_001", "user_001")
+    # mes=registry.get_agent_by_id(agent_id)
+    # capabilities=registry.get_direct_children(agent_id)
+    handler = system.createActor(AgentActor)
+    from agent.message import InitMessage,TaskMessage
+    init_msg = InitMessage(
+        agent_id="private_domain",
+        capabilities="做各类营销任务",           # Leaf: ["book_flight"]; Branch: ["route_flight"]
+        memory_key = "private_domain",       # 默认 = agent_id
+        registry=registry,
+
+    )
+    result = system.ask(handler, init_msg, timeout=1000)
+    print("Final Result:", result)
+    tsk_msg=TaskMessage(task_id="task_001", context={"user_id": "hello"})
+    result = system.ask(handler, tsk_msg, timeout=1000)
+    print("Final Result:", result)
+
+    system.shutdown()
+

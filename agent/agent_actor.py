@@ -1,326 +1,391 @@
-# agent_actor.py（重构版：纯组合 + 策略注入）
-
-import asyncio
+# agent/agent_actor.py
 import logging
-from typing import Dict, List, Any, Optional, Set, Callable, Tuple
-from datetime import datetime, timezone  # 用于修复 utcnow 警告
-from copy import deepcopy
+from typing import Dict, Any, Optional, Callable
+from datetime import timezone
+from thespian.actors import Actor, WakeupMessage
+import requests
+
+from .memory.memory_actor import MemoryActor
+from .memory.memory_interface import LoadMemoryForAgent, MemoryResponse
+from .utils.data_scope import matches_data_scope
+from .coordination.task_coordinator import TaskCoordinator
+from .coordination.result_aggregator import ResultAggregator
+from .coordination.swarm_coordinator import SwarmCoordinator
+from .optimization.optimizer import Optimizer
+from agent.io.data_query_actor import DataQueryActor, DataQueryRequest, DataQueryResponse
+from agent.message import (
+    InitMessage,
+    TaskMessage,
+    SubtaskResultMessage,
+    SubtaskErrorMessage,
+    OptimizationWakeup,
+    MessageType
+)
 
 logger = logging.getLogger(__name__)
 
-##TODO：要增加一个，数据如果不存在，则要返回错误，然后建立一个新任务来生成数据。
 
-class AgentActor:
-    """
-    Concrete AgentActor with all behaviors injected at construction time.
-    No inheritance needed — fully configurable via callables.
-    """
+class AgentActor(Actor):
+    def __init__(self):
+        super().__init__()
+        # 基础属性
+        self.agent_id: str = ""
+        self._is_leaf: bool = False
+        self._self_info: Dict = {}
+        self._capabilities: list = []
+        self._dispatch_rules: Dict = {}
+        self._memory_key: Optional[str] = None
 
-    def __init__(
-        self,
-        agent_id: str,
-        registry,
-        orchestrator,
-        data_resolver,
-        topo_sorter,
-        memory_loader: Callable[[str], Any],
-        neo4j_recorder,
-        # === 行为策略（替代抽象方法）===
-        fetch_data_fn: Callable[[str], Any],
-        acquire_resources_fn: Callable[[str], int],
-        execute_capability_fn: Callable[[str, Dict, Any], Any],
-        # === 优化器相关 ===
-        evaluator: Callable[[str, Any], float],
-        improver: Callable[[str, float], None],
-        optimization_interval: int = 3600,
-        # === 蜂群执行支持 ===
-        optuna_sampler: Optional[Callable[[str], List[Dict]]] = None,
-        # === 中间层自执行（可选）===
-        execute_self_capability_fn: Optional[Callable[[str, Dict], Any]] = None,
-    ):
-        self.agent_id = agent_id
-        self.registry = registry
-        self.orchestrator = orchestrator
-        self.data_resolver = data_resolver
-        self.topo_sorter = topo_sorter
-        self._memory = memory_loader(agent_id)
-        self._neo4j_recorder = neo4j_recorder
+        # 状态管理
+        self._aggregation_state: Dict[str, Dict] = {}
+        self._pending_memory_requests: Dict[str, Dict] = {}
+        self._pending_data_requests: Dict[str, Dict] = {}
+        self._actor_ref_cache: Dict[str, Any] = {}
+        self._initialized: bool = False
 
-        self._self_info = self.registry.get_agent_by_id(agent_id)
-        if not self._self_info:
-            raise ValueError(f"Agent {self.agent_id} not found")
+        # 依赖注入（由 InitMessage 提供）
+        self.registry = None
+        self.orchestrator = None
+        self.data_resolver = None
+        self._neo4j_recorder = None
 
-        self._is_leaf = self._self_info["is_leaf"]
-        self._aggregation_state = {}
+        self._fetch_data_fn: Optional[Callable] = None
+        self._acquire_resources_fn: Optional[Callable] = None
+        self._execute_capability_fn: Optional[Callable] = None
+        self._execute_self_capability_fn: Optional[Callable] = None
+        self._evaluator: Optional[Callable] = None
+        self._improver: Optional[Callable] = None
 
-        # === 注入的行为策略 ===
-        self._fetch_data_fn = fetch_data_fn
-        self._acquire_resources_fn = acquire_resources_fn
-        self._execute_capability_fn = execute_capability_fn
-        self._execute_self_capability_fn = execute_self_capability_fn
+        # 内部组件
+        self._memory_actor = None
+        self._data_query_actor = None
+        self._task_coordinator = None
+        self._swarm_coordinator = None
+        self._optimizer = None
+        self._optimization_interval: int = 3600
 
-        # === 优化器组件（仅中间层启用）===
-        self._evaluator = evaluator
-        self._improver = improver
-        self._optimization_interval = optimization_interval
-        self._optimization_task: Optional[asyncio.Task] = None
-
-        # === 蜂群支持 ===
-        self._optuna_sampler = optuna_sampler
-
-    # 注意：不再在这里 create_task！
-
-
-    async def start(self):
-        """启动后台优化任务（必须在 asyncio 事件循环中调用）"""
-        if not self._is_leaf and self._optimization_task is None:
-            self._optimization_task = asyncio.create_task(
-                self._optimization_loop(self._optimization_interval)
-            )
-
-    async def stop(self):
-        """停止优化任务"""
-        if self._optimization_task is not None:
-            self._optimization_task.cancel()
-            try:
-                await self._optimization_task
-            except asyncio.CancelledError:
-                pass
-            self._optimization_task = None
-    # ==============================
-    # 【1】自优化循环
-    # ==============================
-    async def _optimization_loop(self, interval: int):
-        while True:
-            try:
-                tasks = await self._get_optimization_tasks()
-                for task in tasks:
-                    await self._run_optimization_task(task)
-                await asyncio.sleep(interval)
-            except Exception as e:
-                logger.exception(f"Optimization loop error in {self.agent_id}: {e}")
-
-    async def _get_optimization_tasks(self) -> List[Dict]:
-        # 默认无任务，可由外部通过 monkey-patch 或子类化扩展（但不推荐）
-        return []
-
-    async def _run_optimization_task(self, task: Dict):
-        task_id = task["task_id"]
-        capability = task["capability"]
-        test_context = task.get("test_context", {})
-
+    def receiveMessage(self, msg, sender):
         try:
-            if self._is_leaf:
-                # 使用注入的函数，传入 memory 快照
-                memory_snapshot = deepcopy(self._memory) if self._memory is not None else None
-                result = self._execute_capability_fn(capability, test_context, memory_snapshot)
+            if isinstance(msg, InitMessage):
+                self._handle_init(msg)
+            elif isinstance(msg, TaskMessage):
+                self._handle_task(msg, sender)
+            elif isinstance(msg, SubtaskResultMessage):
+                self._handle_subtask_completion(msg.task_id, msg.result)
+            elif isinstance(msg, SubtaskErrorMessage):
+                self._handle_subtask_error(msg.task_id, msg.error)
+            elif isinstance(msg, MemoryResponse):
+                self._handle_memory_response(msg.key, msg.value, sender)
+            elif isinstance(msg, DataQueryResponse):
+                self._handle_data_response(msg)
+            elif isinstance(msg, OptimizationWakeup):
+                self._run_optimization_cycle()
+                if not self._is_leaf and self._optimization_interval > 0:
+                    self.wakeupAfter(self._optimization_interval, payload=OptimizationWakeup())
             else:
-                if self._execute_self_capability_fn is None:
-                    raise NotImplementedError("execute_self_capability_fn not provided for intermediate agent")
-                result = self._execute_self_capability_fn(capability, test_context)
-
-            score = self._evaluator(task_id, result)
-            self._improver(task_id, score)
-
-            self._neo4j_recorder.record_optimization_trial(
-                agent_id=self.agent_id,
-                task_id=task_id,
-                params=test_context,
-                result=result,
-                score=score,
-                timestamp=datetime.now(timezone.utc),
-                mode="single"
-            )
+                logger.warning(f"Unknown message type: {type(msg)}")
         except Exception as e:
-            logger.error(f"Optimization task {task_id} failed: {e}")
+            logger.exception(f"Error in AgentActor {self.agent_id}: {e}")
 
-    # ==============================
-    # 【2】蜂群执行（并发）
-    # ==============================
-    async def swarm_execute(
-        self,
-        capability: str,
-        param_sets: List[Dict],
-        base_context: Dict[str, Any]
-    ) -> List[Dict]:
-        if self._optuna_sampler is None:
-            raise RuntimeError("Optuna sampler not provided for swarm execution")
+    def _handle_init(self, msg: InitMessage):
+        # 基础信息
+        self.agent_id = msg.agent_id
+        self._capabilities = msg.capabilities
 
-        async def _run_one(params: Dict) -> Dict:
-            ctx = {**base_context, **params}
-            if self._is_leaf:
-                memory_snapshot = deepcopy(self._memory) if self._memory is not None else None
-                result = self._execute_capability_fn(capability, ctx, memory_snapshot)
-            else:
-                if self._execute_self_capability_fn is None:
-                    raise RuntimeError("Intermediate agent requires execute_self_capability_fn for swarm")
-                result = self._execute_self_capability_fn(capability, ctx)
+        self._memory_key = msg.memory_key
+        self._optimization_interval = msg.optimization_interval
 
-            self._neo4j_recorder.record_optimization_trial(
-                agent_id=self.agent_id,
-                task_id=f"swarm_{capability}",
-                params=params,
-                result=result,
-                score=None,
-                timestamp=datetime.now(timezone.utc),
-                mode="swarm"
-            )
-            return {"params": params, "result": result}
+        # 依赖注入
+        self.registry = msg.registry
+        self.orchestrator = msg.orchestrator
+        self.data_resolver = msg.data_resolver
+        self._neo4j_recorder = msg.neo4j_recorder
 
-        tasks = [_run_one(p) for p in param_sets]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._fetch_data_fn = msg.fetch_data_fn
+        self._acquire_resources_fn = msg.acquire_resources_fn
+        self._evaluator = msg.evaluator
+        self._improver = msg.improver
 
-        final_results = []
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                logger.error(f"Swarm variant {i} failed: {res}")
-                final_results.append({"params": param_sets[i], "result": None, "error": str(res)})
-            else:
-                final_results.append(res)
-        return final_results
+        # 获取自身注册信息（用于校验 capabilities 和 data_scope）
+        if self.registry:
+            self._self_info = self.registry.get_agent_meta(self.agent_id)
+            if not self._self_info:
+                raise ValueError(f"Agent {self.agent_id} not found in registry")
+            self._is_leaf = self._self_info.get("is_leaf", self._is_leaf)
 
-    # ==============================
-    # 公共接口：替代原抽象方法
-    # ==============================
-    async def fetch_data(self, query: str) -> Any:
-        """Public wrapper — handles sync/async automatically"""
-        fn = self._fetch_data_fn
-        result = fn(query)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return result
+        # 创建内部 Actor
+        if hasattr(self, 'createActor'):
+            self._memory_actor = self.createActor(MemoryActor)
+            self._data_query_actor = self.createActor(DataQueryActor)
 
-    async def acquire_resources(self, purpose: str) -> int:
-        fn = self._acquire_resources_fn
-        result = fn(purpose)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return result
+            # 加载记忆
+            if self._memory_key:
+                self.send(self._memory_actor, LoadMemoryForAgent(self.agent_id))
 
-    # ==============================
-    # 主任务入口
-    # ==============================
-    def handle_task(self, frame_id: str, capability: str, context: Dict[str, Any]):
-        try:
-            if capability not in self._self_info["capabilities"]:
-                raise RuntimeError(f"Agent {self.agent_id} does not support capability: {capability}")
-            if not self._matches_data_scope(self._self_info["data_scope"], context):
-                raise RuntimeError(f"Context does not satisfy data_scope of {self.agent_id}")
+        # 初始化协调器与优化器
+        self._task_coordinator = TaskCoordinator(self.registry)
+        self._swarm_coordinator = SwarmCoordinator(self.registry, self.data_resolver)
+        self._optimizer = Optimizer(
+            evaluator=self._evaluator,
+            improver=self._improver,
+            neo4j_recorder=self._neo4j_recorder,
+            execute_fn=self._execute_self_capability_fn
+        )
 
-            if self._is_leaf:
-                self._execute_leaf(frame_id, capability, context)
-            else:
-                self._execute_intermediate(frame_id, capability, context)
-        except Exception as e:
-            logger.exception(f"Error in handle_task for {self.agent_id}")
-            self.orchestrator.report_error(frame_id, str(e))
-            raise
+        self._initialized = True
+
+        # 启动优化循环（仅非叶子节点）
+        if not self._is_leaf and self._optimization_interval > 0:
+            self.wakeupAfter(self._optimization_interval, payload=OptimizationWakeup())
+
+        logger.info(f"AgentActor {self.agent_id} initialized (leaf={self._is_leaf})")
+
+    def _handle_task(self, task_msg: TaskMessage, original_sender):
         
+        print(f"[AgentActor {self.agent_id}] Received task {task_msg.task_id} with context keys: {list(task_msg.context.keys())}")
+        
+        self._report_event("started", task_msg.task_id, {
+            "context_keys": list(task_msg.context.keys()),
+            "is_leaf": self._is_leaf
+        })
 
-    def _execute_leaf(self, frame_id: str, capability: str, context: Dict[str, Any]):
+        # 能力与数据范围校验
+
+        # if not matches_data_scope(self._self_info.get("data_scope", {}), task_msg.context):
+        #     raise RuntimeError(f"Context violates data_scope for agent {self.agent_id}")
+
+        ##TODO: 记忆补充待实现
+        # if self._memory_actor and self._memory_key:
+        #         self.send(self._memory_actor, LoadMemoryForAgent(self.agent_id))
+        #         self._pending_memory_requests[task_msg.task_id] = {
+        #             "context": task_msg.context,
+        #             "sender": original_sender
+        #         }
+            # else:
+            #     # 无记忆直接执行
+
+        if self._is_leaf:
+            # 叶子节点：先加载记忆，再决定是否需要查数据
+            
+            self._execute_leaf_task(task_msg.task_id, task_msg.context, {}, original_sender)
+        else:
+            self._execute_intermediate(task_msg.task_id,  task_msg.context, original_sender)
+
+    def _handle_memory_response(self, key: str, memory_value: Any, sender):
+        if not self._pending_memory_requests:
+            return
+
+        # 取出第一个（实际应按 key 或 task_id 匹配，此处简化）
+        task_id, task_info = next(iter(self._pending_memory_requests.items()))
+        del self._pending_memory_requests[task_id]
+
+        memory = {"user_pref": memory_value} if memory_value else {}
+
+        # 判断是否需要查数据（示例：仅特定 capability）
+        if task_info["capability"] == "book_flight":
+            self._fetch_data_for_task(
+                task_id=task_id,
+                query="SELECT * FROM flights WHERE user='alice'",  # 实际应由 capability 决定
+                capability=task_info["capability"],
+                context=task_info["context"],
+                memory=memory,
+                sender=task_info["sender"]
+            )
+        else:
+            self._execute_leaf_task(
+                task_id, task_info["capability"], task_info["context"], memory, task_info["sender"]
+            )
+
+    
+
+    def _execute_leaf_task(self, task_id: str,  context: Dict, memory: Dict, sender, capability: str="dify_workflow"):
         try:
-            memory_snapshot = deepcopy(self._memory) if self._memory is not None else None
-            result = self._execute_capability_fn(capability, context, memory_snapshot)
-            self.orchestrator.report_result(frame_id, result)
-            self._neo4j_recorder.record_execution(
-                agent_id=self.agent_id,
-                capability=capability,
-                context=context,
-                result=result,
-                timestamp=datetime.now(timezone.utc)
-            )
+            if capability == "dify_workflow":
+                # === Dify Workflow 执行逻辑 ===
+                api_key = context.get("dify_api_key")
+                base_url = context.get("dify_base_url", "https://api.dify.ai/v1")
+                inputs = context.get("inputs", {})
+                user = context.get("user", "thespian_user")
+
+                if not api_key:
+                    raise ValueError("Missing 'dify_api_key' in context")
+                if not isinstance(inputs, dict):
+                    raise ValueError("'inputs' must be a dictionary")
+
+                # 调用 Dify Workflow API
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "inputs": inputs,
+                    "response_mode": "blocking",
+                    "user": user
+                }
+
+                url = f"{base_url.rstrip('/')}/workflows/run"
+                resp = requests.post(url, json=payload, headers=headers, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
+
+                # 提取输出结果
+                outputs = data.get("data", {}).get("outputs", {})
+                workflow_run_id = data.get("workflow_run_id")
+                status = data.get("data", {}).get("status")
+
+                result = {
+                    "outputs": outputs,
+                    "workflow_run_id": workflow_run_id,
+                    "status": status,
+                    "raw_response": data  # 可选：保留原始响应用于调试
+                }
+
+            else:
+                # 其他 capability 交给原有逻辑处理
+                result = self._execute_capability_fn(capability, context, memory)
+
+            # 发送成功结果
+            self.send(sender, SubtaskResultMessage(task_id, result))
+            self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
+
         except Exception as e:
-            self.orchestrator.report_error(frame_id, str(e))
+            error_msg = str(e)
+            self.send(sender, SubtaskErrorMessage(task_id, error_msg))
+            self._report_event("failed", task_id, {"error": error_msg[:200]})
 
-    def _execute_intermediate(self, parent_frame_id: str, main_capability: str, original_context: Dict[str, Any]):
-        try:
-            my_capabilities = set(self._self_info["capabilities"])
-            deps = self.registry.get_capability_dependencies(list(my_capabilities))
-            relevant_capabilities = self._extract_relevant_subgraph(main_capability, deps)
-            sorted_caps = self.topo_sorter.sort(relevant_capabilities, deps)
-            execution_plan = [{"node_id": cap, "intent_params": {}} for cap in sorted_caps]
-            self._coordinate_subtasks(parent_frame_id, execution_plan, original_context)
-        except Exception as e:
-            logger.exception(f"Error in _execute_intermediate for {self.agent_id}")
-            self.orchestrator.report_error(parent_frame_id, str(e))
 
-    def _extract_relevant_subgraph(self, start_cap: str, dependencies: List[Dict]) -> Set[str]:
-        from collections import defaultdict, deque
-        graph = defaultdict(list)
-        all_nodes = set()
-        for dep in dependencies:
-            graph[dep["from"]].append(dep["to"])
-            all_nodes.add(dep["from"])
-            all_nodes.add(dep["to"])
-        if start_cap not in all_nodes:
-            return {start_cap}
-        visited = set()
-        queue = deque([start_cap])
-        visited.add(start_cap)
-        while queue:
-            node = queue.popleft()
-            for neighbor in graph[node]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
-        return visited
+    def _fetch_data_for_task(self, task_id: str, query: str, capability: str, context: Dict, memory: Dict, sender):
+         # 不再需要 memory！DataQueryActor 自己会加载
+        request_id = f"data_req_{task_id}"
+        self._pending_data_requests[request_id] = {
+            "task_id": task_id,
+            "sender": sender
+        }
+        self.send(self._data_query_actor, DataQueryRequest(request_id=request_id, query=query))
 
-    def _coordinate_subtasks(
-        self,
-        parent_frame_id: str,
-        execution_plan: List[Dict],
-        original_context: Dict[str, Any]
-    ):
-        pending_frames: Set[str] = set()
-        for idx, step in enumerate(execution_plan):
-            cap = step["node_id"]
-            intent_params = step.get("intent_params", {})
-            task_context = {**original_context, **intent_params}
-            child = self.registry.find_direct_child_by_capability(
-                parent_agent_id=self.agent_id,
-                capability=cap,
-                context=task_context
-            )
-            if not child:
-                raise RuntimeError(
-                    f"No direct child under {self.agent_id} supports '{cap}' with context {task_context}"
-                )
-            resolved_context = self.data_resolver.resolve(task_context)
-            sub_frame_id = f"{parent_frame_id}_{cap}_{idx}"
-            pending_frames.add(sub_frame_id)
-            self.orchestrator.submit_subtask(
-                caller_agent_id=self.agent_id,
-                target_agent_id=child["agent_id"],
-                capability=cap,
-                context=resolved_context,
-                parent_frame_id=parent_frame_id
-            )
-        self._aggregation_state[parent_frame_id] = {
-            "pending": pending_frames,
+    def _handle_data_response(self, response: DataQueryResponse):
+        req_id = response.request_id
+        if req_id not in self._pending_data_requests:
+            logger.warning(f"Orphaned data response for {req_id}")
+            return
+
+        info = self._pending_data_requests.pop(req_id)
+        if response.error:
+            self.send(info["sender"], SubtaskErrorMessage(info["task_id"], response.error))
+            return
+
+        enhanced_context = {**info["context"], "db_result": response.result}
+        self._execute_leaf_task(
+            info["task_id"], info["capability"], enhanced_context, info["memory"], info["sender"]
+        )
+
+    def _execute_intermediate(self, parent_task_id: str, context: Dict, original_sender):
+        select_node_id=self._task_coordinator._select_best_actor(self.agent_id, context)
+        if not select_node_id:
+            raise RuntimeError(f"No suitable child agent found for task {parent_task_id}")
+        
+        plan = self._task_coordinator.plan_subtasks(select_node_id, context)
+        print(plan)
+        pending = set()
+        for i, step in enumerate(plan):
+            child_cap = step["node_id"]
+            child_ctx = self._task_coordinator.resolve_context({**context, **step.get("intent_params", {})},self.agent_id)
+            # child_info = self.registry.find_direct_child_by_capability(self.agent_id, child_cap, child_ctx)
+            # if not child_info:
+            #     raise RuntimeError(f"No child agent for capability {child_cap} under {self.agent_id}")
+
+            child_ref = self._get_or_create_actor_ref(step["node_id"])
+            child_task_id = f"{parent_task_id}.child_{i}"
+
+            self._report_event("subtask_spawned", child_task_id, {
+                "parent_task_id": parent_task_id,
+                "capability": child_cap,
+                "agent_id": step["node_id"]
+            })
+
+            self.send(child_ref, TaskMessage(child_task_id, child_ctx))
+            pending.add(child_task_id)
+
+        self._aggregation_state[parent_task_id] = {
+            "pending": pending,
             "results": {},
-            "expected_count": len(pending_frames)
+            "sender": original_sender
         }
 
-    # ========== 聚合回调 ==========
-    def on_subtask_result(self, parent_frame_id: str, sub_frame_id: str, result: Any):
-        state = self._aggregation_state.get(parent_frame_id)
-        if not state:
+    def _handle_subtask_completion(self, task_id: str, result: Any):
+        self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
+        self._complete_or_aggregate(task_id, result)
+
+    def _handle_subtask_error(self, task_id: str, error: str):
+        self._report_event("failed", task_id, {"error": str(error)[:200]})
+        self._complete_or_aggregate(task_id, error, is_error=True)
+
+    def _complete_or_aggregate(self, task_id: str, result_or_error: Any, is_error: bool = False):
+        parent_id = self._get_parent_task_id(task_id)
+        if parent_id not in self._aggregation_state:
+            return  # 可能是顶层任务，无需聚合
+
+        state = self._aggregation_state[parent_id]
+        if is_error:
+            # 简化：任一子任务失败即失败
+            del self._aggregation_state[parent_id]
+            self.send(state["sender"], SubtaskErrorMessage(parent_id, f"Subtask {task_id} failed: {result_or_error}"))
             return
-        state["results"][sub_frame_id] = result
-        state["pending"].discard(sub_frame_id)
+
+        state["results"][task_id] = result_or_error
+        state["pending"].discard(task_id)
+
         if not state["pending"]:
-            final_result = self._aggregate_results(state["results"])
-            self.orchestrator.report_result(parent_frame_id, final_result)
-            del self._aggregation_state[parent_frame_id]
+            final_result = ResultAggregator.aggregate_sequential(state["results"])
+            self.send(state["sender"], SubtaskResultMessage(parent_id, final_result))
+            del self._aggregation_state[parent_id]
 
-    def on_subtask_error(self, parent_frame_id: str, sub_frame_id: str, error: str):
-        if parent_frame_id in self._aggregation_state:
-            del self._aggregation_state[parent_frame_id]
-        self.orchestrator.report_error(parent_frame_id, error)
+    def _get_parent_task_id(self, task_id: str) -> str:
+        return task_id.rsplit(".", 1)[0] if "." in task_id else ""
 
-    def _aggregate_results(self, results: Dict[str, Any]) -> Any:
-        return list(results.values())[-1] if results else None
+    def _get_or_create_actor_ref(self, agent_id: str):
+        if agent_id not in self._actor_ref_cache:
+            ref = self.createActor(AgentActor)
+            # 构造 InitMessage（需从 registry 获取完整配置）
+            agent_info = self.registry.get_agent_meta(agent_id)
+            if not agent_info:
+                raise ValueError(f"Cannot create actor for unknown agent: {agent_id}")
 
-    @staticmethod
-    def _matches_data_scope(data_scope: Dict[str, Any], context: Dict[str, Any]) -> bool:
-        return all(context.get(k) == v for k, v in data_scope.items())
+            init_msg = InitMessage(
+
+                agent_id=agent_id,
+                capabilities=agent_info["capability"],           # Leaf: ["book_flight"]; Branch: ["route_flight"]
+                memory_key = agent_id,       # 默认 = agent_id
+                registry=self.registry,
+                # agent_id=agent_id,
+                # is_leaf=agent_info.get("is_leaf", False),
+                # capabilities=agent_info.get("capabilities", []),
+                # dispatch_rules=agent_info.get("dispatch_rules", {}),
+                # memory_key=agent_info.get("memory_key"),
+                # registry=self.registry,
+                # orchestrator=self.orchestrator,
+                # data_resolver=self.data_resolver,
+                # neo4j_recorder=self._neo4j_recorder,
+                # fetch_data_fn=self._fetch_data_fn,
+                # acquire_resources_fn=self._acquire_resources_fn,
+                # execute_capability_fn=self._execute_capability_fn,
+                # execute_self_capability_fn=self._execute_self_capability_fn,
+                # evaluator=self._evaluator,
+                # improver=self._improver,
+                # optimization_interval=self._optimization_interval
+            )
+            self.send(ref, init_msg)
+            self._actor_ref_cache[agent_id] = ref
+        return self._actor_ref_cache[agent_id]
+
+    def _run_optimization_cycle(self):
+        try:
+            # TODO: 实际应从历史任务或性能指标生成优化任务
+            logger.debug(f"Running optimization cycle for {self.agent_id}")
+            # self._optimizer.run_optimization_task(...)
+        except Exception as e:
+            logger.exception(f"Optimization cycle failed for {self.agent_id}: {e}")
+
+    def _report_event(self, event_type: str, task_id: str, details: Dict):
+        if self.orchestrator:
+            self.orchestrator.report_event(event_type, task_id, details)
