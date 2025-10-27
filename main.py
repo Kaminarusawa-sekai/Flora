@@ -15,6 +15,9 @@ from agent.agent_actor import AgentActor
 from task_orchestrator.orchestrator import TaskOrchestrator
 from task_orchestrator.context import current_tenant_id, current_user_id
 from init_global_components import init_global_components
+from connector.dify_connector import DifyRunRegistry, DifyRunRecord, get_dify_registry
+from config import NEO4J_URI, NEO4J_USER, CONNECTOR_RECORD_DB_URL
+
 
 # ----------------------------
 # 配置
@@ -234,6 +237,37 @@ async def generate(
         current_user_id.reset(user_token)
 
 
+
+#dify 回调接口
+@app.post("/dify-callback")
+async def dify_callback(request: Request):
+    payload = await request.json()
+    run_id = payload.get("workflow_run_id")
+    status = payload.get("status", "unknown")
+    outputs = payload.get("outputs")
+
+    # 1. 获取任务信息
+    result = dify_registry.get_run(run_id)
+    if not result:
+        return {"error": "run_id not found"}
+    
+    task_id, original_sender, _ = result
+
+    # 2. 更新状态
+    dify_registry.complete_run(run_id, status, outputs)
+
+    # 3. 通知 Actor
+    if status == "succeeded":
+        msg = SubtaskResultMessage(task_id, outputs)
+    else:
+        msg = SubtaskErrorMessage(task_id, f"Dify failed: {status}")
+
+    actor_system.tell(original_sender, msg)
+    return {"status": "notified"}
+
+
+
+
 # 全局 ActorSystem 和 Observer 引用
 # asys: ActorSystem = None
 # observer_ref = None
@@ -286,17 +320,19 @@ if __name__ == "__main__":
     system = actors.ActorSystem("simpleSystemBase")
     from agent.agent_actor import AgentActor
     from agent.agent_registry import AgentRegistry
-    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, ACTOR_CLASS
+    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
     registry = AgentRegistry.get_instance(
         uri=NEO4J_URI,
         user=NEO4J_USER,
         password=NEO4J_PASSWORD
     )
+
+    connector_record = get_dify_registry(CONNECTOR_RECORD_DB_URL)
     # agent_id=registry.get_agent_id_by_user("tenant_001", "user_001")
     # mes=registry.get_agent_by_id(agent_id)
     # capabilities=registry.get_direct_children(agent_id)
     handler = system.createActor(AgentActor)
-    from agent.message import InitMessage,TaskMessage
+    from agent.message import InitMessage,TaskMessage,SubtaskErrorMessage
     init_msg = InitMessage(
         agent_id="private_domain",
         capabilities="做各类营销任务",           # Leaf: ["book_flight"]; Branch: ["route_flight"]
@@ -306,8 +342,12 @@ if __name__ == "__main__":
     )
     result = system.ask(handler, init_msg, timeout=1000)
     print("Final Result:", result)
-    tsk_msg=TaskMessage(task_id="task_001", context={"user_id": "hello"})
+    tsk_msg=TaskMessage(task_id="task_001", context={"你好": "hello"})
     result = system.ask(handler, tsk_msg, timeout=1000)
+    if isinstance(result,SubtaskErrorMessage ) or result is None:  # actor 退出
+        from llm.qwen import QwenLLM
+        llm=QwenLLM()
+        resp=llm.generate("用户问了"+'{"你好": "hello"}'+"，但是智能体崩溃了，你首先要尽可能根据用户的意图，生成一个最合适的回答用户，其再再判断一下是否需要就执行失败向用户道歉，如果需要你就向用户真诚的道歉。")
     print("Final Result:", result)
 
     system.shutdown()

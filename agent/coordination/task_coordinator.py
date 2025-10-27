@@ -6,6 +6,9 @@ import networkx as nx
 from change_orchestrator.decision_engine import IntelligentChangeEngine
 from llm import QwenLLM
 
+from agent.io.data_actor import DataActor
+from agent.message import MessageType, DataQueryRequest, DataQueryResponse
+
 
 import logging
 import heapq
@@ -166,12 +169,12 @@ class TaskCoordinator:
         max_hops: int = 5
     ) -> nx.DiGraph:
         query = """
-        MATCH (start {code: $rootCode})
+        MATCH (start:MarketingDemo2 {code: $rootCode})
         CALL apoc.path.expandConfig(start, {
-        relationshipFilter: 'SAME_LEVEL_DEMO1>',
-        minLevel: 1,
-        maxLevel: $maxHops,
-        uniqueness: 'NODE_GLOBAL'
+            relationshipFilter: 'SAME_LEVEL_DEMO1>',
+            minLevel: 1,
+            maxLevel: $maxHops,
+            uniqueness: 'NODE_GLOBAL'
         }) YIELD path
         WITH path,
             reduce(acc = 1.0, r IN relationships(path) | acc * coalesce(r.weight, 0.0)) AS totalStrength
@@ -180,8 +183,8 @@ class TaskCoordinator:
         ORDER BY totalStrength DESC
         WITH target, head(collect({strength: totalStrength, path: path})) AS best
         RETURN
-        best.path AS bestPath,
-        best.strength AS totalStrength
+            best.path AS bestPath,
+            best.strength AS totalStrength
         """
         graph = nx.DiGraph()
 
@@ -400,11 +403,14 @@ class TaskCoordinator:
         for key, value_desc in ctx.items():
             query = f"变量名: '{key}', 值描述: '{value_desc}'"
             leaf_meta = self._resolve_kv_via_layered_search(current_agent_id, query, key)
-            if leaf_meta and key in leaf_meta.get("data_scope", {}):
-                result[key] = leaf_meta["data_scope"][key]
+            if leaf_meta :
+                result[key] = leaf_meta
+                print(f"解析成功，{key} resolved to {leaf_meta}")
+            # if leaf_meta and key in leaf_meta.get("data_scope", {}):
+            #     result[key] = leaf_meta["data_scope"][key]
             else:
                 logger.warning(f"无法解析变量 '{key}' (描述: {value_desc})")
-                result[key] = value_desc  # 或 None
+                result[key] = None  # 或 None
 
         return result
 
@@ -458,22 +464,35 @@ class TaskCoordinator:
                 # cap_text = ", ".join(caps) if caps else "无能力声明"
                 cap_text = caps if caps else "无能力声明"
                 node_desc [node_id]= f"[节点 {node_id}] 数据: {ds_text}。能力: {cap_text}"
-            
-            if self._qwen_semantic_match_for_layer(query, node_desc):
-                matched_node_id = node_id
-                break  # 找到第一个匹配即可（或可选最佳）
+            matched_node_id=self._qwen_semantic_match_for_layer(query, node_desc)
+            # if :
+            #     matched_node_id = node_id
+                # break  # 找到第一个匹配即可（或可选最佳）
 
             if matched_node_id is not None:
                 # 有匹配！检查是否是叶子
                 matched_meta = self.registry.get_agent_meta(matched_node_id)
                 if matched_meta.get("is_leaf"):
+                    return matched_meta["code"]
+                    # 创建 actor
+                    # data_actor = self.createActor(DataActor)
+
+                    # # 1. 初始化（必须先做！）
+                    # asys.tell(data_actor, InitDataQueryActor(agent_id="your_agent_123"))
+
+                    # # 2. 发送查询（可在初始化后任意时间发送）
+                    # asys.tell(data_actor, DataQueryRequest(
+                    #     request_id="req_001",
+                    #     query="What were last month's sales?",
+                    #     agent_id="your_agent_123"
+                    # ))
                     # 叶子：检查是否包含 key（可选）
-                    if key in matched_meta.get("data_scope", {}):
-                        return matched_meta
-                    else:
-                        # 语义匹配但无该字段？视为不匹配，继续？按你说的：匹配即持有
-                        # 这里保守处理：返回
-                        return matched_meta
+                    # if key in matched_meta.get("datascope", {}):
+                    #     return matched_meta
+                    # else:
+                    #     # 语义匹配但无该字段？视为不匹配，继续？按你说的：匹配即持有
+                    #     # 这里保守处理：返回
+                    #     return matched_meta
 
                 else:
                     # 非叶子：向下一层（进入它的 direct children）
@@ -489,6 +508,7 @@ class TaskCoordinator:
                 # 当前层无匹配：向上一层
                 if parent is None:
                     # 已是根层，再向上就没了
+                    print("已到达根层，无匹配节点")
                     break
                 else:
                     # 移动到父层：让 current_agent = parent，下轮检查 parent 的兄弟层

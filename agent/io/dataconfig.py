@@ -2,7 +2,7 @@
 import os
 
 # DashScope (Qwen)
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a48a1d84e015410292d07021f60b9acb")
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 
 # MySQL
 MYSQL_HOST = os.getenv("MYSQL_HOST", "192.168.10.33")

@@ -3,7 +3,7 @@
 import importlib
 from typing import Type
 
-from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, ACTOR_CLASS
+from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 from agent.agent_registry import AgentRegistry
 from actor_manager.actor_manager import ActorManager
 from task_orchestrator.orchestrator import TaskOrchestrator

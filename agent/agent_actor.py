@@ -19,8 +19,18 @@ from agent.message import (
     SubtaskResultMessage,
     SubtaskErrorMessage,
     OptimizationWakeup,
-    MessageType
+    MessageType,
+    DifySchemaResponse,
+    DifyExecuteResponse,
+    DifyExecuteRequest,
+    DifySchemaRequest,
+    InitDataQueryActor,
+
 )
+from agent.excute.dify_actor import DifyWorkflowActor
+from config import DIFY_URI
+from agent.io.data_actor import DataActor
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +92,13 @@ class AgentActor(Actor):
                 self._run_optimization_cycle()
                 if not self._is_leaf and self._optimization_interval > 0:
                     self.wakeupAfter(self._optimization_interval, payload=OptimizationWakeup())
+            
+             # === 新增：Dify 相关消息 ===
+            elif isinstance(msg, DifySchemaResponse):
+                self._handle_dify_schema_response(msg,sender)
+            elif isinstance(msg, DifyExecuteResponse):
+                self._handle_dify_execute_response(msg)
+                
             else:
                 logger.warning(f"Unknown message type: {type(msg)}")
         except Exception as e:
@@ -198,61 +215,178 @@ class AgentActor(Actor):
 
     
 
-    def _execute_leaf_task(self, task_id: str,  context: Dict, memory: Dict, sender, capability: str="dify_workflow"):
-        try:
-            if capability == "dify_workflow":
-                # === Dify Workflow 执行逻辑 ===
-                api_key = context.get("dify_api_key")
-                base_url = context.get("dify_base_url", "https://api.dify.ai/v1")
-                inputs = context.get("inputs", {})
-                user = context.get("user", "thespian_user")
+    # def _execute_leaf_task(self, task_id: str,  context: Dict, memory: Dict, sender, capability: str="dify_workflow"):
+    #     try:
+    #         if capability == "dify_workflow":
+    #             # === Dify Workflow 执行逻辑 ===
+    #             api_key = self._self_info.get("dify")
+    #             base_url = DIFY_URI
+    #             inputs = context
+    #             # inputs = context.get("inputs", {})
+    #             user = context.get("user", "thespian_user")
 
-                if not api_key:
-                    raise ValueError("Missing 'dify_api_key' in context")
-                if not isinstance(inputs, dict):
-                    raise ValueError("'inputs' must be a dictionary")
+    #             if not api_key:
+    #                 raise ValueError("Missing 'dify_api_key' in context")
+    #             if not isinstance(inputs, dict):
+    #                 raise ValueError("'inputs' must be a dictionary")
 
-                # 调用 Dify Workflow API
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "inputs": inputs,
-                    "response_mode": "blocking",
-                    "user": user
-                }
+    #             # 调用 Dify Workflow API
+    #             headers = {
+    #                 "Authorization": f"Bearer {api_key}",
+    #                 "Content-Type": "application/json"
+    #             }
+    #             payload = {
+    #                 "inputs": inputs,
+    #                 "response_mode": "blocking",
+    #                 "user": user
+    #             }
 
-                url = f"{base_url.rstrip('/')}/workflows/run"
-                resp = requests.post(url, json=payload, headers=headers, timeout=60)
-                resp.raise_for_status()
-                data = resp.json()
+    #             url = f"{base_url.rstrip('/')}/workflows/run"
+    #             resp = requests.post(url, json=payload, headers=headers, timeout=60)
+    #             resp.raise_for_status()
+    #             data = resp.json()
 
-                # 提取输出结果
-                outputs = data.get("data", {}).get("outputs", {})
-                workflow_run_id = data.get("workflow_run_id")
-                status = data.get("data", {}).get("status")
+    #             # 提取输出结果
+    #             outputs = data.get("data", {}).get("outputs", {})
+    #             workflow_run_id = data.get("workflow_run_id")
+    #             status = data.get("data", {}).get("status")
 
-                result = {
-                    "outputs": outputs,
-                    "workflow_run_id": workflow_run_id,
-                    "status": status,
-                    "raw_response": data  # 可选：保留原始响应用于调试
-                }
+    #             result = {
+    #                 "outputs": outputs,
+    #                 "workflow_run_id": workflow_run_id,
+    #                 "status": status,
+    #                 "raw_response": data  # 可选：保留原始响应用于调试
+    #             }
 
-            else:
-                # 其他 capability 交给原有逻辑处理
-                result = self._execute_capability_fn(capability, context, memory)
+    #         else:
+    #             # 其他 capability 交给原有逻辑处理
+    #             result = self._execute_capability_fn(capability, context, memory)
 
-            # 发送成功结果
+    #         # 发送成功结果
+    #         self.send(sender, SubtaskResultMessage(task_id, result))
+    #         self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
+
+    #     except Exception as e:
+    #         error_msg = str(e)
+    #         self.send(sender, SubtaskErrorMessage(task_id, error_msg))
+    #         self._report_event("failed", task_id, {"error": error_msg[:200]})
+    def _execute_leaf_task(self, task_id: str, context: Dict, memory: Dict, sender, capability: str = "dify_workflow"):
+        if capability != "dify_workflow":
+            result = self._execute_capability_fn(capability, context, memory)
             self.send(sender, SubtaskResultMessage(task_id, result))
             self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
+            return
 
-        except Exception as e:
-            error_msg = str(e)
-            self.send(sender, SubtaskErrorMessage(task_id, error_msg))
-            self._report_event("failed", task_id, {"error": error_msg[:200]})
+        # 构造 echo_payload：包含执行所需的一切
+        echo_payload = {
+            "context": context,
+            "memory": memory,
+            "original_sender": sender,
+            "task_id": task_id
+        }
 
+        dify_actor = self.createActor(DifyWorkflowActor)  # 假设 DifyWorkflowActor 也是 AgentActor 的一种
+        if not dify_actor:
+            self.send(sender, SubtaskErrorMessage(task_id, "DifyWorkflowActor not available"))
+            self._report_event("failed", task_id, {"error": "Dify actor missing"})
+            return
+
+        # ✅ 新代码：传入配置
+        self.send(dify_actor, DifySchemaRequest(
+            task_id=task_id,
+            echo_payload=echo_payload,
+            api_key=self._self_info.get("dify"),      # ← 从父 Actor 的配置中获取
+            base_url=DIFY_URI     # ← 例如从 __init__ 或环境变量加载
+        ))
+
+
+    def _handle_dify_schema_response(self, msg: DifySchemaResponse, sender):
+        if msg.error:
+            payload = msg.echo_payload
+            self.send(payload["original_sender"], SubtaskErrorMessage(
+                payload["task_id"], f"Schema fetch failed: {msg.error}"
+            ))
+            self._report_event("failed", payload["task_id"], {"error": msg.error[:200]})
+            return
+
+        payload = msg.echo_payload
+        context = payload["context"]
+        original_sender = payload["original_sender"]
+        task_id = payload["task_id"]
+
+        raw_inputs = context.get("inputs", {})
+        user = context.get("user", "thespian_user")
+
+        # 从 input_schema 提取变量名和描述（用于 resolve_context）
+        resolve_prompts = {}
+        if msg.input_schema:
+            for var_spec in msg.input_schema:
+                if isinstance(var_spec, dict) and "variable" in var_spec:
+                    var_name = var_spec["variable"]
+                    # 如果已有值，跳过解析
+                    if var_name in raw_inputs:
+                        continue
+                    # 使用 label 作为描述，fallback 到 variable 名
+                    prompt = var_spec.get("label") or var_name
+                    resolve_prompts[var_name] = prompt
+
+        # 调用 resolve_context 获取缺失变量的实际值
+        if resolve_prompts:
+            resolved = self._task_coordinator.resolve_context(resolve_prompts, agent_id=self.agent_id)
+            for k, v in resolved.items():
+                 if v == None:
+                     continue
+                 data_actor = self.createActor(DataActor)
+                 
+                 self.send(data_actor, InitDataQueryActor(agent_id=v))
+                 self.send(data_actor, DataQueryRequest(
+                        request_id=task_id,
+                        query=f"变量名: '{k}', 值描述: '{resolve_prompts[k]}'",
+                    ))
+                    # # 1. 初始化（必须先做！）
+                    # asys.tell(data_actor, InitDataQueryActor(agent_id="your_agent_123"))
+
+                    # # 2. 发送查询（可在初始化后任意时间发送）
+                    # asys.tell(data_actor, DataQueryRequest(
+                    #     request_id="req_001",
+                    #     query="What were last month's sales?",
+                    #     agent_id="your_agent_123"
+                    # ))
+            # 只保留非 None / 非空字符串的结果（可选）
+            raw_inputs.update({
+                k: v for k, v in resolved.items()
+                if v is not None and v != ""
+            })
+
+        # 发送执行请求
+        dify_actor = sender
+        if not dify_actor:
+            self.send(original_sender, SubtaskErrorMessage(task_id, "Dify actor gone"))
+            self._report_event("failed", task_id, {"error": "Dify actor missing"})
+            return
+
+        self.send(dify_actor, DifyExecuteRequest(
+            task_id=task_id,
+            inputs=raw_inputs,
+            user=user,
+            original_sender=original_sender,
+            api_key=self._self_info.get("dify"),
+            base_url=DIFY_URI
+        ))
+
+    def _handle_dify_execute_response(self, msg: DifyExecuteResponse):
+        if msg.error:
+            self.send(msg.original_sender, SubtaskErrorMessage(msg.task_id, f"Execution failed: {msg.error}"))
+            self._report_event("failed", msg.task_id, {"error": msg.error[:200]})
+        else:
+            result = {
+                "outputs": msg.outputs,
+                "workflow_run_id": msg.workflow_run_id,
+                "status": msg.status
+            }
+            self.send(msg.original_sender, SubtaskResultMessage(msg.task_id, result))
+            self._report_event("finished", msg.task_id, {"result_preview": str(result)[:200]})
+    
 
     def _fetch_data_for_task(self, task_id: str, query: str, capability: str, context: Dict, memory: Dict, sender):
          # 不再需要 memory！DataQueryActor 自己会加载

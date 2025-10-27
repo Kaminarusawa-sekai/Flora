@@ -194,9 +194,9 @@ class AgentRegistry:
     @staticmethod
     def _load_all_agents_tx(tx):
         res = tx.run("""
-            MATCH (n:MarketingTreeDemo1)
-            OPTIONAL MATCH (parent:MarketingTreeDemo1)-[:SUB_ITEM1]->(n)
-            OPTIONAL MATCH (n)-[:SUB_ITEM1]->(child:MarketingTreeDemo1)
+            MATCH (n:MarketingTreeDemo2)
+            OPTIONAL MATCH (n)-[:CHILD_OF]->(parent:MarketingTreeDemo2)  
+            OPTIONAL MATCH (child:MarketingTreeDemo2)-[:CHILD_OF]->(n)   
             RETURN 
                 n.code AS code,
                 n.name AS name,
@@ -206,7 +206,7 @@ class AgentRegistry:
                 n.capability AS capability,
                 n.datascope AS datascope,
                 n.database AS database,
-                n.dify_code AS dify_code,
+                n.dify AS dify,
                 parent.code AS parent_code,
                 count(child) = 0 AS is_leaf
             ORDER BY n.code
@@ -225,7 +225,7 @@ class AgentRegistry:
                 "datascope": record["datascope"] or '',
                 "database": (record["database"] or ''),
                 "is_leaf": record["is_leaf"],  # 新增字段：是否为叶子节点
-                "dify_code": record["dify_code"] or '',  # 新增字段：Dify Workflow 代码
+                "dify": record["dify"] or '',  # 新增字段：Dify Workflow 代码
                 "parent_code": record["parent_code"]
             }
         return agents
@@ -252,7 +252,7 @@ class AgentRegistry:
     def _register_agent_tx(tx, agent_id, capabilities, data_scope, is_leaf, parent_agent_id):
         # 确保节点存在（根据 code）
         tx.run("""
-            MERGE (n:MarketingTreeDemo1 {code: $code})
+            MERGE (n:MarketingTreeDemo2 {code: $code})
             SET 
                 n.capabilities = $capabilities,
                 n.data_scope = $data_scope,
@@ -266,8 +266,8 @@ class AgentRegistry:
         )
         if parent_agent_id:
             tx.run("""
-                MATCH (child:MarketingTreeDemo1 {code: $child_code})
-                MATCH (parent:MarketingTreeDemo1 {code: $parent_code})
+                MATCH (child:MarketingTreeDemo2 {code: $child_code})
+                MATCH (parent:MarketingTreeDemo2 {code: $parent_code})
                 MERGE (child)-[:CHILD_OF]->(parent)
                 """,
                 child_code=agent_id,

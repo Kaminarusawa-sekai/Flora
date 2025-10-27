@@ -1,10 +1,13 @@
 # actor.py
 import thespian.actors as actors
-from vanna_qwen_chroma import QwenVanna
-from utils import should_learn
-from mysql_pool import mysql_pool
+from agent.io.vanna_qwen_chroma import QwenVanna
+from agent.io.utils import should_learn
+from agent.io.mysql_pool import mysql_pool
 import pandas as pd
-from agent.message import DataQueryRequest, DataQueryResponse, MemoryResponse
+from agent.message import DataQueryRequest, DataQueryResponse, MemoryResponse,InitDataQueryActor
+from agent.agent_registry import AgentRegistry
+from agent.memory.memory_interface import LoadMemoryForAgent
+from agent.memory.memory_actor import MemoryActor
 
 from pymysql.cursors import Cursor  # 普通元组游标
 
@@ -34,10 +37,12 @@ class DataActor(actors.Actor):
         self.agent_id = None
         self.data_scope = None
         self._initialized = False
+        self._memory = None
 
+        self.business_id = None
         self.database = None
         self.table_name = None
-        print("[DataActor] Initialized")
+        logger.info("[DataActor] Created (not yet initialized)")
 
     def receiveMessage(self, msg, sender):
         if isinstance(msg, DataQueryRequest):
@@ -45,79 +50,83 @@ class DataActor(actors.Actor):
         elif isinstance(msg, MemoryResponse):
             self._memory = msg.value if msg.value else {}
             self._process_queued_requests()
-
-        # 在 DataQueryActor.receiveMessage 中增加：
         elif isinstance(msg, InitDataQueryActor):
-            self._agent_id = msg.agent_id
-            self._memory_actor = self.createActor(MemoryActor)
-            self.send(self._memory_actor, LoadMemoryForAgent(self._agent_id))
+            # ✅ 触发完整初始化
+            try:
+                self._do_full_initialization(msg.agent_id)
+                # 初始化成功后再加载 memory
+                self._memory_actor = self.createActor(MemoryActor)
+                self.send(self._memory_actor, LoadMemoryForAgent(msg.agent_id))
+                # 可选：通知 sender 初始化成功
+                # self.send(sender, {"status": "initialized", "agent_id": msg.agent_id})
+            except Exception as e:
+                logger.exception(f"Failed to initialize DataActor for agent_id={msg.agent_id}")
+                self.send(sender, {"error": f"Initialization failed: {str(e)}"})
         else:
-            # 可能是初始化消息（见下一步）
-            pass
-    def _handle_init(self, msg, sender):
-        agent_id = msg["agent_id"]
-        registry = AgentRegistry.get_instance()  # 单例
+            logger.warning(f"DataActor received unknown message: {type(msg)}")
 
+    def _do_full_initialization(self, agent_id: str):
+        """执行完整的业务初始化：加载元数据、设置上下文、初始化 Vanna"""
+        registry = AgentRegistry.get_instance()
         meta = registry.get_agent_meta(agent_id)
         if not meta:
-            logger.error(f"DataActor init failed: agent_id={agent_id} not found in registry")
-            self.send(sender, {"error": "Agent metadata not found"})
-            return
+            raise ValueError(f"Agent {agent_id} not found in registry")
 
-        # 验证这是一个 data actor
         if "data_query" not in meta.get("capabilities", []):
             logger.warning(f"Agent {agent_id} is not a data actor (missing 'data_query' capability)")
 
         self.agent_id = agent_id
-        self.data_scope = meta.get("data_scope", {})
+        self.data_scope = meta.get("datascope", {})
 
-        # 从 data_scope 中提取业务上下文
-        self.business_id = self.data_scope.get("business_id")
-        self.database = self.data_scope.get("database")
-        self.table_name = self.data_scope.get("table_name")
+        self.business_id = agent_id
+        self.data_source =  meta.get("database")
+        self.database = self.data_source.split(".")[0]
+        self.table_name = self.data_source.split(".")[1]
 
         if not all([self.business_id, self.database, self.table_name]):
-            logger.error(f"Missing required fields in data_scope: {self.data_scope}")
-            self.send(sender, {"error": "Incomplete data_scope"})
-            return
+            raise ValueError(f"Incomplete data_scope: {self.data_scope}")
 
         # 初始化 Vanna
-        try:
-            ddl = get_mysql_ddl(self.database, self.table_name)
-            if f"`{self.database}`.`{self.table_name}`" not in ddl:
-                ddl = ddl.replace(f"`{self.table_name}`", f"`{self.database}`.`{self.table_name}`")
-            self.vn = QwenVanna(business_id=self.business_id)
-            self.vn.train(ddl=ddl)
-            self._initialized = True
-            logger.info(f"[DataActor] Initialized for agent_id={agent_id}, biz={self.business_id}")
-            self.send(sender, {"status": "initialized", "agent_id": agent_id})
-        except Exception as e:
-            logger.exception("Failed to initialize DataActor")
-            self.send(sender, {"error": str(e)})  
-    def _handle_query_request(self, req: DataQueryRequest, sender):
-        try:
-            # 确保组件已初始化（如 vn、数据库连接池等）
-            self._ensure_initialized()
+        ddl = get_mysql_ddl(self.database, self.table_name)
+        if f"`{self.database}`.`{self.table_name}`" not in ddl:
+            ddl = ddl.replace(f"`{self.table_name}`", f"`{self.database}`.`{self.table_name}`")
+        
+        self.vn = QwenVanna(business_id=self.business_id)
+        self.vn.train(ddl=ddl)
+        self._initialized = True
+        logger.info(f"[DataActor] Fully initialized for agent_id={agent_id}, biz={self.business_id}")
 
+    def _handle_query_request(self, req: DataQueryRequest, sender):
+        if not self._initialized:
+            error_msg = "DataActor not initialized. Send InitDataQueryActor first."
+            logger.error(error_msg)
+            self.send(sender, DataQueryResponse(
+                request_id=req.request_id,
+                error=error_msg
+            ))
+            return
+
+        try:
             # 使用记忆增强原始查询（如果 memory 存在）
-            if self._memory is not None:
-                enhanced_question = self._build_query_with_memory(req.query, self._memory)
-            else:
-                enhanced_question = req.query
+            enhanced_question = (
+                self._build_query_with_memory(req.query, self._memory)
+                if self._memory is not None
+                else req.query
+            )
 
             # 生成 SQL
             sql = self.vn.generate_sql(enhanced_question)
 
             # 安全审核
             if not self._is_safe_sql(sql):
-                print("[SQL] SQL is not safe")
+                logger.warning("[SQL] Unsafe SQL generated")
                 raise ValueError("Generated SQL is not safe")
 
             # 执行 SQL
             conn = mysql_pool.get_connection(self.database)
             try:
                 df = pd.read_sql(sql, conn)
-                print(f"[SQL] {sql} | Rows: {len(df)}")
+                logger.info(f"[SQL] Executed: {sql} | Rows: {len(df)}")
             finally:
                 conn.close()
 
@@ -136,28 +145,24 @@ class DataActor(actors.Actor):
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
-            print("🔥 CRITICAL ERROR:", error_detail)
+            logger.exception("🔥 CRITICAL ERROR in DataActor query handling")
             self.send(sender, DataQueryResponse(
                 request_id=req.request_id,
                 error=str(e),
                 metadata={"detail": error_detail}
             ))
-    def _ensure_initialized(self, msg):
-        if self.vn is None:
-            self.business_id = msg["business_id"]
-            self.database = msg["database"]
-            self.table_name = msg["table_name"]
 
-            ddl = get_mysql_ddl(self.database, self.table_name)
-            self.vn = QwenVanna(business_id=self.business_id)
-            if f"`{self.database}`.`{self.table_name}`" not in ddl:
-                ddl = ddl.replace(f"`{self.table_name}`", f"`{self.database}`.`{self.table_name}`")
-            self.vn.train(ddl=ddl)  # 这会存入 Chroma
+    def _build_query_with_memory(self, query: str, memory: dict) -> str:
+        # TODO: 根据 memory 增强 query，例如拼接上下文
+        # 示例：return f"Context: {memory.get('last_query', '')}. Current: {query}"
+        return query
 
     def _is_safe_sql(self, sql: str) -> bool:
-        from utils import is_safe_sql
         return is_safe_sql(sql)
 
     def log_successful_query(self, question: str, sql: str):
-        # 可写入审核日志表，供人工复核
-        print(f"[LEARN] biz={self.business_id} | Q: {question} | SQL: {sql}")
+        logger.info(f"[LEARN] biz={self.business_id} | Q: {question} | SQL: {sql}")
+
+    def _process_queued_requests(self):
+        # TODO: 如果有排队的查询请求，可以在这里处理
+        pass

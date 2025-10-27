@@ -11,6 +11,7 @@ from langchain_community.llms.tongyi import Tongyi   # ✅ 修正：使用 Tongy
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
+
 # import faiss
 import numpy as np
 
@@ -18,6 +19,8 @@ import numpy as np
 import asyncio
 from collections import Counter, defaultdict
 import traceback
+
+from llm.qwen import QwenLLM
 
 # 假设你封装的图嵌入工具（需自行实现或替换）
 # from graphbrain import node2vec_embedding  # 示例占位符
@@ -56,14 +59,16 @@ class IntelligentChangeEngine:
         # self.step_chains = self._build_step_chains()  # ✅ 替换为 LCEL 链
 
     def _parse_json_output(self, text: str) -> Dict:
-        """鲁棒性 JSON 解析"""
+        """鲁棒性 JSON 解析（支持 JSON5）"""
         import re
+        import json5  # 确保已安装：pip install json5
+
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if not match:
             return self._get_fallback_output()
 
         try:
-            parsed = json.loads(match.group())
+            parsed = json5.loads(match.group())
             # 确保结构完整
             parsed.setdefault("intent_propagation", {})
             parsed.setdefault("dag_structure", {
@@ -72,7 +77,8 @@ class IntelligentChangeEngine:
             })
             parsed.setdefault("resolution_notes", "No resolution notes provided.")
             return parsed
-        except json.JSONDecodeError:
+        except (json5.JSONDecodeError, ValueError, TypeError):
+            # json5 可能抛出 JSONDecodeError，但也可能因类型问题抛出 ValueError/TypeError
             return self._get_fallback_output()
         
     async def _generate_with_cot_self_consistency(
@@ -151,6 +157,7 @@ class IntelligentChangeEngine:
                     continue
                 print(f"🔍 样本 {i+1} 原始输出: {output}")
                 parsed = self._parse_json_output(output)
+                # parsed = QwenLLM.extract_json(output)
                 print(f"🔍 样本 {i+1} 解析结果: {parsed}")
                 is_valid, error_msg = self._validate_strategy(parsed)
                 if is_valid:
@@ -228,6 +235,8 @@ class IntelligentChangeEngine:
             return candidates[0]
 
         # 对 execution_order 进行投票（最核心字段）
+        print(f"🔍 尝试对 execution_order 进行投票")
+        print(f"候选方案: {candidates}")
         all_orders = [tuple(cand["dag_structure"]["execution_order"]) for cand in candidates if "dag_structure" in cand]
         if all_orders:
             order_counter = Counter(all_orders)

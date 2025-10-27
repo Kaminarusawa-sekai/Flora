@@ -1,70 +1,111 @@
-# dify_workflow_actor.py
 import requests
-from thespian.actors import Actor, requireCapability
+from thespian.actors import Actor
+from agent.message import DifySchemaRequest, DifySchemaResponse, DifyExecuteRequest, DifyExecuteResponse,SubtaskErrorMessage
+from config import CONNECTOR_RECORD_DB_URL
+from connector.dify_connector import get_dify_registry, DifyRunRegistry
 
-@requireCapability('DifyActor')
+
 class DifyWorkflowActor(Actor):
     def __init__(self):
         super().__init__()
+        # 不再需要预先初始化 api_key/base_url
         self.dify_api_key = None
         self.base_url = None
 
     def receiveMessage(self, message, sender):
-        if not isinstance(message, dict):
-            self.send(sender, {'error': 'Message must be a dictionary'})
-            return
+        try:
+            if isinstance(message, DifySchemaRequest):
+                # 直接从请求中提取配置
+                self.dify_api_key = message.api_key
+                self.base_url = message.base_url.rstrip('/')
 
-        # 初始化
-        if 'api_key' in message and 'base_url' in message:
-            self.dify_api_key = message['api_key']
-            self.base_url = message['base_url'].rstrip('/')
-            self.send(sender, {'status': 'initialized'})
-            return
-
-        if not (self.dify_api_key and self.base_url):
-            self.send(sender, {'error': 'Actor not initialized. Send api_key and base_url first.'})
-            return
-
-        # 获取 input schema（即 Workflow 中定义的变量）
-        if message.get('action') == 'get_input_schema':
-            try:
                 schema = self._get_input_schema()
-                self.send(sender, {'input_schema': schema})
-            except Exception as e:
-                self.send(sender, {'error': f'Failed to fetch input schema: {str(e)}'})
-            return
+                self.send(sender, DifySchemaResponse(
+                    task_id=message.task_id,
+                    input_schema=schema,
+                    echo_payload=message.echo_payload
+                ))
 
-        # 执行 Workflow：必须提供 inputs
-        if 'inputs' in message:
-            try:
-                response = self._run_workflow(
-                    inputs=message['inputs'],
-                    user=message.get('user', 'thespian_user')
-                )
-                self.send(sender, {'response': response})
-            except Exception as e:
-                self.send(sender, {'error': f'Workflow run error: {str(e)}'})
-            return
+            elif isinstance(message, DifyExecuteRequest):
+                # 同理，假设 DifyExecuteRequest 也包含 api_key 和 base_url
+                # 如果还没有，请同样改造它（见下方说明）
+                self.dify_api_key = message.api_key
+                self.base_url = message.base_url.rstrip('/')
 
-        self.send(sender, {
-            'error': 'For Workflow, you must send {"inputs": {...}}. '
-                     'Use action="get_input_schema" to see required inputs.'
-        })
+                result = self._run_workflow(message.inputs, message.user)
+
+                connector_record = get_dify_registry(CONNECTOR_RECORD_DB_URL)
+                if not connector_record.register_run(result, message.task_id, sender):
+                    self.send(sender, SubtaskErrorMessage(message.task_id, "DB register failed"))
+                    return
+                self.send(sender, DifyExecuteResponse(
+                    task_id=message.task_id,
+                    outputs=result["outputs"],
+                    workflow_run_id=result["workflow_run_id"],
+                    status=result["status"],
+                    original_sender=message.original_sender
+                ))
+
+                
+
+            else:
+                # 可选：拒绝未知消息
+                self.send(sender, {'error': f'Unsupported message type: {type(message)}'})
+
+        except Exception as e:
+            import traceback
+            print(f"[DifyWorkflowActor ERROR] {e}")
+            print(traceback.format_exc())
+
+            # 根据消息类型返回对应错误响应
+            if isinstance(message, DifySchemaRequest):
+                self.send(sender, DifySchemaResponse(
+                    task_id=message.task_id,
+                    input_schema=[],
+                    echo_payload=message.echo_payload,
+                    error=str(e)
+                ))
+            elif isinstance(message, DifyExecuteRequest):
+                self.send(sender, DifyExecuteResponse(
+                    task_id=message.task_id,
+                    outputs={},
+                    workflow_run_id="",
+                    status="failed",
+                    original_sender=message.original_sender,
+                    error=str(e)
+                ))
+            else:
+                self.send(sender, {'error': str(e)})
 
     def _get_input_schema(self):
-        """获取 Workflow 定义的输入变量"""
         headers = {
             "Authorization": f"Bearer {self.dify_api_key}",
             "Content-Type": "application/json"
         }
-        url = f"{self.base_url}/application"
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        app_info = resp.json()
-        return app_info.get('variables', [])
+        url = f"{self.base_url}/parameters"
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            params_info = resp.json()
+            print(f"[DifyWorkflowActor] Parameters schema: {params_info}")
+
+            schema = []
+            user_input_form = params_info.get("user_input_form", [])
+            for item in user_input_form:
+                for control_type, config in item.items():
+                    if isinstance(config, dict) and "variable" in config:
+                        schema.append({
+                            "variable": config["variable"],
+                            "label": config.get("label", config["variable"]),  # fallback to var name
+                            "required": config.get("required", False)
+                        })
+            return schema
+
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch Dify parameters schema: {e}")
+            return []
 
     def _run_workflow(self, inputs: dict, user: str = "thespian_user"):
-        """调用 Dify Workflow 执行接口"""
         headers = {
             "Authorization": f"Bearer {self.dify_api_key}",
             "Content-Type": "application/json"
@@ -74,23 +115,11 @@ class DifyWorkflowActor(Actor):
             "response_mode": "blocking",
             "user": user
         }
-
         url = f"{self.base_url}/workflows/run"
         resp = requests.post(url, json=payload, headers=headers, timeout=60)
         resp.raise_for_status()
         data = resp.json()
 
-        # Workflow 响应结构示例：
-        # {
-        #   "task_id": "...",
-        #   "workflow_run_id": "...",
-        #   "data": {
-        #     "id": "...",
-        #     "workflow_id": "...",
-        #     "status": "succeeded",
-        #     "outputs": { ... }  <-- 我们关心的结果
-        #   }
-        # }
         outputs = data.get('data', {}).get('outputs', {})
         return {
             "outputs": outputs,

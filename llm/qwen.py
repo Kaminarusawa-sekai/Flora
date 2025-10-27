@@ -82,7 +82,7 @@ class QwenLLM():
                     return text
 
                 # 尝试提取 JSON
-                json_str = self._extract_json(text)  # 假设你已有此方法
+                json_str = self.extract_json(text)  # 假设你已有此方法
                 if not json_str:
                     print(f"[QwenCaller] 未找到 JSON: {text[:200]}...")
                     continue
@@ -130,7 +130,7 @@ class QwenLLM():
                     return text
 
                 # 尝试提取 JSON
-                json_str = self._extract_json(text)
+                json_str = self.extract_json(text)
                 if not json_str:
                     print(f"[QwenCaller] 未找到 JSON: {text[:200]}...")
                     continue
@@ -226,7 +226,7 @@ class QwenLLM():
     #     return None
 
     @staticmethod
-    def _extract_json(text: str) -> Optional[str]:
+    def extract_json(text: str) -> Optional[str]:
         """
         从文本中提取第一个最外层的合法 JSON 对象或数组。
         使用 json5 支持宽松语法（单引号、注释、尾逗号、无引号键等）。
