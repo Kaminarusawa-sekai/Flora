@@ -7,7 +7,7 @@ import requests
 
 from .memory.memory_actor import MemoryActor
 # from .memory.memory_interface import LoadMemoryForAgent, MemoryResponse
-from .utils.data_scope import matches_data_scope
+
 from .coordination.task_coordinator import TaskCoordinator
 from .coordination.result_aggregator import ResultAggregator
 from .coordination.swarm_coordinator import SwarmCoordinator
@@ -183,8 +183,6 @@ class AgentActor(Actor):
 
         # 能力与数据范围校验
 
-        # if not matches_data_scope(self._self_info.get("data_scope", {}), task_msg.context):
-        #     raise RuntimeError(f"Context violates data_scope for agent {self.agent_id}")
 
         ##TODO: 记忆补充待实现
         # if self._memory_actor and self._memory_key:
