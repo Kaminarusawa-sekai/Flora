@@ -2,17 +2,17 @@
 import logging
 from typing import Dict, Any, Optional, Callable
 from datetime import timezone
-from thespian.actors import Actor, WakeupMessage
+from thespian.actors import Actor, WakeupMessage,ActorAddress
 import requests
 
 from .memory.memory_actor import MemoryActor
-from .memory.memory_interface import LoadMemoryForAgent, MemoryResponse
+# from .memory.memory_interface import LoadMemoryForAgent, MemoryResponse
 from .utils.data_scope import matches_data_scope
 from .coordination.task_coordinator import TaskCoordinator
 from .coordination.result_aggregator import ResultAggregator
 from .coordination.swarm_coordinator import SwarmCoordinator
 from .optimization.optimizer import Optimizer
-from agent.io.data_query_actor import DataQueryActor, DataQueryRequest, DataQueryResponse
+from agent.io.data_query_actor import DataQueryActor
 from agent.message import (
     InitMessage,
     TaskMessage,
@@ -25,11 +25,17 @@ from agent.message import (
     DifyExecuteRequest,
     DifySchemaRequest,
     InitDataQueryActor,
+    DataQueryRequest, 
+    DataQueryResponse,
+    McpFallbackRequest,
+    MemoryResponse,
+    LoadMemoryForAgent
 
 )
 from agent.excute.dify_actor import DifyWorkflowActor
 from config import DIFY_URI
 from agent.io.data_actor import DataActor
+from agent.mcp.mcp_actor import McpLlmActor
 
 
 logger = logging.getLogger(__name__)
@@ -81,9 +87,9 @@ class AgentActor(Actor):
             elif isinstance(msg, TaskMessage):
                 self._handle_task(msg, sender)
             elif isinstance(msg, SubtaskResultMessage):
-                self._handle_subtask_completion(msg.task_id, msg.result)
+                self._handle_subtask_completion(msg.task_id, msg.result,sender)
             elif isinstance(msg, SubtaskErrorMessage):
-                self._handle_subtask_error(msg.task_id, msg.error)
+                self._handle_subtask_error(msg.task_id, msg.error,sender)
             elif isinstance(msg, MemoryResponse):
                 self._handle_memory_response(msg.key, msg.value, sender)
             elif isinstance(msg, DataQueryResponse):
@@ -130,14 +136,23 @@ class AgentActor(Actor):
                 raise ValueError(f"Agent {self.agent_id} not found in registry")
             self._is_leaf = self._self_info.get("is_leaf", self._is_leaf)
 
-        # 创建内部 Actor
+
+
+        # 创建记忆 Actor
         if hasattr(self, 'createActor'):
             self._memory_actor = self.createActor(MemoryActor)
             self._data_query_actor = self.createActor(DataQueryActor)
 
-            # 加载记忆
-            if self._memory_key:
-                self.send(self._memory_actor, LoadMemoryForAgent(self.agent_id))
+            # ✅ 正确加载记忆：区分 user_id 和 agent_id
+            # if self._user_id:
+            #     logger.debug(f"Loading memory for user={self._user_id}, agent={self.agent_id}")
+            #     self.send(
+            #         self._memory_actor,
+            #         LoadMemoryForAgent(user_id=self._user_id, agent_id=self.agent_id)
+            #     )
+            # else:
+            #     logger.warning(f"Agent {self.agent_id} has no user_id (memory_key); memory disabled.")
+
 
         # 初始化协调器与优化器
         self._task_coordinator = TaskCoordinator(self.registry)
@@ -342,6 +357,7 @@ class AgentActor(Actor):
                  self.send(data_actor, DataQueryRequest(
                         request_id=task_id,
                         query=f"变量名: '{k}', 值描述: '{resolve_prompts[k]}'",
+                        agent_id=v
                     ))
                     # # 1. 初始化（必须先做！）
                     # asys.tell(data_actor, InitDataQueryActor(agent_id="your_agent_123"))
@@ -415,30 +431,38 @@ class AgentActor(Actor):
 
     def _execute_intermediate(self, parent_task_id: str, context: Dict, original_sender):
         select_node_id=self._task_coordinator._select_best_actor(self.agent_id, context)
-        if not select_node_id:
-            raise RuntimeError(f"No suitable child agent found for task {parent_task_id}")
-        
-        plan = self._task_coordinator.plan_subtasks(select_node_id, context)
-        print(plan)
         pending = set()
-        for i, step in enumerate(plan):
-            child_cap = step["node_id"]
-            child_ctx = self._task_coordinator.resolve_context({**context, **step.get("intent_params", {})},self.agent_id)
-            # child_info = self.registry.find_direct_child_by_capability(self.agent_id, child_cap, child_ctx)
-            # if not child_info:
-            #     raise RuntimeError(f"No child agent for capability {child_cap} under {self.agent_id}")
+        if not select_node_id:
+            print(f"Warning: No suitable child agent found for task {parent_task_id}")
+            self.createActor(McpLlmActor)
+            self.send(self.createActor(McpLlmActor), McpFallbackRequest(
+                task_id=parent_task_id,
+                context=context
+            ))
+            pending.add("MCP_FALLBACK_TASK")
+        else:
+        
+            plan = self._task_coordinator.plan_subtasks(select_node_id, context)
+            print(plan)
+            
+            for i, step in enumerate(plan):
+                child_cap = step["node_id"]
+                child_ctx = self._task_coordinator.resolve_context({**context, **step.get("intent_params", {})},self.agent_id)
+                # child_info = self.registry.find_direct_child_by_capability(self.agent_id, child_cap, child_ctx)
+                # if not child_info:
+                #     raise RuntimeError(f"No child agent for capability {child_cap} under {self.agent_id}")
 
-            child_ref = self._get_or_create_actor_ref(step["node_id"])
-            child_task_id = f"{parent_task_id}.child_{i}"
+                child_ref = self._get_or_create_actor_ref(step["node_id"])
+                child_task_id = f"{parent_task_id}.child_{i}"
 
-            self._report_event("subtask_spawned", child_task_id, {
-                "parent_task_id": parent_task_id,
-                "capability": child_cap,
-                "agent_id": step["node_id"]
-            })
+                self._report_event("subtask_spawned", child_task_id, {
+                    "parent_task_id": parent_task_id,
+                    "capability": child_cap,
+                    "agent_id": step["node_id"]
+                })
 
-            self.send(child_ref, TaskMessage(child_task_id, child_ctx))
-            pending.add(child_task_id)
+                self.send(child_ref, TaskMessage(child_task_id, child_ctx))
+                pending.add(child_task_id)
 
         self._aggregation_state[parent_task_id] = {
             "pending": pending,
@@ -446,17 +470,22 @@ class AgentActor(Actor):
             "sender": original_sender
         }
 
-    def _handle_subtask_completion(self, task_id: str, result: Any):
+    def _handle_subtask_completion(self, task_id: str, result: Any,sender: ActorAddress):
         self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
         self._complete_or_aggregate(task_id, result)
+        # if  not res:
+        #     self.send(sender, SubtaskResultMessage(task_id, result))
 
-    def _handle_subtask_error(self, task_id: str, error: str):
+    def _handle_subtask_error(self, task_id: str, error: str,sender: ActorAddress):
         self._report_event("failed", task_id, {"error": str(error)[:200]})
         self._complete_or_aggregate(task_id, error, is_error=True)
+        # self.send(sender, SubtaskResultMessage(task_id, error))
 
     def _complete_or_aggregate(self, task_id: str, result_or_error: Any, is_error: bool = False):
         parent_id = self._get_parent_task_id(task_id)
         if parent_id not in self._aggregation_state:
+            state = self._aggregation_state[task_id]
+            self.send(state["sender"], SubtaskResultMessage(task_id, result_or_error))
             return  # 可能是顶层任务，无需聚合
 
         state = self._aggregation_state[parent_id]
@@ -464,7 +493,7 @@ class AgentActor(Actor):
             # 简化：任一子任务失败即失败
             del self._aggregation_state[parent_id]
             self.send(state["sender"], SubtaskErrorMessage(parent_id, f"Subtask {task_id} failed: {result_or_error}"))
-            return
+            return 
 
         state["results"][task_id] = result_or_error
         state["pending"].discard(task_id)
@@ -473,6 +502,8 @@ class AgentActor(Actor):
             final_result = ResultAggregator.aggregate_sequential(state["results"])
             self.send(state["sender"], SubtaskResultMessage(parent_id, final_result))
             del self._aggregation_state[parent_id]
+
+        return 
 
     def _get_parent_task_id(self, task_id: str) -> str:
         return task_id.rsplit(".", 1)[0] if "." in task_id else ""

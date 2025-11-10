@@ -65,7 +65,7 @@ class TaskCoordinator:
 
         # 4. 调用 Qwen（假设你有一个 _llm 属性，支持 .chat(messages) 接口）
         response = self.call_qwen([
-            {"role": "system", "content": "你是一个任务调度专家，负责根据子节点能力和当前任务上下文选择最合适的执行节点。"},
+            {"role": "system", "content": "你是一个任务调度专家，负责根据子节点能力和当前任务上下文选择最合适的执行节点，如果没有则返回None。"},
             {"role": "user", "content": prompt}
         ])
 
@@ -78,7 +78,7 @@ class TaskCoordinator:
                 return actor
 
         # 如果没匹配到，可选：返回第一个作为 fallback
-        return children_actors[0] if children_actors else None
+        return None
 
 
     def _build_selection_prompt(self, actors: List[Dict], context: Dict[str, Any]) -> str:

@@ -2,6 +2,7 @@
 from logic import HornClause
 from categories import TheoryCategory
 import time
+from typing import List, Optional, Callable
 
 class RuleWithPriority:
     def __init__(self, clause: HornClause):

@@ -5,16 +5,16 @@ from agent.io.utils import should_learn
 from agent.io.mysql_pool import mysql_pool
 import pandas as pd
 
-class DataQueryRequest:
-    def __init__(self, query: str, request_id: str = ""):
-        self.query = query
-        self.request_id = request_id  # 用于追踪
+# class DataQueryRequest:
+#     def __init__(self, query: str, request_id: str = ""):
+#         self.query = query
+#         self.request_id = request_id  # 用于追踪
 
-class DataQueryResponse:
-    def __init__(self, query: str, result, request_id: str = ""):
-        self.query = query
-        self.result = result
-        self.request_id = request_id
+# class DataQueryResponse:
+#     def __init__(self, query: str, result, request_id: str = ""):
+#         self.query = query
+#         self.result = result
+#         self.request_id = request_id
 
 
 from pymysql.cursors import Cursor  # 普通元组游标

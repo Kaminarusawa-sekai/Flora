@@ -342,12 +342,12 @@ if __name__ == "__main__":
     )
     result = system.ask(handler, init_msg, timeout=1000)
     print("Final Result:", result)
-    tsk_msg=TaskMessage(task_id="task_001", context={"你好": "hello"})
+    tsk_msg=TaskMessage(task_id="task_001", context={"帮我做下裂变活动": "裂变活动"})
     result = system.ask(handler, tsk_msg, timeout=1000)
     if isinstance(result,SubtaskErrorMessage ) or result is None:  # actor 退出
         from llm.qwen import QwenLLM
         llm=QwenLLM()
-        resp=llm.generate("用户问了"+'{"你好": "hello"}'+"，但是智能体崩溃了，你首先要尽可能根据用户的意图，生成一个最合适的回答用户，其再再判断一下是否需要就执行失败向用户道歉，如果需要你就向用户真诚的道歉。")
+        resp=llm.generate("用户问了"+'{"帮我做下裂变活动": "裂变活动"}'+"，但是智能体崩溃了，你首先要尽可能根据用户的意图，生成一个最合适的回答用户，其再再判断一下是否需要就执行失败向用户道歉，如果需要你就向用户真诚的道歉。")
     print("Final Result:", result)
 
     system.shutdown()

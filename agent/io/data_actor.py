@@ -8,6 +8,7 @@ from agent.message import DataQueryRequest, DataQueryResponse, MemoryResponse,In
 from agent.agent_registry import AgentRegistry
 from agent.memory.memory_interface import LoadMemoryForAgent
 from agent.memory.memory_actor import MemoryActor
+from agent.io.utils import is_safe_sql
 
 from pymysql.cursors import Cursor  # 普通元组游标
 
@@ -139,7 +140,7 @@ class DataActor(actors.Actor):
             self.send(sender, DataQueryResponse(
                 request_id=req.request_id,
                 result=df.to_dict(orient="records"),
-                metadata={"sql": sql}
+                # metadata={"sql": sql}
             ))
 
         except Exception as e:
@@ -148,8 +149,9 @@ class DataActor(actors.Actor):
             logger.exception("🔥 CRITICAL ERROR in DataActor query handling")
             self.send(sender, DataQueryResponse(
                 request_id=req.request_id,
-                error=str(e),
-                metadata={"detail": error_detail}
+                result=None,
+                error=str(error_detail),
+                # metadata={"detail": error_detail}
             ))
 
     def _build_query_with_memory(self, query: str, memory: dict) -> str:

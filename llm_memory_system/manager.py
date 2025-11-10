@@ -1,7 +1,7 @@
 # memory/manager.py
-from short_term import ShortTermMemory
-from resourcememory import ResourceMemory
-from vault import KnowledgeVault
+from llm_memory_system.short_term import ShortTermMemory
+from llm_memory_system.resourcememory import ResourceMemory
+from llm_memory_system.vault import KnowledgeVault
 from mem0 import Memory
 from config import MEM0_CONFIG
 from typing import Dict, Any

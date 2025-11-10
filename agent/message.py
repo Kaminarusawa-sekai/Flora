@@ -24,6 +24,12 @@ class MessageType(Enum):
     DifySchemaResponse = "dify_schema_response"
     DifyExecuteRequest = "dify_execute_request"
     DifyExecuteResponse = "dify_execute_response"
+    MCP_FALLBACK_REQUEST = "mcp_fallback_request"
+    # 新增：内存相关消息
+    LOAD_MEMORY_FOR_AGENT = "load_memory_for_agent"
+    INGEST_MEMORY = "ingest_memory"
+    BUILD_CONTEXT_FOR_LLM = "build_context_for_llm"
+    MEMORY_ERROR = "memory_error"
 
 
 # --- 基类：所有消息的父类 ---
@@ -115,6 +121,7 @@ class DataQueryResponse(BaseMessage):
     message_type: ClassVar[MessageType] = MessageType.DATA_QUERY_RESPONSE
     request_id: str
     result: Any
+    error: Optional[str] = None
 
 
 @dataclass
@@ -226,4 +233,42 @@ class DifyExecuteResponse(BaseMessage):
     status: str
     original_sender: Any
     error: Optional[str] = None
+
+
+
+@dataclass
+class McpFallbackRequest(BaseMessage):
+    """MCP Actor 接收的任务请求消息"""
+    message_type: ClassVar[MessageType]  = MessageType.MCP_FALLBACK_REQUEST
+    task_id: str
+    context: Dict[str, Any]
     
+
+
+@dataclass
+class LoadMemoryForAgent(BaseMessage):
+    message_type: ClassVar[MessageType]  = MessageType.LOAD_MEMORY_FOR_AGENT
+    user_id: str          # 👈 用户 ID（用于 UnifiedMemoryManager）
+    agent_id: str         # 👈 Agent ID（用于日志、追踪、多 agent 场景）
+
+@dataclass
+class IngestMemory(BaseMessage):
+    message_type: ClassVar[MessageType]  = MessageType.INGEST_MEMORY
+    content: str
+    role: str = "user"
+
+@dataclass
+class BuildContextForLLM(BaseMessage):
+    message_type: ClassVar[MessageType]  = MessageType.BUILD_CONTEXT_FOR_LLM
+    query: Optional[str] = None
+
+@dataclass
+class MemoryResponse(BaseMessage):
+    message_type: ClassVar[MessageType]  = MessageType.MEMORY_RESPONSE
+    request_type: str    # e.g., "context", "ingest"
+    payload: Any
+
+@dataclass
+class MemoryError(BaseMessage):
+    message_type: ClassVar[MessageType]  = MessageType.MEMORY_ERROR
+    message: str
