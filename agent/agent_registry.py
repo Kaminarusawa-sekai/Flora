@@ -63,28 +63,6 @@ class AgentRegistry:
             pass
 
     # ==============================
-    # 【Actor 引用管理】
-    # ==============================
-    # def register_actor_ref(self, agent_id: str, actor_ref: ActorAddress):
-    #     with self._lock:
-    #         if agent_id in self._actor_refs:
-    #             logger.warning(f"Actor ref for {agent_id} is being overwritten.")
-    #         self._actor_refs[agent_id] = actor_ref
-    #         logger.debug(f"Registered actor ref for {agent_id}: {actor_ref}")
-
-    # def get_actor_ref(self, agent_id: str) -> Optional[ActorAddress]:
-    #     with self._lock:
-    #         return self._actor_refs.get(agent_id)
-
-    # def get_actor_refs_by_ids(self, agent_ids: List[str]) -> Dict[str, Optional[ActorAddress]]:
-    #     with self._lock:
-    #         return {aid: self._actor_refs.get(aid) for aid in agent_ids}
-
-    # def has_actor_ref(self, agent_id: str) -> bool:
-    #     with self._lock:
-    #         return agent_id in self._actor_refs
-
-    # ==============================
     # 【Actor 引用管理 - 支持角色区分】
     # ==============================
     def register_actor_ref(self, agent_id: str,  actor_ref: ActorAddress,role: str="business",):

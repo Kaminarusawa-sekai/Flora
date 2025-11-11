@@ -2,3 +2,28 @@
 config.py
 market_tree.csv
 test5.py
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data & DB
+*.db
+*.sqlite3
+chroma/
+*.csv
+*.xlsx
+output.csv
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Env
+.env
+.venv/
+env/

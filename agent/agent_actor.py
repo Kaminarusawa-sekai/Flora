@@ -226,63 +226,9 @@ class AgentActor(Actor):
                 task_id, task_info["capability"], task_info["context"], memory, task_info["sender"]
             )
 
+
+
     
-
-    # def _execute_leaf_task(self, task_id: str,  context: Dict, memory: Dict, sender, capability: str="dify_workflow"):
-    #     try:
-    #         if capability == "dify_workflow":
-    #             # === Dify Workflow 执行逻辑 ===
-    #             api_key = self._self_info.get("dify")
-    #             base_url = DIFY_URI
-    #             inputs = context
-    #             # inputs = context.get("inputs", {})
-    #             user = context.get("user", "thespian_user")
-
-    #             if not api_key:
-    #                 raise ValueError("Missing 'dify_api_key' in context")
-    #             if not isinstance(inputs, dict):
-    #                 raise ValueError("'inputs' must be a dictionary")
-
-    #             # 调用 Dify Workflow API
-    #             headers = {
-    #                 "Authorization": f"Bearer {api_key}",
-    #                 "Content-Type": "application/json"
-    #             }
-    #             payload = {
-    #                 "inputs": inputs,
-    #                 "response_mode": "blocking",
-    #                 "user": user
-    #             }
-
-    #             url = f"{base_url.rstrip('/')}/workflows/run"
-    #             resp = requests.post(url, json=payload, headers=headers, timeout=60)
-    #             resp.raise_for_status()
-    #             data = resp.json()
-
-    #             # 提取输出结果
-    #             outputs = data.get("data", {}).get("outputs", {})
-    #             workflow_run_id = data.get("workflow_run_id")
-    #             status = data.get("data", {}).get("status")
-
-    #             result = {
-    #                 "outputs": outputs,
-    #                 "workflow_run_id": workflow_run_id,
-    #                 "status": status,
-    #                 "raw_response": data  # 可选：保留原始响应用于调试
-    #             }
-
-    #         else:
-    #             # 其他 capability 交给原有逻辑处理
-    #             result = self._execute_capability_fn(capability, context, memory)
-
-    #         # 发送成功结果
-    #         self.send(sender, SubtaskResultMessage(task_id, result))
-    #         self._report_event("finished", task_id, {"result_preview": str(result)[:200]})
-
-    #     except Exception as e:
-    #         error_msg = str(e)
-    #         self.send(sender, SubtaskErrorMessage(task_id, error_msg))
-    #         self._report_event("failed", task_id, {"error": error_msg[:200]})
     def _execute_leaf_task(self, task_id: str, context: Dict, memory: Dict, sender, capability: str = "dify_workflow"):
         if capability != "dify_workflow":
             result = self._execute_capability_fn(capability, context, memory)
@@ -520,22 +466,7 @@ class AgentActor(Actor):
                 capabilities=agent_info["capability"],           # Leaf: ["book_flight"]; Branch: ["route_flight"]
                 memory_key = agent_id,       # 默认 = agent_id
                 registry=self.registry,
-                # agent_id=agent_id,
-                # is_leaf=agent_info.get("is_leaf", False),
-                # capabilities=agent_info.get("capabilities", []),
-                # dispatch_rules=agent_info.get("dispatch_rules", {}),
-                # memory_key=agent_info.get("memory_key"),
-                # registry=self.registry,
-                # orchestrator=self.orchestrator,
-                # data_resolver=self.data_resolver,
-                # neo4j_recorder=self._neo4j_recorder,
-                # fetch_data_fn=self._fetch_data_fn,
-                # acquire_resources_fn=self._acquire_resources_fn,
-                # execute_capability_fn=self._execute_capability_fn,
-                # execute_self_capability_fn=self._execute_self_capability_fn,
-                # evaluator=self._evaluator,
-                # improver=self._improver,
-                # optimization_interval=self._optimization_interval
+            
             )
             self.send(ref, init_msg)
             self._actor_ref_cache[agent_id] = ref
