@@ -92,18 +92,11 @@ class AgentActor(Actor):
                 self._handle_subtask_error(msg.task_id, msg.error,sender)
             elif isinstance(msg, MemoryResponse):
                 self._handle_memory_response(msg.key, msg.value, sender)
-            elif isinstance(msg, DataQueryResponse):
-                self._handle_data_response(msg)
             elif isinstance(msg, OptimizationWakeup):
                 self._run_optimization_cycle()
                 if not self._is_leaf and self._optimization_interval > 0:
                     self.wakeupAfter(self._optimization_interval, payload=OptimizationWakeup())
-            
-             # === 新增：Dify 相关消息 ===
-            elif isinstance(msg, DifySchemaResponse):
-                self._handle_dify_schema_response(msg,sender)
-            elif isinstance(msg, DifyExecuteResponse):
-                self._handle_dify_execute_response(msg)
+    
                 
             else:
                 logger.warning(f"Unknown message type: {type(msg)}")
@@ -114,6 +107,8 @@ class AgentActor(Actor):
         # 基础信息
         self.agent_id = msg.agent_id
         self._capabilities = msg.capabilities
+        self._is_leaf = msg.is_leaf  # 新增：直接从InitMessage获取is_leaf
+        self._dispatch_rules = msg.dispatch_rules  # 新增：处理dispatch_rules
 
         self._memory_key = msg.memory_key
         self._optimization_interval = msg.optimization_interval
@@ -126,6 +121,7 @@ class AgentActor(Actor):
 
         self._fetch_data_fn = msg.fetch_data_fn
         self._acquire_resources_fn = msg.acquire_resources_fn
+        self._execute_capability_fn = msg.execute_capability_fn  # 新增：处理execute_capability_fn
         self._evaluator = msg.evaluator
         self._improver = msg.improver
 
@@ -134,7 +130,6 @@ class AgentActor(Actor):
             self._self_info = self.registry.get_agent_meta(self.agent_id)
             if not self._self_info:
                 raise ValueError(f"Agent {self.agent_id} not found in registry")
-            self._is_leaf = self._self_info.get("is_leaf", self._is_leaf)
 
 
 
@@ -259,119 +254,7 @@ class AgentActor(Actor):
         ))
 
 
-    def _handle_dify_schema_response(self, msg: DifySchemaResponse, sender):
-        if msg.error:
-            payload = msg.echo_payload
-            self.send(payload["original_sender"], SubtaskErrorMessage(
-                payload["task_id"], f"Schema fetch failed: {msg.error}"
-            ))
-            self._report_event("failed", payload["task_id"], {"error": msg.error[:200]})
-            return
 
-        payload = msg.echo_payload
-        context = payload["context"]
-        original_sender = payload["original_sender"]
-        task_id = payload["task_id"]
-
-        raw_inputs = context.get("inputs", {})
-        user = context.get("user", "thespian_user")
-
-        # 从 input_schema 提取变量名和描述（用于 resolve_context）
-        resolve_prompts = {}
-        if msg.input_schema:
-            for var_spec in msg.input_schema:
-                if isinstance(var_spec, dict) and "variable" in var_spec:
-                    var_name = var_spec["variable"]
-                    # 如果已有值，跳过解析
-                    if var_name in raw_inputs:
-                        continue
-                    # 使用 label 作为描述，fallback 到 variable 名
-                    prompt = var_spec.get("label") or var_name
-                    resolve_prompts[var_name] = prompt
-
-        # 调用 resolve_context 获取缺失变量的实际值
-        if resolve_prompts:
-            resolved = self._task_coordinator.resolve_context(resolve_prompts, agent_id=self.agent_id)
-            for k, v in resolved.items():
-                 if v == None:
-                     continue
-                 data_actor = self.createActor(DataActor)
-                 
-                 self.send(data_actor, InitDataQueryActor(agent_id=v))
-                 self.send(data_actor, DataQueryRequest(
-                        request_id=task_id,
-                        query=f"变量名: '{k}', 值描述: '{resolve_prompts[k]}'",
-                        agent_id=v
-                    ))
-                    # # 1. 初始化（必须先做！）
-                    # asys.tell(data_actor, InitDataQueryActor(agent_id="your_agent_123"))
-
-                    # # 2. 发送查询（可在初始化后任意时间发送）
-                    # asys.tell(data_actor, DataQueryRequest(
-                    #     request_id="req_001",
-                    #     query="What were last month's sales?",
-                    #     agent_id="your_agent_123"
-                    # ))
-            # 只保留非 None / 非空字符串的结果（可选）
-            raw_inputs.update({
-                k: v for k, v in resolved.items()
-                if v is not None and v != ""
-            })
-
-        # 发送执行请求
-        dify_actor = sender
-        if not dify_actor:
-            self.send(original_sender, SubtaskErrorMessage(task_id, "Dify actor gone"))
-            self._report_event("failed", task_id, {"error": "Dify actor missing"})
-            return
-
-        self.send(dify_actor, DifyExecuteRequest(
-            task_id=task_id,
-            inputs=raw_inputs,
-            user=user,
-            original_sender=original_sender,
-            api_key=self._self_info.get("dify"),
-            base_url=DIFY_URI
-        ))
-
-    def _handle_dify_execute_response(self, msg: DifyExecuteResponse):
-        if msg.error:
-            self.send(msg.original_sender, SubtaskErrorMessage(msg.task_id, f"Execution failed: {msg.error}"))
-            self._report_event("failed", msg.task_id, {"error": msg.error[:200]})
-        else:
-            result = {
-                "outputs": msg.outputs,
-                "workflow_run_id": msg.workflow_run_id,
-                "status": msg.status
-            }
-            self.send(msg.original_sender, SubtaskResultMessage(msg.task_id, result))
-            self._report_event("finished", msg.task_id, {"result_preview": str(result)[:200]})
-    
-
-    def _fetch_data_for_task(self, task_id: str, query: str, capability: str, context: Dict, memory: Dict, sender):
-         # 不再需要 memory！DataQueryActor 自己会加载
-        request_id = f"data_req_{task_id}"
-        self._pending_data_requests[request_id] = {
-            "task_id": task_id,
-            "sender": sender
-        }
-        self.send(self._data_query_actor, DataQueryRequest(request_id=request_id, query=query))
-
-    def _handle_data_response(self, response: DataQueryResponse):
-        req_id = response.request_id
-        if req_id not in self._pending_data_requests:
-            logger.warning(f"Orphaned data response for {req_id}")
-            return
-
-        info = self._pending_data_requests.pop(req_id)
-        if response.error:
-            self.send(info["sender"], SubtaskErrorMessage(info["task_id"], response.error))
-            return
-
-        enhanced_context = {**info["context"], "db_result": response.result}
-        self._execute_leaf_task(
-            info["task_id"], info["capability"], enhanced_context, info["memory"], info["sender"]
-        )
 
     def _execute_intermediate(self, parent_task_id: str, context: Dict, original_sender):
         select_node_id=self._task_coordinator._select_best_actor(self.agent_id, context)
@@ -472,13 +355,6 @@ class AgentActor(Actor):
             self._actor_ref_cache[agent_id] = ref
         return self._actor_ref_cache[agent_id]
 
-    def _run_optimization_cycle(self):
-        try:
-            # TODO: 实际应从历史任务或性能指标生成优化任务
-            logger.debug(f"Running optimization cycle for {self.agent_id}")
-            # self._optimizer.run_optimization_task(...)
-        except Exception as e:
-            logger.exception(f"Optimization cycle failed for {self.agent_id}: {e}")
 
     def _report_event(self, event_type: str, task_id: str, details: Dict):
         if self.orchestrator:

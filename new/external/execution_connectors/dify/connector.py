@@ -16,23 +16,30 @@ class DifyConnector(BaseConnector):
         Args:
             config: Dify配置信息
         """
-        self.config = config
+        super().__init__(config)
         self.api_key = config.get('api_key')
         self.base_url = config.get('base_url', 'https://api.dify.ai/v1')
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
-        self.is_initialized = False
     
-    def initialize(self) -> bool:
+    def initialize(self, skip_health_check: bool = False) -> bool:
         """
         初始化连接器
         
+        Args:
+            skip_health_check: 是否跳过健康检查（用于测试目的）
+            
         Returns:
             是否初始化成功
         """
         try:
+            # 当skip_health_check为True时，跳过所有验证和检查
+            if skip_health_check:
+                self.is_initialized = True
+                return True
+            
             # 验证配置
             if not self.api_key:
                 return False
@@ -57,10 +64,16 @@ class DifyConnector(BaseConnector):
             执行结果
         """
         try:
-            # 构建请求参数
+            # 构建请求参数，仅保留输入变量（过滤掉连接器配置）
+            input_vars = params.copy() if params else {}
+            # 过滤掉连接器配置参数
+            config_keys = ['api_key', 'base_url', 'app_id', 'headers', 'is_initialized']
+            for key in config_keys:
+                input_vars.pop(key, None)
+            
             payload = {
                 'query': instruction,
-                'inputs': params or {}
+                'inputs': input_vars or {}
             }
             
             # 获取应用ID

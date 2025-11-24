@@ -92,6 +92,15 @@ class Singleton:
         """
         return cls._instances.copy()
 
+    @classmethod
+    def clear_singletons(cls) -> None:
+        """
+        清除所有Singleton实例
+        通常用于测试目的
+        """
+        with cls._lock:
+            cls._instances.clear()
+
 
 class LazySingleton:
     """
@@ -153,6 +162,28 @@ class LazySingleton:
         """
         return cls._initialized
 
+
+def singleton(cls):
+    """
+    单例模式装饰器
+    
+    使用方法:
+    ```python
+    @singleton
+    class MyClass:
+        pass
+    ```
+    """
+    instances = {}
+    lock = threading.Lock()
+    
+    def get_instance(*args, **kwargs):
+        with lock:
+            if cls not in instances:
+                instances[cls] = cls(*args, **kwargs)
+        return instances[cls]
+    
+    return get_instance
 
 class ThreadLocalSingleton:
     """

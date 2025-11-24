@@ -208,8 +208,8 @@ class ErrorContext:
     
     def __init__(
         self,
-        catch: ErrorType = Exception,
         context_name: str = "unknown",
+        catch: ErrorType = Exception,
         log_error: bool = True,
         log_level: int = logging.ERROR,
         re_raise: bool = False,

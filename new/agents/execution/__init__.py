@@ -3,14 +3,11 @@
 提供任务执行、策略管理和服务组件
 """
 
-from .task_execution_service import (
-    TaskExecutionService
-)
+
 
 from .execution_strategy import (
     ExecutionStrategy,
     SequentialExecutionStrategy,
-    ParallelExecutionStrategy,
     ConditionalExecutionStrategy,
     MapReduceExecutionStrategy,
     ExecutionStrategyManager,
@@ -18,13 +15,11 @@ from .execution_strategy import (
 )
 
 __all__ = [
-    # 任务执行服务
-    'TaskExecutionService',
     
     # 执行策略
     'ExecutionStrategy',
     'SequentialExecutionStrategy',
-    'ParallelExecutionStrategy',
+
     'ConditionalExecutionStrategy',
     'MapReduceExecutionStrategy',
     'ExecutionStrategyManager',

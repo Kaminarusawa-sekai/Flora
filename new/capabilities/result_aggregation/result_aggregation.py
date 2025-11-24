@@ -1,5 +1,6 @@
-# new/agents/execution/result_aggregator.py
+"""结果聚合能力组件"""
 from typing import Dict, Any, List
+
 
 class ResultAggregator:
     @staticmethod
@@ -21,7 +22,7 @@ class ResultAggregator:
         
         Args:
             results: 要聚合的结果字典
-            strategy: 聚合策略，支持 'sequential' 和 'vote'
+            strategy: 聚合策略，支持 'sequential', 'vote' 和 'map_reduce'
             
         Returns:
             聚合后的结果
@@ -30,8 +31,44 @@ class ResultAggregator:
             return ResultAggregator.aggregate_sequential(results)
         elif strategy == 'vote':
             return ResultAggregator.aggregate_vote(results)
+        elif strategy == 'map_reduce':
+            return ResultAggregator._default_reduce(results)
         else:
             raise ValueError(f"Unsupported aggregation strategy: {strategy}")
+    
+    @staticmethod
+    def _default_reduce(results: List[Dict]) -> Dict[str, Any]:
+        """
+        默认的归约函数
+        简单聚合结果
+        
+        Args:
+            results: 任务执行结果列表
+            
+        Returns:
+            聚合后的结果
+        """
+        # 过滤出成功的结果
+        success_results = [r for r in results if r.get('success', False)]
+        failed_results = [r for r in results if not r.get('success', False)]
+        
+        # 聚合成功结果中的数据
+        aggregated_data = []
+        for result in success_results:
+            if 'result' in result:
+                aggregated_data.append(result['result'])
+            elif 'output' in result:
+                aggregated_data.append(result['output'])
+            elif 'data' in result:
+                aggregated_data.append(result['data'])
+        
+        return {
+            'success': len(success_results) > 0,
+            'success_rate': len(success_results) / len(results) if results else 0,
+            'success_count': len(success_results),
+            'failure_count': len(failed_results),
+            'aggregated_data': aggregated_data
+        }
 
     @staticmethod
     def aggregate_subtask_results(task: Dict, subtasks: List[Dict]) -> Any:
@@ -108,3 +145,27 @@ class ResultAggregator:
                 "subtasks_count": len(subtasks),
                 "results": results
             }
+
+
+
+# 注册能力
+from ..registry import capability_registry
+
+class ResultAggregationCapability:
+    """结果聚合能力"""
+    def __init__(self):
+        self.aggregator = ResultAggregator()
+
+    def get_capability_type(self) -> str:
+        return "result_aggregation"
+
+    def aggregate(self, results: Dict, strategy: str = 'sequential') -> Any:
+        return self.aggregator.aggregate(results, strategy)
+
+    def aggregate_subtask_results(self, task: Dict, subtasks: List[Dict]) -> Any:
+        return self.aggregator.aggregate_subtask_results(task, subtasks)
+
+
+# 注册结果聚合能力
+capability_registry.register("result_aggregation", ResultAggregationCapability)
+

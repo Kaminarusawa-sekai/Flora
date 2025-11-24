@@ -365,3 +365,270 @@ class SubtaskSpawnedMessage(TaskMessage):
         message.parameters = data.get('parameters', {})
         message.priority = data.get('priority', 0)
         return message
+
+
+class TaskSpec:
+    """
+    任务规范
+    定义任务的类型和参数
+    """
+    
+    def __init__(self, task_id: str, type: str, parameters: Optional[Dict[str, Any]] = None, repeat_count: int = 1, aggregation_strategy: str = "list", **kwargs):
+        """
+        初始化任务规范
+        
+        Args:
+            task_id: 任务ID
+            type: 任务类型
+            parameters: 任务参数
+            repeat_count: 任务重复执行次数
+            aggregation_strategy: 结果聚合策略
+            **kwargs: 兼容旧版本的参数（content, task_metadata等）
+        """
+        self.task_id = task_id
+        self.type = type
+        
+        # 处理新版本参数
+        if parameters is not None:
+            self.parameters = parameters
+        else:
+            # 处理旧版本参数（content, task_metadata等）
+            self.parameters = kwargs.get("parameters", {})
+            # 兼容旧版本的content字段
+            if "content" in kwargs:
+                self.parameters["content"] = kwargs["content"]
+            # 兼容旧版本的task_metadata字段
+            if "task_metadata" in kwargs:
+                self.parameters["task_metadata"] = kwargs["task_metadata"]
+        
+        self.repeat_count = repeat_count
+        self.aggregation_strategy = aggregation_strategy
+
+
+class RepeatTaskRequest(BaseMessage):
+    """
+    重复任务请求消息
+    请求重复执行一个任务并聚合结果
+    """
+    
+    def __init__(self, source: str, destination: str, spec: TaskSpec, reply_to: str, timestamp: Optional[datetime] = None):
+        """
+        初始化重复任务请求消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            spec: 任务规范
+            reply_to: 结果返回地址
+            timestamp: 时间戳
+        """
+        super().__init__('repeat_task_request', source, destination, timestamp)
+        self.spec = spec
+        self.reply_to = reply_to
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({"spec": self.spec.__dict__, "reply_to": self.reply_to})
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'RepeatTaskRequest':
+        """
+        从字典创建重复任务请求消息
+        """
+        message = super().from_dict(data)
+        message.spec = TaskSpec(**data.get('spec', {}))
+        message.reply_to = data.get('reply_to', '')
+        return message
+
+class TaskGroupRequest(BaseMessage):
+    """
+    任务组请求消息
+    请求执行一组任务并聚合结果
+    """
+    
+    def __init__(self, source: str, destination: str, group_id: str, tasks: List[TaskSpec], reply_to: str, timestamp: Optional[datetime] = None):
+        """
+        初始化任务组请求消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            group_id: 任务组ID
+            tasks: 任务列表
+            reply_to: 结果返回地址
+            timestamp: 时间戳
+        """
+        super().__init__('task_group_request', source, destination, timestamp)
+        self.group_id = group_id
+        self.tasks = tasks
+        self.reply_to = reply_to
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "group_id": self.group_id,
+            "tasks": [task.__dict__ for task in self.tasks],  # 转换为字典列表
+            "reply_to": self.reply_to
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TaskGroupRequest':
+        """
+        从字典创建任务组请求消息
+        """
+        message = super().from_dict(data)
+        message.group_id = data.get('group_id', '')
+        # 从字典恢复TaskSpec对象
+        tasks = [TaskSpec(**task_dict) for task_dict in data.get('tasks', [])]
+        message.tasks = tasks
+        message.reply_to = data.get('reply_to', '')
+        return message
+
+
+class ExecuteTaskMessage(BaseMessage):
+    """
+    执行任务消息
+    用于向执行器发送任务执行请求
+    """
+    
+    def __init__(self, source: str, destination: str, spec: TaskSpec, reply_to: str, timestamp: Optional[datetime] = None):
+        """
+        初始化执行任务消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            spec: 任务规范
+            reply_to: 结果返回地址
+            timestamp: 时间戳
+        """
+        super().__init__('execute_task', source, destination, timestamp)
+        self.spec = spec
+        self.reply_to = reply_to
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "spec": self.spec.__dict__,  # 转换为字典
+            "reply_to": self.reply_to
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ExecuteTaskMessage':
+        """
+        从字典创建执行任务消息
+        """
+        message = super().from_dict(data)
+        message.spec = TaskSpec(**data.get('spec', {}))
+        message.reply_to = data.get('reply_to', '')
+        return message
+
+
+class TaskCompleted(TaskMessage):
+    """
+    任务完成消息
+    """
+    
+    def __init__(self, source: str, destination: str, task_id: str, result: Any, timestamp: Optional[datetime] = None):
+        super().__init__('task_completed', source, destination, task_id, timestamp)
+        self.result = result
+    
+    def to_dict(self) -> Dict[str, Any]:
+        base_dict = super().to_dict()
+        base_dict.update({'result': self.result})
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TaskCompleted':
+        message = super().from_dict(data)
+        message.result = data.get('result')
+        return message
+
+
+class TaskFailed(TaskMessage):
+    """
+    任务失败消息
+    """
+    
+    def __init__(self, source: str, destination: str, task_id: str, error: str, details: Optional[Dict[str, Any]] = None, original_spec: Optional[TaskSpec] = None, timestamp: Optional[datetime] = None):
+        super().__init__('task_failed', source, destination, task_id, timestamp)
+        self.error = error
+        self.details = details or {}
+        self.original_spec = original_spec
+    
+    def to_dict(self) -> Dict[str, Any]:
+        base_dict = super().to_dict()
+        base_dict.update({
+            'error': self.error,
+            'details': self.details,
+            'original_spec': self.original_spec.__dict__ if self.original_spec else None
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TaskFailed':
+        message = super().from_dict(data)
+        message.error = data.get('error', '')
+        message.details = data.get('details', {})
+        original_spec = data.get('original_spec')
+        message.original_spec = TaskSpec(**original_spec) if original_spec else None
+        return message
+
+
+class TaskGroupResult(BaseMessage):
+    """
+    任务组结果消息
+    包含所有任务的结果和失败信息
+    """
+    
+    def __init__(self, source: str, destination: str, group_id: str, results: Dict[str, Any], failures: Dict[str, str], timestamp: Optional[datetime] = None):
+        """
+        初始化任务组结果消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            group_id: 任务组ID
+            results: 成功任务的结果
+            failures: 失败任务的错误信息
+            timestamp: 时间戳
+        """
+        super().__init__('task_group_result', source, destination, timestamp)
+        self.group_id = group_id
+        self.results = results
+        self.failures = failures
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "group_id": self.group_id,
+            "results": self.results,
+            "failures": self.failures
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TaskGroupResult':
+        """
+        从字典创建任务组结果消息
+        """
+        message = super().from_dict(data)
+        message.group_id = data.get('group_id', '')
+        message.results = data.get('results', {})
+        message.failures = data.get('failures', {})
+        return message

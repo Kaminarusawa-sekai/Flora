@@ -7,24 +7,9 @@ from .execution_manager import (
     ParallelExecutionManager
 )
 
-from .task_manager import (
-    ParallelTaskManager,
-    DynamicTaskScheduler,
-    TaskInfo,
-    create_parallel_task_manager,
-    create_dynamic_task_scheduler
-)
-
 __all__ = [
     # 并行执行管理器
-    'ParallelExecutionManager',
-    
-    # 并行任务管理器
-    'ParallelTaskManager',
-    'DynamicTaskScheduler',
-    'TaskInfo',
-    'create_parallel_task_manager',
-    'create_dynamic_task_scheduler'
+    'ParallelExecutionManager'
 ]
 
 __version__ = '1.0.0'

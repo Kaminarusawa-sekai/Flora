@@ -10,7 +10,7 @@ from thespian.actors import ActorAddress
 # 导入新的模块
 from new.capabilities.routing.task_planner import TaskPlanner
 from new.capabilities.routing.context_resolver import ContextResolver
-from new.agents.execution.result_aggregator import ResultAggregator
+from new.capabilities.result_aggregation.result_aggregation import ResultAggregator
 # 导入任务状态相关定义
 from new.capabilities.routing.task_status import TaskStatus, TaskDependency, TaskResult
 
@@ -32,6 +32,21 @@ class TaskCoordinator:
         # 初始化任务规划器和上下文解析器
         self._task_planner = TaskPlanner()
         self._context_resolver = ContextResolver()
+    
+    def is_leaf_task(self, agent_id: str, context: Dict) -> bool:
+        """
+        判断是否为叶子任务
+        
+        Args:
+            agent_id: Agent ID
+            context: 任务上下文
+            
+        Returns:
+            是否为叶子任务
+        """
+        # 简单实现：如果任务类型包含"leaf"则认为是叶子任务
+        task_type = context.get("task_type", "")
+        return "leaf" in task_type.lower()
     
     def create_task(self, task_id: str, task_type: str, context: Dict,
                    parent_task_id: Optional[str] = None) -> Dict:
@@ -398,6 +413,40 @@ class TaskCoordinator:
             解析后的上下文
         """
         return self._context_resolver.resolve_context(context, agent_id)
+    
+    def needs_parallel_execution(self, context: Dict[str, Any]) -> bool:
+        """
+        判断任务是否需要并行执行
+        
+        Args:
+            context: 任务上下文
+            
+        Returns:
+            是否需要并行执行的布尔值
+        """
+        # 实现逻辑可以根据上下文内容判断是否需要并行
+        # 这里提供一个示例实现，可以根据实际需求扩展
+        
+        # 1. 检查是否有明确的并行执行标记
+        if context.get('parallel', False):
+            return True
+        
+        # 2. 检查任务类型是否适合并行
+        task_type = context.get('task_type')
+        parallel_task_types = ['batch_processing', 'data_analysis', 'multiple_api_calls']
+        if task_type in parallel_task_types:
+            return True
+        
+        # 3. 检查是否有多个独立的子任务需求
+        if isinstance(context.get('subtasks'), list) and len(context['subtasks']) > 1:
+            return True
+        
+        # 4. 检查任务复杂度或数据量
+        if context.get('data_size', 0) > 1000:
+            return True
+        
+        # 默认不并行
+        return False
     
     def get_task_statistics(self) -> Dict:
         """

@@ -4,6 +4,7 @@ from thespian.actors import Actor
 import logging
 from ..external.execution_connectors.dify.connector import DifyConnector
 from ..capabilities.registry import capability_registry
+from ..common.messages import DifySchemaRequest, DifySchemaResponse, DifyExecuteRequest, DifyExecuteResponse
 
 
 class DifyCapabilityActor(Actor):
@@ -39,7 +40,7 @@ class DifyCapabilityActor(Actor):
         except Exception as e:
             self.logger.error(f"Dify连接器初始化失败: {e}")
     
-    def receiveMessage(self, msg: Dict[str, Any], sender: str) -> None:
+    def receiveMessage(self, msg: Any, sender: str) -> None:
         """
         接收消息并处理
         
@@ -48,31 +49,172 @@ class DifyCapabilityActor(Actor):
             sender: 发送者
         """
         try:
-            msg_type = msg.get("type", "")
-            
-            if msg_type == "initialize":
-                self._handle_initialize(msg, sender)
-            elif msg_type == "chat":
-                self._handle_chat(msg, sender)
-            elif msg_type == "completion":
-                self._handle_completion(msg, sender)
-            elif msg_type == "workflow":
-                self._handle_workflow(msg, sender)
-            elif msg_type == "tool":
-                self._handle_tool(msg, sender)
-            elif msg_type == "embedding":
-                self._handle_embedding(msg, sender)
-            elif msg_type == "status":
-                self._handle_status(msg, sender)
-            elif msg_type == "config":
-                self._handle_config(msg, sender)
+            # 处理结构化Dify消息
+            if isinstance(msg, DifySchemaRequest):
+                self._handle_dify_schema_request(msg, sender)
+            elif isinstance(msg, DifyExecuteRequest):
+                self._handle_dify_execute_request(msg, sender)
+            elif isinstance(msg, Dict):
+                # 兼容原有字典格式消息
+                msg_type = msg.get("type", "")
+                
+                if msg_type == "initialize":
+                    self._handle_initialize(msg, sender)
+                elif msg_type == "chat":
+                    self._handle_chat(msg, sender)
+                elif msg_type == "completion":
+                    self._handle_completion(msg, sender)
+                elif msg_type == "workflow":
+                    self._handle_workflow(msg, sender)
+                elif msg_type == "tool":
+                    self._handle_tool(msg, sender)
+                elif msg_type == "embedding":
+                    self._handle_embedding(msg, sender)
+                elif msg_type == "status":
+                    self._handle_status(msg, sender)
+                elif msg_type == "config":
+                    self._handle_config(msg, sender)
+                else:
+                    self.logger.warning(f"未知消息类型: {msg_type}")
+                    self.send(sender, {"status": "error", "message": f"未知消息类型: {msg_type}"})
             else:
-                self.logger.warning(f"未知消息类型: {msg_type}")
-                self.send(sender, {"status": "error", "message": f"未知消息类型: {msg_type}"})
+                self.logger.warning(f"未知消息类型: {type(msg)}")
+                self.send(sender, {"status": "error", "message": f"未知消息类型: {type(msg)}"})
         
         except Exception as e:
             self.logger.error(f"处理Dify请求失败: {e}")
-            self.send(sender, {"status": "error", "message": str(e)})
+            if isinstance(msg, (DifySchemaRequest, DifyExecuteRequest)):
+                # 返回结构化错误响应
+                error_msg = str(e)
+                if isinstance(msg, DifySchemaRequest):
+                    response = DifySchemaResponse(
+                        task_id=msg.task_id,
+                        echo_payload=msg.echo_payload,
+                        input_schema=[],
+                        error=error_msg
+                    )
+                    self.send(sender, response)
+                else:  # DifyExecuteRequest
+                    response = DifyExecuteResponse(
+                        task_id=msg.task_id,
+                        outputs={},
+                        workflow_run_id="",
+                        status="error",
+                        error=error_msg,
+                        original_sender=msg.original_sender
+                    )
+                    self.send(sender, response)
+            else:
+                self.send(sender, {"status": "error", "message": str(e)})
+    
+    def _handle_dify_schema_request(self, msg: DifySchemaRequest, sender: str) -> None:
+        """
+        处理Dify Schema请求
+        Args:
+            msg: DifySchemaRequest消息
+            sender: 发送者地址
+        """
+        try:
+            # 创建Dify连接器
+            config = {
+                "api_key": msg.api_key,
+                "base_url": msg.base_url
+            }
+            dify_connector = DifyConnector(config)
+            
+            # 调用Dify API获取输入schema
+            # 注意：需要根据Dify API的实际端点进行调整
+            import requests
+            url = f"{dify_connector.base_url}/workflows/{msg.task_id}/schema"
+            response = requests.get(url, headers=dify_connector.headers)
+            
+            if response.status_code == 200:
+                schema = response.json()
+                response_msg = DifySchemaResponse(
+                    task_id=msg.task_id,
+                    echo_payload=msg.echo_payload,
+                    input_schema=schema.get("input_schema", []),
+                    error=None
+                )
+            else:
+                error_msg = f"Failed to get schema: {response.status_code}, {response.text}"
+                response_msg = DifySchemaResponse(
+                    task_id=msg.task_id,
+                    echo_payload=msg.echo_payload,
+                    input_schema=[],
+                    error=error_msg
+                )
+            
+            self.send(sender, response_msg)
+        
+        except Exception as e:
+            self.logger.error(f"处理Dify Schema请求失败: {e}")
+            response_msg = DifySchemaResponse(
+                task_id=msg.task_id,
+                echo_payload=msg.echo_payload,
+                input_schema=[],
+                error=str(e)
+            )
+            self.send(sender, response_msg)
+    
+    def _handle_dify_execute_request(self, msg: DifyExecuteRequest, sender: str) -> None:
+        """
+        处理Dify执行请求
+        Args:
+            msg: DifyExecuteRequest消息
+            sender: 发送者地址
+        """
+        try:
+            # 创建Dify连接器
+            config = {
+                "api_key": msg.api_key,
+                "base_url": msg.base_url
+            }
+            dify_connector = DifyConnector(config)
+            
+            # 调用Dify API执行工作流
+            import requests
+            url = f"{dify_connector.base_url}/workflows/{msg.task_id}/run"
+            payload = {
+                "inputs": msg.inputs,
+                "user": msg.user
+            }
+            response = requests.post(url, json=payload, headers=dify_connector.headers)
+            
+            if response.status_code == 200:
+                result = response.json()
+                response_msg = DifyExecuteResponse(
+                    task_id=msg.task_id,
+                    outputs=result.get("outputs", {}),
+                    workflow_run_id=result.get("workflow_run_id", ""),
+                    status=result.get("status", "success"),
+                    error=None,
+                    original_sender=msg.original_sender
+                )
+            else:
+                error_msg = f"Failed to run workflow: {response.status_code}, {response.text}"
+                response_msg = DifyExecuteResponse(
+                    task_id=msg.task_id,
+                    outputs={},
+                    workflow_run_id="",
+                    status="error",
+                    error=error_msg,
+                    original_sender=msg.original_sender
+                )
+            
+            self.send(sender, response_msg)
+        
+        except Exception as e:
+            self.logger.error(f"处理Dify执行请求失败: {e}")
+            response_msg = DifyExecuteResponse(
+                task_id=msg.task_id,
+                outputs={},
+                workflow_run_id="",
+                status="error",
+                error=str(e),
+                original_sender=msg.original_sender
+            )
+            self.send(sender, response_msg)
     
     def _handle_initialize(self, msg: Dict[str, Any], sender: str):
         """

@@ -103,84 +103,7 @@ class SequentialExecutionStrategy(ExecutionStrategy):
             "total_tasks": len(tasks)
         }
 
-class ParallelExecutionStrategy(ExecutionStrategy):
-    """并行执行策略"""
-    
-    def __init__(self, max_concurrency: Optional[int] = None):
-        """
-        初始化并行执行策略
-        
-        Args:
-            max_concurrency: 最大并发数，如果为None则无限制
-        """
-        super().__init__("parallel")
-        self.max_concurrency = max_concurrency
-    
-    async def execute(self, tasks: List[Dict], 
-                     executor_func: Callable[[Dict], Awaitable[Dict]]) -> Dict:
-        """
-        并行执行任务
-        
-        Args:
-            tasks: 任务列表
-            executor_func: 任务执行函数
-            
-        Returns:
-            执行结果
-        """
-        logger.info(f"Starting parallel execution of {len(tasks)} tasks")
-        
-        if self.max_concurrency is not None:
-            logger.info(f"With max concurrency: {self.max_concurrency}")
-            # 使用信号量控制并发
-            semaphore = asyncio.Semaphore(self.max_concurrency)
-            
-            async def execute_with_semaphore(task):
-                async with semaphore:
-                    try:
-                        return await executor_func(task)
-                    except Exception as e:
-                        logger.error(f"Error in parallel task execution: {str(e)}")
-                        return {
-                            "success": False,
-                            "error": str(e)
-                        }
-            
-            # 并行执行所有任务
-            coroutines = [execute_with_semaphore(task) for task in tasks]
-            results = await asyncio.gather(*coroutines, return_exceptions=True)
-            
-        else:
-            # 无限制并发
-            coroutines = [executor_func(task) for task in tasks]
-            results = await asyncio.gather(*coroutines, return_exceptions=True)
-        
-        # 处理异常结果
-        processed_results = []
-        success = True
-        
-        for result in results:
-            if isinstance(result, Exception):
-                processed_results.append({
-                    "success": False,
-                    "error": str(result)
-                })
-                success = False
-            else:
-                processed_results.append(result)
-                if not result.get("success", False):
-                    success = False
-        
-        logger.info(f"Parallel execution completed: {success}")
-        
-        return {
-            "success": success,
-            "results": processed_results,
-            "strategy": "parallel",
-            "tasks_executed": len(processed_results),
-            "total_tasks": len(tasks),
-            "max_concurrency": self.max_concurrency
-        }
+
 
 class ConditionalExecutionStrategy(ExecutionStrategy):
     """条件执行策略"""
@@ -284,25 +207,175 @@ class MapReduceExecutionStrategy(ExecutionStrategy):
         """
         logger.info(f"Starting Map-Reduce execution with {len(tasks)} tasks")
         
-        # Map阶段 - 并行执行所有任务
-        parallel_strategy = ParallelExecutionStrategy()
-        map_results = await parallel_strategy.execute(tasks, executor_func)
+        # 对于Thespian场景，我们需要确保生成唯一的trace_id来跟踪整个执行流程
+        from new.capability_actors.result_aggregator_actor import ResultAggregatorActor
+        from thespian.actors import ActorSystem
         
-        # Reduce阶段 - 聚合结果
-        logger.info("Starting reduce phase of Map-Reduce execution")
-        aggregated_result = self.reduce_func(map_results["results"])
+        # 创建Actor系统并初始化ResultAggregatorActor
+        actor_system = ActorSystem()
         
-        logger.info(f"Map-Reduce execution completed")
-        
-        return {
-            "success": map_results["success"],
-            "raw_results": map_results["results"],
-            "aggregated_result": aggregated_result,
-            "strategy": "map_reduce",
-            "map_success": map_results["success"],
-            "tasks_executed": map_results["tasks_executed"],
-            "total_tasks": len(tasks)
-        }
+        try:
+            # 生成唯一的trace_id用于跟踪
+            import uuid
+            trace_id = str(uuid.uuid4())
+            logger.info(f"Generated trace_id for Map-Reduce execution: {trace_id}")
+            
+            # 创建ResultAggregatorActor
+            aggregator = actor_system.createActor(ResultAggregatorActor)
+
+            # 生成所有任务ID并添加到任务中
+            tasks_with_ids = []
+            for i, task in enumerate(tasks):
+                task_id = task.get("task_id", f"task_{i}")
+                tasks_with_ids.append({**task, "task_id": task_id})
+            
+            # 创建任务ID到任务的映射
+            task_id_to_task = {task["task_id"]: task for task in tasks_with_ids}
+            task_ids = list(task_id_to_task.keys())
+            
+            # 初始化聚合器
+            actor_system.tell(aggregator, {
+                "type": "initialize",
+                "pending_tasks": task_ids,
+                "trace_id": trace_id,
+                "max_retries": 3,
+                "aggregation_strategy": "map_reduce",
+                "reduce_func": self.reduce_func
+            })
+            
+            # 直接使用asyncio.gather并行执行所有任务
+            coroutines = [executor_func(task) for task in tasks]
+            results = await asyncio.gather(*coroutines, return_exceptions=True)
+            
+            # 处理异常结果
+            processed_results = []
+            success = True
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    processed_results.append({
+                        "success": False,
+                        "error": str(result)
+                    })
+                    success = False
+                else:
+                    processed_results.append(result)
+                    if not result.get("success", False):
+                        success = False
+            
+            # 创建任务ID到原始任务的映射，用于处理重试
+            task_id_to_task = {}
+            for i, task in enumerate(tasks):
+                task_id = task.get("task_id", f"task_{i}")
+                task_id_to_task[task_id] = task
+            
+            # 将结果传递给聚合器进行处理
+            for i, result in enumerate(processed_results):
+                task_id = result.get("task_id", f"task_{i}")
+                if result.get("success", False):
+                    actor_system.tell(aggregator, {
+                        "type": "subtask_result",
+                        "task_id": task_id,
+                        "result": result,
+                        "trace_id": trace_id
+                    })
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    actor_system.tell(aggregator, {
+                        "type": "subtask_error",
+                        "task_id": task_id,
+                        "error": error_msg,
+                        "trace_id": trace_id
+                    })
+            
+            # 从聚合器获取最终结果，处理重试
+            final_result = None
+            while True:
+                final_result = actor_system.ask(aggregator, {
+                    "type": "get_final_result",
+                    "trace_id": trace_id
+                }, timeout=60)
+                
+                if final_result["type"] == "aggregation_complete":
+                    break
+                elif final_result["type"] == "retry_subtask":
+                    # 处理重试请求
+                    task_id = final_result["task_id"]
+                    if task_id not in task_id_to_task:
+                        logger.error(f"Task {task_id} not found in task map")
+                        break
+                    
+                    # 执行重试
+                    original_task = task_id_to_task[task_id]
+                    retry_result = await executor_func(original_task)
+                    
+                    # 将重试结果发送回聚合器
+                    if retry_result.get("success", False):
+                        actor_system.tell(aggregator, {
+                            "type": "subtask_result",
+                            "task_id": task_id,
+                            "result": retry_result,
+                            "trace_id": trace_id
+                        })
+                    else:
+                        error_msg = retry_result.get("error", "Unknown error")
+                        actor_system.tell(aggregator, {
+                            "type": "subtask_error",
+                            "task_id": task_id,
+                            "error": error_msg,
+                            "trace_id": trace_id
+                        })
+                elif final_result["type"] == "aggregation_in_progress":
+                    # 继续等待聚合完成
+                    continue
+                else:
+                    # 未知消息类型
+                    logger.error(f"Unexpected message type from aggregator: {final_result['type']}")
+                    break
+            
+            logger.info(f"Map-Reduce execution completed with trace_id: {trace_id}")
+            
+            # 转换结果格式以保持向后兼容
+            return {
+                "success": final_result.get("success", False),
+                "raw_results": map_results["results"],
+                "aggregated_result": final_result.get("aggregated_result", {}),
+                "strategy": "map_reduce",
+                "map_success": map_results["success"],
+                "tasks_executed": map_results["tasks_executed"],
+                "total_tasks": len(tasks),
+                "trace_id": trace_id,
+                "completed_tasks": final_result.get("completed_tasks", {}),
+                "failed_tasks": final_result.get("failed_tasks", {})
+            }
+        except Exception as e:
+            logger.error(f"Map-Reduce execution failed: {e}")
+            # 回退到原来的执行方式，确保向下兼容
+            logger.info("Falling back to original Map-Reduce execution")
+            
+            # Map阶段 - 并行执行所有任务
+            parallel_strategy = ParallelExecutionStrategy()
+            map_results = await parallel_strategy.execute(tasks, executor_func)
+            
+            # Reduce阶段 - 聚合结果
+            logger.info("Starting reduce phase of Map-Reduce execution (fallback)")
+            aggregated_result = self.reduce_func(map_results["results"])
+            
+            logger.info(f"Map-Reduce execution completed (fallback)")
+            
+            return {
+                "success": map_results["success"],
+                "raw_results": map_results["results"],
+                "aggregated_result": aggregated_result,
+                "strategy": "map_reduce",
+                "map_success": map_results["success"],
+                "tasks_executed": map_results["tasks_executed"],
+                "total_tasks": len(tasks),
+                "error": str(e)  # 记录降级原因
+            }
+        finally:
+            # 关闭Actor系统
+            actor_system.shutdown()
     
     def _default_reduce(self, results: List[Dict]) -> Dict:
         """
@@ -343,7 +416,6 @@ class ExecutionStrategyManager:
     def _register_default_strategies(self):
         """注册默认策略"""
         self.register_strategy(SequentialExecutionStrategy())
-        self.register_strategy(ParallelExecutionStrategy())
         self.register_strategy(ConditionalExecutionStrategy())
         self.register_strategy(MapReduceExecutionStrategy())
     

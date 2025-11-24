@@ -4,12 +4,15 @@ from .logger import get_logger, LoggerConfig, set_global_log_level, log_with_con
 from .singleton import Singleton, LazySingleton, ThreadLocalSingleton
 from .json_utils import safe_json_dumps, safe_json_loads
 from .time_utils import format_time, get_current_timestamp
-from .error_handling import retry_decorator, handle_exception, ErrorContext, safe_execute
+from .error_handling import retry_decorator, handle_exception, ErrorContext, safe_execute, ValidationError
 from .config_utils import load_config, save_config
 from .data_validation import validate_input, validate_schema
 
 # 新添加的导入
 from .cache import Cache, LRUCache, MemoryCache, TTLCache, CacheEntry, CacheStats, cache, invalidate_cache
+
+# 导出Singleton类的类方法为模块级别的函数
+clear_singletons = Singleton.clear_singletons
 from .resource_manager import ResourceManager, ResourcePool, global_resource_manager
 from .serializer import to_json, from_json, to_pickle, from_pickle, to_yaml, from_yaml, serialize, deserialize, register_serializer
 from .validator import (
@@ -43,6 +46,7 @@ __all__ = [
     "Singleton",
     "LazySingleton",
     "ThreadLocalSingleton",
+    "clear_singletons",
     # JSON处理
     "safe_json_dumps",
     "safe_json_loads",
@@ -54,6 +58,7 @@ __all__ = [
     "handle_exception",
     "ErrorContext",
     "safe_execute",
+    "ValidationError",
     # 配置工具
     "load_config",
     "save_config",

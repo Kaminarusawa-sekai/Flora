@@ -70,7 +70,9 @@ class BaseMessage:
 class InitMessage(BaseMessage):
     message_type: ClassVar[MessageType] = MessageType.INIT
     agent_id: str
-    capabilities: str
+    capabilities: List[str]
+    is_leaf: bool = True
+    dispatch_rules: Dict[str, Any] = None
     memory_key: Optional[str] = None
     optimization_interval: int = 3600
     registry: Any = None
@@ -79,6 +81,7 @@ class InitMessage(BaseMessage):
     neo4j_recorder: Any = None
     fetch_data_fn: Any = None
     acquire_resources_fn: Any = None
+    execute_capability_fn: Any = None
     evaluator: Any = None
     improver: Any = None
 

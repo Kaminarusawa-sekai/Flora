@@ -3,26 +3,44 @@
 负责任务的实际执行、调度和资源管理
 支持叶子节点任务和中间任务的执行
 """
-import asyncio
 import logging
 import json
-from typing import Any, Dict, List, Optional, Callable, Awaitable
+import queue
+import time
+from typing import Any, Dict, List, Optional, Callable
+from thespian.actors import Actor
+from new.capability_actors.execution_actor import ExecutionActor
+from new.capability_actors.result_aggregator_actor import ResultAggregatorActor
+from new.common.messages import SubtaskResultMessage, SubtaskErrorMessage
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TaskExecutionService:
+class TaskExecutionService(Actor):
     """任务执行服务"""
     
     def __init__(self):
         """初始化任务执行服务"""
         self._task_handlers: Dict[str, Callable] = {}
         self._capability_functions: Dict[str, Callable] = {}
-        self._execution_queue = asyncio.Queue()
+        self._execution_queue = queue.Queue()
         self._max_concurrent_tasks = 10
-        self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._running_tasks: Dict[str, Any] = {}  # 存储当前运行的任务
         self._dify_client = None  # 将在运行时注入
+        self._execution_actor = None  # ExecutionActor实例
+        self._current_aggregator = None  # 当前聚合器实例
+        self._group_sender = None  # 任务组发起者
+        self._initialize_components()
+
+    def _initialize_components(self):
+        """初始化组件"""
+        try:
+            # 创建ExecutionActor实例
+            self._execution_actor = self.createActor(ExecutionActor)
+            logger.info("TaskExecutionService组件初始化成功")
+        except Exception as e:
+            logger.error(f"TaskExecutionService组件初始化失败: {str(e)}")
     
     def register_task_handler(self, task_type: str, handler: Callable):
         """
@@ -46,7 +64,7 @@ class TaskExecutionService:
         self._capability_functions[capability_name] = func
         logger.info(f"Registered capability function: {capability_name}")
     
-    async def execute_task(self, task_id: str, task_type: str, context: Dict,
+    def execute_task(self, task_id: str, task_type: str, context: Dict,
                           capabilities: Optional[Dict] = None) -> Dict:
         """
         执行任务
@@ -65,17 +83,15 @@ class TaskExecutionService:
             
             # 根据任务类型选择处理器
             if task_type == "leaf_task":
-                result = await self._execute_leaf_task(task_id, context, capabilities)
+                result = self._execute_leaf_task(task_id, context, capabilities)
             elif task_type == "intermediate_task":
-                result = await self._execute_intermediate_task(task_id, context, capabilities)
+                result = self._execute_intermediate_task(task_id, context, capabilities)
             elif task_type == "workflow_task":
-                result = await self._execute_workflow_task(task_id, context, capabilities)
-            elif task_type == "data_query_task":
-                result = await self._execute_data_query_task(task_id, context)
+                result = self._execute_workflow_task(task_id, context, capabilities)
             else:
                 # 尝试使用注册的自定义处理器
                 if task_type in self._task_handlers:
-                    result = await self._execute_with_custom_handler(task_id, task_type, context)
+                    result = self._execute_with_custom_handler(task_id, task_type, context)
                 else:
                     raise ValueError(f"No handler found for task type: {task_type}")
             
@@ -94,7 +110,7 @@ class TaskExecutionService:
                 "task_id": task_id
             }
     
-    async def _execute_leaf_task(self, task_id: str, context: Dict,
+    def _execute_leaf_task(self, task_id: str, context: Dict,
                                 capabilities: Optional[Dict] = None) -> Dict:
         """
         执行叶子节点任务
@@ -114,7 +130,7 @@ class TaskExecutionService:
             if capability_name in self._capability_functions:
                 # 调用注册的能力函数
                 logger.info(f"Executing capability function: {capability_name} for task {task_id}")
-                return await self._capability_functions[capability_name](**(capabilities.get("params", {})))
+                return self._capability_functions[capability_name](**(capabilities.get("params", {})))
             else:
                 logger.warning(f"Capability function {capability_name} not found")
         
@@ -130,7 +146,7 @@ class TaskExecutionService:
             }
         }
     
-    async def _execute_intermediate_task(self, task_id: str, context: Dict,
+    def _execute_intermediate_task(self, task_id: str, context: Dict,
                                        capabilities: Optional[Dict] = None) -> Dict:
         """
         执行中间任务
@@ -190,7 +206,7 @@ class TaskExecutionService:
         logger.info(f"Intermediate task {task_id} generated {len(subtask_configs)} subtasks")
         return result
     
-    async def _execute_workflow_task(self, task_id: str, context: Dict,
+    def _execute_workflow_task(self, task_id: str, context: Dict,
                                    capabilities: Optional[Dict] = None) -> Dict:
         """
         执行工作流任务
@@ -221,7 +237,7 @@ class TaskExecutionService:
             
             # 这里是与Dify交互的逻辑，需要根据实际API进行调整
             # 示例代码：
-            response = await self._dify_client.execute_workflow(
+            response = self._dify_client.execute_workflow(
                 workflow_id=workflow_id,
                 inputs=workflow_inputs,
                 user="system"
@@ -265,43 +281,8 @@ class TaskExecutionService:
             logger.error(f"Error executing workflow task {task_id}: {str(e)}")
             raise
     
-    async def _execute_data_query_task(self, task_id: str, context: Dict) -> Dict:
-        """
-        执行数据查询任务
-        
-        Args:
-            task_id: 任务ID
-            context: 任务上下文，包含查询信息
-            
-        Returns:
-            查询结果
-        """
-        # 提取查询参数
-        query_type = context.get("query_type")
-        query_params = context.get("params", {})
-        
-        # 根据查询类型执行不同的查询逻辑
-        if query_type == "db_query":
-            result = await self._execute_db_query(query_params)
-        elif query_type == "api_call":
-            result = await self._execute_api_call(query_params)
-        elif query_type == "file_search":
-            result = await self._execute_file_search(query_params)
-        else:
-            raise ValueError(f"Unknown query type: {query_type}")
-        
-        return {
-            "task_id": task_id,
-            "status": "completed",
-            "result_type": "data_query_result",
-            "data": result,
-            "query_type": query_type,
-            "metadata": {
-                "execution_time": "now"
-            }
-        }
     
-    async def _execute_with_custom_handler(self, task_id: str, task_type: str,
+    def _execute_with_custom_handler(self, task_id: str, task_type: str,
                                          context: Dict) -> Dict:
         """
         使用自定义处理器执行任务
@@ -316,98 +297,12 @@ class TaskExecutionService:
         """
         handler = self._task_handlers[task_type]
         
-        # 检查处理器是否为协程函数
-        if asyncio.iscoroutinefunction(handler):
-            result = await handler(task_id, context)
-        else:
-            # 如果不是协程函数，在默认执行器中运行
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, handler, task_id, context)
+        # 直接调用处理器（所有处理器都应该是同步的）
+        result = handler(task_id, context)
         
         return result
     
-    async def _execute_db_query(self, params: Dict) -> Any:
-        """
-        执行数据库查询
-        
-        Args:
-            params: 查询参数
-            
-        Returns:
-            查询结果
-        """
-        # 这是示例实现，实际应该连接到数据库并执行查询
-        db_type = params.get("db_type", "generic")
-        query = params.get("query", "")
-        
-        logger.info(f"Executing DB query: {query} (type: {db_type})")
-        
-        # 模拟查询结果
-        return {
-            "query": query,
-            "results": [
-                {"id": 1, "name": "Example Item 1"},
-                {"id": 2, "name": "Example Item 2"}
-            ],
-            "count": 2,
-            "db_type": db_type
-        }
-    
-    async def _execute_api_call(self, params: Dict) -> Any:
-        """
-        执行API调用
-        
-        Args:
-            params: API调用参数
-            
-        Returns:
-            API响应
-        """
-        url = params.get("url", "")
-        method = params.get("method", "GET")
-        headers = params.get("headers", {})
-        body = params.get("body")
-        
-        logger.info(f"Executing API call: {method} {url}")
-        
-        # 模拟API调用
-        # 实际实现应该使用aiohttp或其他异步HTTP客户端
-        return {
-            "url": url,
-            "method": method,
-            "status": 200,
-            "data": {
-                "message": "Success",
-                "timestamp": "now"
-            },
-            "headers": headers
-        }
-    
-    async def _execute_file_search(self, params: Dict) -> Any:
-        """
-        执行文件搜索
-        
-        Args:
-            params: 搜索参数
-            
-        Returns:
-            搜索结果
-        """
-        query = params.get("query", "")
-        file_pattern = params.get("file_pattern", "*")
-        search_path = params.get("path", ".")
-        
-        logger.info(f"Executing file search: '{query}' in {search_path} (pattern: {file_pattern})")
-        
-        # 模拟文件搜索结果
-        return {
-            "query": query,
-            "files": [
-                {"path": f"{search_path}/file1.txt", "score": 0.95},
-                {"path": f"{search_path}/file2.txt", "score": 0.85}
-            ],
-            "total_matches": 2
-        }
+   
     
     def set_dify_client(self, dify_client):
         """
@@ -418,8 +313,160 @@ class TaskExecutionService:
         """
         self._dify_client = dify_client
         logger.info("Dify client set")
+
+    def receiveMessage(self, msg: Any, sender: Any) -> None:
+        """处理接收到的消息"""
+        try:
+            if isinstance(msg, dict):
+                msg_type = msg.get("type")
+                if msg_type == "execute_task_group":
+                    self._handle_execute_task_group(msg, sender)
+                elif msg_type == "register_task_handler":
+                    self._handle_register_task_handler(msg)
+                elif msg_type == "register_capability_function":
+                    self._handle_register_capability_function(msg)
+                elif msg_type == "set_dify_client":
+                    self._handle_set_dify_client(msg)
+                elif msg_type == "execute_task":
+                    self._handle_execute_task(msg, sender)
+                elif msg_type == "aggregation_complete":
+                    self._handle_aggregation_complete(msg, sender)
+                else:
+                    logger.warning(f"Unknown message type: {msg_type}")
+            elif isinstance(msg, SubtaskResultMessage):
+                # 处理子任务成功结果
+                self._handle_subtask_result(msg.__dict__, sender)
+            elif isinstance(msg, SubtaskErrorMessage):
+                # 处理子任务失败错误
+                self._handle_subtask_error(msg.__dict__, sender)
+            else:
+                logger.warning(f"Unknown message type: {type(msg)}")
+        except Exception as e:
+            logger.error(f"TaskExecutionService error handling message: {str(e)}")
+            # 发送错误消息回发送者
+            if isinstance(msg, dict) and "task_id" in msg:
+                self.send(sender, SubtaskErrorMessage(msg["task_id"], str(e)))
+            elif hasattr(msg, "task_id"):
+                self.send(sender, SubtaskErrorMessage(getattr(msg, "task_id"), str(e)))
+
+    def _handle_execute_task_group(self, msg: Dict, sender: Any) -> None:
+        """处理任务组执行请求"""
+        tasks = msg.get("tasks", [])
+        if not tasks:
+            self.send(sender, {
+                "type": "task_group_result",
+                "success": True,
+                "result": [],
+                "task_ids": []
+            })
+            return
+
+        # 创建ResultAggregatorActor实例
+        aggregator = self.createActor(ResultAggregatorActor)
+
+        # 初始化aggregator
+        aggregator_init_msg = {
+            "type": "initialize",
+            "trace_id": msg.get("trace_id", ""),
+            "max_retries": msg.get("max_retries", 3),
+            "timeout": msg.get("timeout", 300),
+            "aggregation_strategy": msg.get("aggregation_strategy", "map_reduce"),
+            "pending_tasks": [task["task_id"] for task in tasks]
+        }
+        self.send(aggregator, aggregator_init_msg)
+
+        # 保存当前聚合器和发送者信息
+        self._current_aggregator = aggregator
+        self._group_sender = sender
+
+        # 发送每个任务到ExecutionActor执行
+        for task in tasks:
+            task_msg = {
+                "type": "leaf_task",
+                "task_id": task["task_id"],
+                "context": task["context"],
+                "memory": task["memory"],
+                "capability": task["capability"],
+                "agent_id": task["agent_id"]
+            }
+            self.send(self._execution_actor, task_msg)
+
+    def _handle_register_task_handler(self, msg: Dict) -> None:
+        """处理注册任务处理器消息"""
+        task_type = msg.get("task_type")
+        handler = msg.get("handler")
+        if task_type and handler:
+            self.register_task_handler(task_type, handler)
+
+    def _handle_register_capability_function(self, msg: Dict) -> None:
+        """处理注册能力函数消息"""
+        capability_name = msg.get("capability_name")
+        func = msg.get("func")
+        if capability_name and func:
+            self.register_capability_function(capability_name, func)
+
+    def _handle_set_dify_client(self, msg: Dict) -> None:
+        """处理设置Dify客户端消息"""
+        dify_client = msg.get("dify_client")
+        if dify_client:
+            self.set_dify_client(dify_client)
+
+    def _handle_execute_task(self, msg: Dict, sender: Any) -> None:
+        """处理单任务执行请求"""
+        task_id = msg.get("task_id")
+        task_type = msg.get("task_type")
+        context = msg.get("context", {})
+        capabilities = msg.get("capabilities")
+
+        if not task_id or not task_type:
+            self.send(sender, SubtaskErrorMessage("unknown", "Missing task_id or task_type"))
+            return
+
+        try:
+            result = self.execute_task(task_id, task_type, context, capabilities)
+            self.send(sender, SubtaskResultMessage(task_id, result))
+        except Exception as e:
+            self.send(sender, SubtaskErrorMessage(task_id, str(e)))
+
+    def _handle_subtask_result(self, result_msg: Dict, sender: Any) -> None:
+        """处理子任务成功结果"""
+        if hasattr(self, "_current_aggregator") and self._current_aggregator:
+            self.send(self._current_aggregator, {
+                "type": "subtask_result",
+                "task_id": result_msg["task_id"],
+                "result": result_msg["result"]
+            })
+
+    def _handle_subtask_error(self, error_msg: Dict, sender: Any) -> None:
+        """处理子任务失败错误"""
+        if hasattr(self, "_current_aggregator") and self._current_aggregator:
+            self.send(self._current_aggregator, {
+                "type": "subtask_error",
+                "task_id": error_msg["task_id"],
+                "error": error_msg["error"]
+            })
+
+    def _handle_aggregation_complete(self, msg: Dict, sender: Any) -> None:
+        """处理聚合完成消息"""
+        logger.info(f"Received aggregation complete message: {msg.get('trace_id')}")
+        if self._group_sender:
+            # 构造任务组结果并返回给发起者
+            task_group_result = {
+                "type": "task_group_result",
+                "success": msg["success"],
+                "aggregated_result": msg["aggregated_result"],
+                "completed_tasks": msg["completed_tasks"],
+                "failed_tasks": msg["failed_tasks"],
+                "total_tasks": msg["total_tasks"],
+                "strategy": msg["strategy"],
+                "trace_id": msg["trace_id"]
+            }
+            self.send(self._group_sender, task_group_result)
+        # 清理资源
+        self._group_sender = None
+        self._current_aggregator = None
     
-    async def schedule_task(self, task_id: str, task_type: str, context: Dict):
+    def schedule_task(self, task_id: str, task_type: str, context: Dict):
         """
         调度任务到执行队列
         
@@ -428,13 +475,13 @@ class TaskExecutionService:
             task_type: 任务类型
             context: 任务上下文
         """
-        await self._execution_queue.put({
+        self._execution_queue.put({
             "task_id": task_id,
             "task_type": task_type,
             "context": context
         })
     
-    async def start_execution_loop(self):
+    def start_execution_loop(self):
         """
         启动任务执行循环
         """
@@ -443,55 +490,31 @@ class TaskExecutionService:
         while True:
             try:
                 # 等待新任务
-                task_data = await self._execution_queue.get()
+                task_data = self._execution_queue.get(block=True)
                 
-                # 检查并发任务限制
-                if len(self._running_tasks) >= self._max_concurrent_tasks:
-                    logger.warning("Maximum concurrent tasks reached, waiting...")
-                    # 等待至少一个任务完成
-                    while len(self._running_tasks) >= self._max_concurrent_tasks:
-                        await asyncio.sleep(0.1)
-                
-                # 执行任务
-                task = asyncio.create_task(self.execute_task(
-                    task_id=task_data["task_id"],
-                    task_type=task_data["task_type"],
-                    context=task_data["context"]
-                ))
-                
-                # 保存任务引用
-                self._running_tasks[task_data["task_id"]] = task
-                
-                # 设置完成回调
-                task.add_done_callback(
-                    lambda t, task_id=task_data["task_id"]: 
-                    self._running_tasks.pop(task_id, None)
-                )
+                # 执行任务（同步执行）
+                try:
+                    self.execute_task(
+                        task_id=task_data["task_id"],
+                        task_type=task_data["task_type"],
+                        context=task_data["context"]
+                    )
+                except Exception as e:
+                    logger.error(f"Error executing task {task_data['task_id']} in loop: {str(e)}")
                 
                 # 标记队列任务为完成
                 self._execution_queue.task_done()
                 
-            except asyncio.CancelledError:
-                logger.info("Task execution loop cancelled")
-                break
             except Exception as e:
                 logger.error(f"Error in execution loop: {str(e)}")
     
-    async def stop_execution_loop(self):
+    def stop_execution_loop(self):
         """
         停止任务执行循环
         """
         logger.info("Stopping task execution loop")
         
-        # 取消所有运行中的任务
-        for task_id, task in list(self._running_tasks.items()):
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    logger.info(f"Cancelled task {task_id}")
-        
+        # 清理运行中的任务（同步模型下任务会立即完成，因此这里只需要清空列表）
         self._running_tasks.clear()
     
     def get_execution_status(self) -> Dict:

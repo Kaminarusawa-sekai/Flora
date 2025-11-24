@@ -34,6 +34,19 @@ from .agent_messages import (
     DataQueryResponse,
     McpFallbackRequest
 )
+from .connector_messages import (
+    ExecuteConnectorRequest,
+    PrepareConnectorRequest,
+    CancelConnectorRequest,
+    GetConnectorStatusRequest,
+    ConnectorResult,
+    ConnectorError,
+    PrepareConnectorResponse,
+    ConnectorStatusResponse,
+    InvokeConnectorRequest,
+    ConnectorExecutionSuccess,
+    ConnectorExecutionFailure
+)
 
 __all__ = [
     "EventMessage",
@@ -67,5 +80,14 @@ __all__ = [
     "DifyExecuteResponse",
     "DataQueryRequest",
     "DataQueryResponse",
-    "McpFallbackRequest"
+    "McpFallbackRequest",
+    "ExecuteConnectorRequest",
+    "PrepareConnectorRequest",
+    "CancelConnectorRequest",
+    "GetConnectorStatusRequest",
+    "InvokeConnectorRequest",
+    "ConnectorResult",
+    "ConnectorError",
+    "PrepareConnectorResponse",
+    "ConnectorStatusResponse"
 ]

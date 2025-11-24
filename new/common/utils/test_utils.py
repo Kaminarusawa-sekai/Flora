@@ -13,7 +13,7 @@ from typing import Dict, List, Any
 from . import (
     # 错误处理
     ErrorContext,
-    retry,
+    retry_decorator as retry,
     ValidationError,
     
     # 单例模式
@@ -62,7 +62,7 @@ class TestErrorHandling(unittest.TestCase):
         """测试重试装饰器"""
         attempts = [0]
         
-        @retry(max_attempts=3, delay=0.1, exceptions=(ValueError,))
+        @retry(max_retries=3, delay=0.1, exceptions=(ValueError,))
         def unstable_function():
             attempts[0] += 1
             if attempts[0] < 3:
@@ -77,7 +77,7 @@ class TestErrorHandling(unittest.TestCase):
         # 重置并测试失败情况
         attempts[0] = 0
         
-        @retry(max_attempts=2, delay=0.1, exceptions=(ValueError,))
+        @retry(max_retries=2, delay=0.1, exceptions=(ValueError,))
         def always_fail():
             attempts[0] += 1
             raise ValueError("总是失败")
