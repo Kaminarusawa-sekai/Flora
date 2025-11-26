@@ -128,8 +128,8 @@ class RouterActor(Actor):
             return
         
         # 使用工具类创建键和序列化地址
-            key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
-            addr_str = actor_reference_manager.serialize_address(sender)
+        key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
+        addr_str = actor_reference_manager.serialize_address(sender)
         
         if not addr_str:
             self.logger.error("序列化Actor地址失败")

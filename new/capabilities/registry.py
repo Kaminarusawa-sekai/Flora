@@ -3,52 +3,68 @@ from typing import Dict, Any, Type, Optional
 from .capability_base import CapabilityBase
 
 
+from typing import Dict, Any, Type, Optional, Callable
+from .capability_base import CapabilityBase
+
+
 class CapabilityRegistry:
     """
-    能力注册表，负责管理和注册所有能力组件
+    能力注册表（支持依赖注入）
     """
     
     _instance = None
-    _capabilities = {}
+    _factories: Dict[str, Callable[[], CapabilityBase]] = {}
     
     def __new__(cls):
-        """
-        单例模式实现
-        """
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def register(self, capability_type: str, capability_class: Type[CapabilityBase]) -> bool:
+    def register(
+        self,
+        capability_type: str,
+        factory: Callable[[], CapabilityBase]
+    ) -> bool:
         """
-        注册能力组件
+        注册能力工厂（推荐方式）
         
         Args:
-            capability_type: 能力类型标识符
-            capability_class: 能力类
-            
-        Returns:
-            bool: 是否注册成功
+            capability_type: 能力类型
+            factory: 无参函数，返回已初始化的能力实例
         """
-        if not issubclass(capability_class, CapabilityBase):
-            return False
-        
-        self._capabilities[capability_type] = capability_class
+        self._factories[capability_type] = factory
         return True
-    
-    def get_capability(self, capability_type: str) -> Optional[CapabilityBase]:
+
+    def register_class(
+        self,
+        capability_type: str,
+        capability_class: Type[CapabilityBase],
+        init_kwargs: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
-        获取能力实例
+        辅助方法：通过类 + 初始化参数注册（适合简单场景）
+        """
+        def factory():
+            instance = capability_class()
+            if hasattr(instance, 'initialize'):
+                instance.initialize(**(init_kwargs or {}))
+            return instance
         
-        Args:
-            capability_type: 能力类型标识符
-            
-        Returns:
-            CapabilityBase: 能力实例，如果不存在返回None
-        """
-        if capability_type in self._capabilities:
-            return self._capabilities[capability_type]()
+        return self.register(capability_type, factory)
+
+    def get_capability(self, capability_type: str) -> Optional[CapabilityBase]:
+        if capability_type in self._factories:
+            try:
+                return self._factories[capability_type]()
+            except Exception as e:
+                logging.error(f"Failed to create capability '{capability_type}': {e}")
+                return None
         return None
+
+    def has_capability(self, capability_type: str) -> bool:
+        return capability_type in self._factories
+
+    # 其他方法（unregister, get_all 等）可按需补充
     
     def get_all_capabilities(self) -> Dict[str, Type[CapabilityBase]]:
         """
@@ -86,6 +102,6 @@ class CapabilityRegistry:
         """
         return capability_type in self._capabilities
 
-
+##TODO:单例模式，到时候全局统一管理
 # 创建全局注册表实例
 capability_registry = CapabilityRegistry()

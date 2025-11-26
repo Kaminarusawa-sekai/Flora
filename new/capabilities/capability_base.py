@@ -15,7 +15,7 @@ class CapabilityBase(ABC):
         self.name = self.get_capability_name()
         self.is_initialized = False
     
-    def initialize(self) -> bool:
+    def initialize(self) -> "CapabilityBase":
         """
         初始化能力组件
         
@@ -23,7 +23,7 @@ class CapabilityBase(ABC):
             bool: 初始化是否成功
         """
         self.is_initialized = True
-        return True
+        return self
     
     def get_capability_name(self) -> str:
         """

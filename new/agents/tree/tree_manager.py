@@ -8,6 +8,8 @@ from ...external.agent_structure.structure_factory import create_agent_structure
 from ...common.config.config_manager import config_manager
 
 
+##TODO:全局唯一实例，统一初始化
+
 class TreeManager:
     """
     树形结构管理器
@@ -380,3 +382,121 @@ class TreeManager:
         self.relationship_service.close()
         self.actor_refs.clear()
         self.logger.info("树形结构管理器已关闭")
+    
+    def get_influenced_subgraph(
+        self,
+        root_code: str,
+        threshold: float = 0.3,
+        max_hops: int = 5
+    ) -> 'nx.DiGraph':
+        """
+        获取以指定节点为根的影响子图
+        
+        Args:
+            root_code: 根节点代码
+            threshold: 影响强度阈值
+            max_hops: 最大跳数
+            
+        Returns:
+            nx.DiGraph: 影响子图
+        """
+        import networkx as nx
+        
+        graph = nx.DiGraph()
+        
+        # 尝试通过structure获取影响子图
+        try:
+            # 检查structure是否支持直接获取影响子图
+            if hasattr(self.node_service.structure, 'get_influenced_subgraph'):
+                return self.node_service.structure.get_influenced_subgraph(
+                    root_code, threshold, max_hops
+                )
+        except Exception as e:
+            self.logger.error(f"直接获取影响子图失败: {e}")
+        
+        # 如果structure不支持，尝试手动构建
+        try:
+            # 先加入根节点
+            # 这里假设node_service有get_node_by_code方法
+            root_node = None
+            if hasattr(self.node_service, 'get_node_by_code'):
+                root_node = self.node_service.get_node_by_code(root_code)
+            
+            if not root_node:
+                # 尝试通过搜索找到根节点
+                all_nodes = self.node_service.get_all_nodes()
+                for node in all_nodes:
+                    if node.get('code') == root_code:
+                        root_node = node
+                        break
+            
+            if not root_node:
+                raise ValueError(f"根节点 {root_code} 未找到")
+            
+            # 添加根节点到图中
+            node_id = root_node.get('agent_id') or root_node.get('id') or root_code
+            graph.add_node(node_id, **root_node)
+            
+            # 这里可以根据需要实现简单的影响传播逻辑
+            # 例如，基于节点之间的关系和权重来构建影响子图
+            
+            # 遍历子节点，构建简单的影响关系
+            self._build_influenced_subgraph_recursive(
+                graph, node_id, threshold, max_hops, 0, 1.0
+            )
+            
+        except Exception as e:
+            self.logger.error(f"构建影响子图失败: {e}")
+            raise
+        
+        return graph
+    
+    def _build_influenced_subgraph_recursive(
+        self,
+        graph: 'nx.DiGraph',
+        current_id: str,
+        threshold: float,
+        max_hops: int,
+        current_hops: int,
+        current_strength: float
+    ):
+        """
+        递归构建影响子图
+        
+        Args:
+            graph: 图对象
+            current_id: 当前节点ID
+            threshold: 影响强度阈值
+            max_hops: 最大跳数
+            current_hops: 当前跳数
+            current_strength: 当前影响强度
+        """
+        if current_hops >= max_hops or current_strength < threshold:
+            return
+        
+        # 获取当前节点的子节点
+        children = self.get_children(current_id)
+        
+        for child_id in children:
+            # 获取子节点信息
+            child_meta = self.get_agent_meta(child_id)
+            if not child_meta:
+                continue
+            
+            # 计算影响强度（这里简化处理，可以根据实际情况调整）
+            # 例如，可以从子节点的meta中获取权重信息
+            weight = child_meta.get('weight', 0.5)
+            influence_strength = current_strength * weight
+            
+            if influence_strength >= threshold:
+                # 添加子节点到图中
+                if child_id not in graph:
+                    graph.add_node(child_id, **child_meta)
+                
+                # 添加边，权重为影响强度
+                graph.add_edge(current_id, child_id, weight=influence_strength)
+                
+                # 递归处理子节点
+                self._build_influenced_subgraph_recursive(
+                    graph, child_id, threshold, max_hops, current_hops + 1, influence_strength
+                )

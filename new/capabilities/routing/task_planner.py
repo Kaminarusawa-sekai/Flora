@@ -5,25 +5,31 @@ from ..capability_base import CapabilityBase
 import logging
 import uuid
 
+import json
+
+
+import logging
+import json
+import networkx as nx
+from typing import Dict, Any, List, Tuple
+from new.external.agent_structure.structure_interface import AgentStructureInterface
+
 
 class TaskPlanner(CapabilityBase):
     """
     任务规划器
-    负责将复杂任务分解为子任务序列
-    从TaskCoordinator.plan_subtasks迁移而来
+    负责将复杂任务分解为子任务序列，支持强耦合任务的协同规划。
+    从TaskCoordinator.plan_subtasks迁移而来，并集成 Neo4j + SCC + Qwen 协同规划能力。
     """
-    
+
     def __init__(self):
-        """
-        初始化任务规划器
-        """
         super().__init__()
         self.logger = logging.getLogger(__name__)
-        self.registry = None  # 将在initialize中设置
+        self.registry = None
         self.graph = None
         self.change_engine = None
+        self.qwen_client = None  # 需在 initialize 中设置
         self.task_templates = {
-            # 预定义的任务模板
             'data_analysis': {
                 'steps': [
                     {'name': '数据收集', 'task_type': 'data_collection'},
@@ -40,508 +46,329 @@ class TaskPlanner(CapabilityBase):
                 ]
             }
         }
-    
+
     def get_capability_type(self) -> str:
-        """
-        获取能力类型
-        """
         return 'planning'
-    
-    def initialize(self, registry=None, graph=None, change_engine=None) -> bool:
-        """
-        初始化任务规划器
-        
-        Args:
-            registry: Agent注册表，用于获取可用Agent信息
-            graph: 图结构（可选）
-            change_engine: 变更引擎（可选）
-            
-        Returns:
-            bool: 是否初始化成功
-        """
+
+    def initialize(self, registry=None, graph=None, change_engine=None, qwen_client=None) -> bool:
         if not super().initialize():
             return False
-        
+
         self.registry = registry
         self.graph = graph
         self.change_engine = change_engine
+        self.qwen_client = qwen_client  # 新增 Qwen 客户端
+
+        if not self.qwen_client:
+            self.logger.warning("Qwen client not provided; will fallback to non-AI planning.")
+
         return True
-    
+
+    # ================================
+    # 🔹 核心规划入口
+    # ================================
+
     def plan_subtasks(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        从TaskCoordinator.plan_subtasks迁移
-        根据任务上下文规划子任务
-        
-        Args:
-            parent_agent_id: 父Agent ID
-            context: 任务上下文
-            
+        规划子任务序列（主入口）
+        若 Qwen 可用且上下文含 main_intent，则使用协同规划；
+        否则回退到模板或简单分解。
+        """
+        if self.qwen_client and context.get("main_intent"):
+            return self._plan_with_qwen_coordinated_scc(parent_agent_id, context)
+        else:
+            return self._fallback_plan_by_template_or_default(parent_agent_id, context)
+
+    # ================================
+    # 🔹 协同规划实现（SCC-based）
+    # ================================
+
+    def _fetch_subgraph_with_scc_from_neo4j(
+        self,
+        root_code: str,
+        threshold: float = 0.3,
+        max_hops: int = 5
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """
+        从 AgentStructure 获取带 scc_id 的子图数据。
+        要求底层实现（如 Neo4j + APOC）在节点中注入 'scc_id' 字段。
+
         Returns:
-            List[Dict[str, Any]]: 子任务列表
+            (nodes_data, edges_data)
+            - nodes_data: [{"node_id": "...", "properties": {...}}, ...]
+            - edges_data: [{"from": "...", "to": "...", "weight": 0.x}, ...]
         """
         try:
-            # 1. 分析任务类型和复杂度
-            task_type = context.get('task_type')
-            complexity = context.get('complexity', 0.5)
-            
-            # 2. 根据任务类型和复杂度选择规划策略
-            if self.change_engine and self.registry and 'main_intent' in context:
-                # 使用变更引擎进行规划
-                return self._plan_with_change_engine(parent_agent_id, context)
-            elif complexity < 0.3:
-                # 简单任务，可能不需要分解
-                return self._plan_simple_task(parent_agent_id, context)
-            elif task_type in self.task_templates:
-                # 使用预定义模板
-                return self._plan_using_template(parent_agent_id, context, task_type)
-            else:
-                # 复杂任务，需要动态分解
-                return self._plan_complex_task(parent_agent_id, context)
-                
+            structure = AgentStructureInterface.get_instance()
+            # 假设新接口方法返回结构化 dict 而非 nx.DiGraph
+            result = structure.get_influenced_subgraph_with_scc(
+                root_code=root_code,
+                threshold=threshold,
+                max_hops=max_hops
+            )
+            nodes = result.get("nodes", [])
+            edges = result.get("edges", [])
+            self.logger.debug(f"Fetched subgraph: {len(nodes)} nodes, {len(edges)} edges")
+            return nodes, edges
         except Exception as e:
-            self.logger.error(f"Error planning subtasks: {str(e)}", exc_info=True)
-            # 返回一个失败的回退子任务
-            return [{
-                'task_id': str(uuid.uuid4()),
-                'task_type': 'error_handling',
-                'context': {'error': str(e), 'original_context': context},
-                'priority': 'high',
-                'parent_agent_id': parent_agent_id
-            }]
-    
-    def _plan_simple_task(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        规划简单任务（可能不需要分解）
-        
-        Args:
-            parent_agent_id: 父Agent ID
-            context: 任务上下文
-            
-        Returns:
-            List[Dict[str, Any]]: 子任务列表
-        """
-        # 检查是否有子Agent可以直接执行
-        if self.registry:
-            children = self.registry.get_children(parent_agent_id)
-            if children and len(children) == 1:
-                # 如果只有一个子Agent，直接转发任务
-                return [{
-                    'task_id': str(uuid.uuid4()),
-                    'task_type': context.get('task_type', 'direct_forward'),
-                    'context': context,
-                    'priority': context.get('priority', 'medium'),
-                    'target_agent': children[0],
-                    'parent_agent_id': parent_agent_id
-                }]
-        
-        # 否则，返回原始任务作为唯一的子任务
-        return [{
-            'task_id': str(uuid.uuid4()),
-            'task_type': context.get('task_type', 'original'),
-            'context': context,
-            'priority': context.get('priority', 'medium'),
-            'parent_agent_id': parent_agent_id
-        }]
-    
-    def _plan_using_template(self, parent_agent_id: str, context: Dict[str, Any], task_type: str) -> List[Dict[str, Any]]:
-        """
-        使用预定义模板规划任务
-        
-        Args:
-            parent_agent_id: 父Agent ID
-            context: 任务上下文
-            task_type: 任务类型
-            
-        Returns:
-            List[Dict[str, Any]]: 子任务列表
-        """
-        template = self.task_templates.get(task_type)
-        if not template:
-            self.logger.warning(f"Template not found for task type: {task_type}")
-            return self._plan_simple_task(parent_agent_id, context)
-        
-        subtasks = []
-        # 创建任务链，每个子任务都依赖前一个任务的结果
-        for i, step in enumerate(template['steps']):
-            subtask_context = context.copy()
-            
-            # 设置子任务特定信息
-            subtask_context['step_index'] = i
-            subtask_context['total_steps'] = len(template['steps'])
-            subtask_context['step_name'] = step['name']
-            
-            # 添加依赖信息
-            if i > 0:
-                # 依赖前一个任务的结果
-                subtask_context['previous_task_id'] = subtasks[i-1]['task_id']
-                subtask_context['depends_on'] = [subtasks[i-1]['task_id']]
-            else:
-                subtask_context['depends_on'] = []
-            
-            # 创建子任务
-            subtask = {
-                'task_id': str(uuid.uuid4()),
-                'task_type': step['task_type'],
-                'context': subtask_context,
-                'priority': context.get('priority', 'medium'),
-                'step': i,
-                'step_name': step['name'],
-                'parent_agent_id': parent_agent_id
-            }
-            
-            subtasks.append(subtask)
-        
-        return subtasks
-    
-    def _plan_complex_task(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
-     ...
+            self.logger.error(f"Failed to fetch SCC-aware subgraph from Neo4j: {e}")
+            return [], []
 
-    def _plan_with_change_engine(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        使用Neo4j间接影响传播 + IntelligentChangeEngine生成执行计划
-        """
-        import networkx as nx
-        import asyncio
-
-        root_code = parent_agent_id  # 假设传入的是code，如 "rules_system_create_active"
-
-        # 可配置阈值（可从config或context读取）
+    def _plan_with_qwen_coordinated_scc(
+        self,
+        parent_agent_id: str,
+        context: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        root_code = parent_agent_id
         threshold = context.get("influence_threshold", 0.3)
 
-        # 1. 构建影响子图（含间接影响，权重为乘积）使用Neo4j查询
-        graph: nx.DiGraph = self._fetch_influenced_subgraph_from_neo4j(
+        nodes_data, edges_data = self._fetch_subgraph_with_scc_from_neo4j(
             root_code=root_code,
             threshold=threshold,
             max_hops=5
         )
 
-        if not graph.nodes:
+        if not nodes_data:
             return [{"node_id": root_code, "intent_params": {}}]
 
-        # 2. 主意图
-        main_intent = context.get("main_intent", "执行任务")
+        # 按 scc_id 分组
+        scc_groups: Dict[str, List[Dict]] = {}
+        node_to_scc: Dict[str, str] = {}
+        node_properties: Dict[str, Dict] = {}
 
-        # 3. 调用决策引擎
-        change_request = {
-            "graph": graph,
-            "main_node": root_code,
-            "main_intent": main_intent
-        }
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(self.change_engine.run(change_request))
-        finally:
-            loop.close()
-
-        strategy = result["strategy"]
-        execution_order = strategy["dag_structure"]["execution_order"]
-        intent_propagation = strategy.get("intent_propagation", {})
-
-        # 4. 构建返回计划
-        plan = []
-        for node_code in execution_order:
-            intent_params = intent_propagation.get(node_code, {})
-            if not isinstance(intent_params, dict):
-                intent_params = {"derived_intent": str(intent_params)}
-            plan.append({
-                "node_id": node_code,  # 注意：这里node_id实际是code
-                "intent_params": intent_params
+        for node in nodes_data:
+            node_id = node["node_id"]
+            props = node["properties"]
+            scc_id = props.get("scc_id", f"SCC_SINGLE_{node_id}")
+            node_properties[node_id] = props
+            node_to_scc[node_id] = scc_id
+            scc_groups.setdefault(scc_id, []).append({
+                "node_id": node_id,
+                "properties": props
             })
 
-        return plan
+        # 构建影响映射
+        influence_map: Dict[str, List[Dict]] = {nid: [] for nid in node_properties}
+        for edge in edges_data:
+            u, v, w = edge["from"], edge["to"], edge.get("weight", 0.0)
+            if u in influence_map:
+                influence_map[u].append({"target": v, "strength": round(w, 3)})
+            if v in influence_map:
+                influence_map[v].append({"source": u, "strength": round(w, 3)})
 
-    def _fetch_influenced_subgraph_from_neo4j(
-        self,
-        root_code: str,
-        threshold: float = 0.3,
-        max_hops: int = 5
-    ) -> nx.DiGraph:
-        """
-        从Neo4j获取影响子图
-        """
-        import networkx as nx
+        # 协同规划每个 SCC 组
+        all_task_details = {}
+        for scc_id, group_nodes in scc_groups.items():
+            if len(group_nodes) == 1:
+                node = group_nodes[0]
+                detail = self._plan_single_node_with_qwen(node, context)
+                all_task_details[node["node_id"]] = detail
+            else:
+                group_plan = self._qwen_plan_scc_group(
+                    scc_id=scc_id,
+                    nodes=group_nodes,
+                    influence_map=influence_map,
+                    main_intent=context.get("main_intent", "执行系统变更"),
+                    execution_memory=context.get("execution_memory", {})
+                )
+                all_task_details.update(group_plan)
 
-        query = """
-        MATCH (start:MarketingDemo2 {code: $rootCode})
-        CALL apoc.path.expandConfig(start, {
-            relationshipFilter: 'SAME_LEVEL_DEMO1>',
-            minLevel: 1,
-            maxLevel: $maxHops,
-            uniqueness: 'NODE_GLOBAL'
-        }) YIELD path
-        WITH path,
-            reduce(acc = 1.0, r IN relationships(path) | acc * coalesce(r.weight, 0.0)) AS totalStrength
-        WHERE totalStrength >= $threshold
-        WITH nodes(path)[-1] AS target, totalStrength, path
-        ORDER BY totalStrength DESC
-        WITH target, head(collect({strength: totalStrength, path: path})) AS best
-        RETURN
-            best.path AS bestPath,
-            best.strength AS totalStrength
-        """
-        graph = nx.DiGraph()
+        # 全局排序（容忍环）
+        dg = nx.DiGraph()
+        for nid in node_properties:
+            dg.add_node(nid)
+        for e in edges_data:
+            dg.add_edge(e["from"], e["to"])
+        
+        try:
+            global_order = list(nx.topological_sort(dg))
+        except nx.NetworkXUnfeasible:
+            global_order = self._topo_sort_with_scc(dg, node_to_scc)
 
-        # 先加入根节点
-        root_node = self.registry.get_node_by_code(root_code)  # 假设registry有此方法
-        if not root_node:
-            raise ValueError(f"Root node {root_code} not found")
-        graph.add_node(root_code, **root_node["properties"])
-
-        with self.registry.driver.session() as session:
-            results = session.run(query,
-                                rootCode=root_code,
-                                threshold=threshold,
-                                maxHops=max_hops)
-            # 处理结果，构建图
-            for record in results:
-                path = record["bestPath"]
-                total_strength = record["totalStrength"]
-                
-                # 遍历路径中的节点和关系
-                prev_node = None
-                for node in path.nodes:
-                    node_code = node["code"]
-                    node_properties = dict(node)
-                    
-                    if node_code not in graph:
-                        graph.add_node(node_code, **node_properties)
-                    
-                    if prev_node:
-                        graph.add_edge(prev_node, node_code, weight=total_strength)
-                    
-                    prev_node = node_code
-
-        return graph
-
-    def _plan_complex_task(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        规划复杂任务，动态分解为子任务
-        
-        Args:
-            parent_agent_id: 父Agent ID
-            context: 任务上下文
-            
-        Returns:
-            List[Dict[str, Any]]: 子任务列表
-        """
-        subtasks = []
-        
-        # 1. 分析任务需求
-        task_requirements = self._analyze_task_requirements(context)
-        
-        # 2. 生成任务依赖图
-        dependency_graph = self._generate_dependency_graph(task_requirements)
-        
-        # 3. 拓扑排序以确定执行顺序
-        execution_order = self._topological_sort(dependency_graph)
-        
-        # 4. 创建子任务
-        for task_name in execution_order:
-            task_info = task_requirements.get(task_name, {})
-            subtask_context = context.copy()
-            subtask_context['subtask_name'] = task_name
-            subtask_context['subtask_requirements'] = task_info.get('requirements', {})
-            
-            # 设置依赖
-            dependencies = [dep for dep, tasks in dependency_graph.items() if task_name in tasks]
-            subtask_context['depends_on'] = dependencies
-            
-            subtask = {
-                'task_id': str(uuid.uuid4()),
-                'task_type': task_info.get('task_type', 'complex_subtask'),
-                'context': subtask_context,
-                'priority': task_info.get('priority', context.get('priority', 'medium')),
-                'name': task_name,
-                'parent_agent_id': parent_agent_id
-            }
-            
-            # 记录任务ID以便依赖关系
-            for dep in dependencies:
-                if dep in subtasks_map:
-                    subtask_context[f'_{dep}_result'] = f"${{task_result:{subtasks_map[dep]}}}"
-            
-            subtasks.append(subtask)
-            subtasks_map[task_name] = subtask['task_id']
-        
-        return subtasks
-    
-    def _analyze_task_requirements(self, context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-        """
-        分析任务需求，提取子任务信息
-        
-        Args:
-            context: 任务上下文
-            
-        Returns:
-            Dict[str, Dict[str, Any]]: 任务需求映射
-        """
-        requirements = {}
-        
-        # 从上下文中提取关键需求
-        task_type = context.get('task_type', 'general')
-        
-        # 基于任务类型分析需求
-        if task_type == 'problem_solving':
-            requirements = {
-                'understand_problem': {
-                    'task_type': 'understanding',
-                    'requirements': {'input': 'problem_description'},
-                    'priority': 'high'
-                },
-                'research_solutions': {
-                    'task_type': 'research',
-                    'requirements': {'input': 'problem_summary'},
-                    'priority': 'high'
-                },
-                'evaluate_solutions': {
-                    'task_type': 'evaluation',
-                    'requirements': {'input': 'potential_solutions'},
-                    'priority': 'medium'
-                },
-                'select_solution': {
-                    'task_type': 'selection',
-                    'requirements': {'input': 'evaluation_results'},
-                    'priority': 'high'
-                },
-                'generate_implementation': {
-                    'task_type': 'implementation',
-                    'requirements': {'input': 'selected_solution'},
-                    'priority': 'medium'
-                }
-            }
-        elif task_type == 'information_retrieval':
-            requirements = {
-                'parse_query': {
-                    'task_type': 'parsing',
-                    'requirements': {'input': 'query'},
-                    'priority': 'high'
-                },
-                'search_resources': {
-                    'task_type': 'search',
-                    'requirements': {'input': 'parsed_query'},
-                    'priority': 'high'
-                },
-                'filter_results': {
-                    'task_type': 'filtering',
-                    'requirements': {'input': 'raw_results'},
-                    'priority': 'medium'
-                },
-                'summarize_information': {
-                    'task_type': 'summarization',
-                    'requirements': {'input': 'filtered_results'},
-                    'priority': 'high'
-                }
-            }
-        else:
-            # 通用任务分解
-            requirements = {
-                'analyze_task': {
-                    'task_type': 'analysis',
-                    'requirements': {'input': 'task_description'},
-                    'priority': 'high'
-                },
-                'execute_core': {
-                    'task_type': task_type,
-                    'requirements': {'input': 'analysis_result'},
-                    'priority': 'high'
-                },
-                'finalize_result': {
-                    'task_type': 'finalization',
-                    'requirements': {'input': 'core_result'},
-                    'priority': 'medium'
-                }
-            }
-        
-        return requirements
-    
-    def _generate_dependency_graph(self, requirements: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
-        """
-        生成任务依赖图
-        
-        Args:
-            requirements: 任务需求映射
-            
-        Returns:
-            Dict[str, List[str]]: 依赖图，格式为 {task: [依赖的任务列表]}
-        """
-        graph = {}
-        
-        # 为每个任务初始化依赖列表
-        for task_name in requirements:
-            graph[task_name] = []
-        
-        # 构建依赖关系
-        task_names = list(requirements.keys())
-        for i, task_name in enumerate(task_names):
-            if i > 0:
-                # 简单实现：后一个任务依赖前一个任务
-                # 实际应用中可能需要更复杂的依赖分析
-                graph[task_name].append(task_names[i-1])
-        
-        return graph
-    
-    def _topological_sort(self, graph: Dict[str, List[str]]) -> List[str]:
-        """
-        拓扑排序依赖图
-        
-        Args:
-            graph: 依赖图
-            
-        Returns:
-            List[str]: 拓扑排序后的任务列表
-        """
-        # 计算每个节点的入度
-        in_degree = {}
-        for node in graph:
-            in_degree[node] = 0
-        
-        for node in graph:
-            for neighbor in graph[node]:
-                in_degree[neighbor] += 1
-        
-        # 收集入度为0的节点
-        queue = [node for node in in_degree if in_degree[node] == 0]
-        
-        # 拓扑排序
+        # 按序组装
         result = []
-        while queue:
-            current = queue.pop(0)
-            result.append(current)
-            
-            # 更新邻居节点的入度
-            for neighbor in graph[current]:
-                in_degree[neighbor] -= 1
-                if in_degree[neighbor] == 0:
-                    queue.append(neighbor)
-        
+        for node_id in global_order:
+            if node_id in all_task_details:
+                result.append({
+                    "node_id": node_id,
+                    "intent_params": all_task_details[node_id]
+                })
         return result
-    
-    def register_task_template(self, template_name: str, template: Dict[str, Any]) -> bool:
-        """
-        注册任务模板
+
+    def _plan_single_node_with_qwen(self, node: Dict, context: Dict[str, Any]) -> Dict[str, Any]:
+        """单节点简化规划（可扩展）"""
+        if not self.qwen_client:
+            return {"intent": f"执行 {node['node_id']}", "parameters": {}, "fallback": "跳过"}
         
-        Args:
-            template_name: 模板名称
-            template: 模板定义，包含steps字段
-            
-        Returns:
-            bool: 是否注册成功
-        """
+        prompt = f"""
+你是一个任务规划专家。请为以下独立任务生成执行细节。
+
+任务ID: {node['node_id']}
+属性: {json.dumps(node['properties'], ensure_ascii=False, indent=2)}
+主意图: {context.get('main_intent', '执行系统变更')}
+
+输出严格 JSON：
+{{
+  "intent": "简明意图",
+  "parameters": {{}},
+  "fallback": "降级策略"
+}}
+"""
+        try:
+            resp = self.qwen_client.call(
+                model="qwen-max",
+                prompt=prompt,
+                temperature=0.2,
+                max_tokens=500,
+                result_format="json"
+            )
+            return json.loads(resp.output.text)
+        except Exception as e:
+            self.logger.warning(f"Single-node Qwen planning failed: {e}")
+            return {"intent": f"执行 {node['node_id']}", "parameters": {}, "fallback": "跳过"}
+
+    def _qwen_plan_scc_group(
+        self,
+        scc_id: str,
+        nodes: List[Dict],
+        influence_map: Dict[str, List[Dict]],
+        main_intent: str,
+        execution_memory: Dict[str, Any]
+    ) -> Dict[str, Dict]:
+        node_ids = [n["node_id"] for n in nodes]
+        intra_influences = []
+        for nid in node_ids:
+            for inf in influence_map.get(nid, []):
+                if inf.get("target") in node_ids or inf.get("source") in node_ids:
+                    intra_influences.append(inf)
+
+        memory_summary = ""
+        if execution_memory:
+            failures = execution_memory.get("failures", [])
+            relevant = [f for f in failures if f.get("node") in node_ids]
+            if relevant:
+                memory_summary = "历史失败记录（本组内）:\n" + "\n".join(
+                    f"- {f['node']}: {f['reason']}" for f in relevant[-3:]
+                )
+
+        prompt = f"""你是一个高级系统协调 AI，负责对一组**强耦合任务**进行协同规划。这些任务互相高度依赖，必须统一设计执行细节以确保一致性。
+
+## 主意图
+{main_intent}
+
+## 强耦合组信息
+- 组ID: {scc_id}
+- 包含任务: {json.dumps(node_ids, ensure_ascii=False)}
+
+## 任务属性
+{json.dumps([{n['node_id']: n['properties']} for n in nodes], indent=2, ensure_ascii=False)}
+
+## 组内相互影响关系
+{json.dumps(intra_influences, indent=2, ensure_ascii=False)}
+
+{memory_summary}
+
+## 你的任务
+1. 为组内每个任务生成执行细节，必须满足：
+   - 所有共享参数（如阈值、格式、时间窗口）必须一致
+   - 输出格式与输入期望必须匹配
+   - 若存在策略冲突，优先服从主意图
+2. 显式声明任何共享的全局约束
+
+## 输出格式（严格 JSON）
+{{
+  "shared_constraints": {{
+    "common_output_format": "json",
+    "unified_threshold": 0.75,
+    "sync_window_sec": 10
+  }},
+  "task_details": {{
+    "TaskA": {{
+      "intent": "激活规则并输出标准JSON",
+      "parameters": {{
+        "mode": "active",
+        "output_format": "json",
+        "threshold": 0.75
+      }},
+      "fallback": "降级为 dry_run"
+    }}
+  }}
+}}
+"""
+
+        try:
+            response = self.qwen_client.call(
+                model="qwen-max",
+                prompt=prompt,
+                temperature=0.1,
+                max_tokens=2000,
+                result_format="json"
+            )
+            plan = json.loads(response.output.text)
+            task_details = plan.get("task_details", {})
+            shared = plan.get("shared_constraints", {})
+            for tid in task_details:
+                task_details[tid]["shared_constraints"] = shared
+            return task_details
+        except Exception as e:
+            self.logger.error(f"Qwen SCC planning failed for {scc_id}: {e}")
+            fallback = {}
+            for node in nodes:
+                fallback[node["node_id"]] = {
+                    "intent": f"执行 {node['node_id']}",
+                    "parameters": {},
+                    "fallback": "跳过",
+                    "shared_constraints": {}
+                }
+            return fallback
+
+    def _topo_sort_with_scc(self, graph: nx.DiGraph, node_to_scc: Dict[str, str]) -> List[str]:
+        """对含环图按 SCC 分层进行近似拓扑排序"""
+        scc_graph = nx.DiGraph()
+        scc_map = {}
+        for idx, comp in enumerate(nx.strongly_connected_components(graph)):
+            scc_id = f"COMP_{idx}"
+            for node in comp:
+                scc_map[node] = scc_id
+            scc_graph.add_node(scc_id)
+
+        for u, v in graph.edges():
+            su, sv = scc_map[u], scc_map[v]
+            if su != sv:
+                scc_graph.add_edge(su, sv)
+
+        try:
+            scc_order = list(nx.topological_sort(scc_graph))
+        except:
+            scc_order = list(scc_graph.nodes)
+
+        node_order = []
+        reverse_map = {}
+        for node, sid in scc_map.items():
+            reverse_map.setdefault(sid, []).append(node)
+        for sid in scc_order:
+            node_order.extend(reverse_map.get(sid, []))
+        return node_order
+
+    # ================================
+    # 🔹 回退机制
+    # ================================
+
+    def _fallback_plan_by_template_or_default(self, parent_agent_id: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # 可根据 parent_agent_id 查模板，此处简化
+        return [{"node_id": parent_agent_id, "intent_params": {}}]
+
+    # ================================
+    # 🔹 模板管理（保持不变）
+    # ================================
+
+    def register_task_template(self, template_name: str, template: Dict[str, Any]) -> bool:
         if 'steps' not in template or not isinstance(template['steps'], list):
             self.logger.error(f"Template must have 'steps' list")
             return False
-        
         self.task_templates[template_name] = template
         self.logger.info(f"Registered task template: {template_name}")
         return True
-    
+
     def get_task_templates(self) -> Dict[str, Dict[str, Any]]:
-        """
-        获取所有任务模板
-        
-        Returns:
-            Dict[str, Dict[str, Any]]: 任务模板映射
-        """
         return self.task_templates.copy()

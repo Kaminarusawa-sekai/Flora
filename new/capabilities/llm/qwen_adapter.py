@@ -1,228 +1,235 @@
-"""Qwen LLM适配器"""
-from typing import Dict, Any, List, Optional
-import requests
+"""Qwen LLM适配器（基于 DashScope SDK）"""
+from typing import Dict, Any, List, Optional, Union
 import json
 from ..capability_base import CapabilityBase
 
 
 class QwenAdapter(CapabilityBase):
     """
-    Qwen大语言模型适配器
-    提供与Qwen API交互的标准接口
+    基于 DashScope SDK 的 Qwen 适配器
+    支持文本生成、多模态（VL）、JSON 解析、对话历史等
     """
-    
-    def __init__(self, api_key: Optional[str] = None, api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"):
-        """
-        初始化Qwen适配器
-        
-        Args:
-            api_key: API密钥
-            api_base: API基础URL
-        """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model_name: str = "qwen-max",
+        vl_model_name: str = "qwen-vl-max"
+    ):
         super().__init__()
-        self.api_key = api_key
-        self.api_base = api_base
-        self.default_model = "qwen-max"
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}" if api_key else ""
-        }
-    
+        
+        # 尝试从 config 获取 API Key（如果未传入）
+        if not api_key:
+            try:
+                from config import DASHSCOPE_API_KEY
+                api_key = DASHSCOPE_API_KEY
+            except ImportError:
+                pass
+
+        if not api_key:
+            raise ValueError("DashScope API key is required. Provide via 'api_key' or config.DASHSCOPE_API_KEY")
+
+        # 初始化 DashScope SDK
+        import dashscope
+        dashscope.api_key = api_key
+
+        self.model_name = model_name
+        self.vl_model_name = vl_model_name
+        self.dashscope = dashscope
+
     def get_capability_type(self) -> str:
-        """
-        获取能力类型
-        """
         return 'llm'
-    
-    def generate(self, prompt: str, **kwargs) -> str:
+
+    def generate(
+        self,
+        prompt: str,
+        images: Optional[List[str]] = None,
+        parse_json: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> Union[str, Dict[str, Any], None]:
         """
-        生成文本响应
-        
-        Args:
-            prompt: 提示文本
-            **kwargs: 额外参数
-                - model: 使用的模型名称
-                - temperature: 生成温度
-                - max_tokens: 最大生成长度
-                - top_p: 采样参数
-                
-        Returns:
-            str: 生成的文本
+        统一生成接口：自动根据是否含图片选择文本或 VL 模型
         """
-        model = kwargs.get('model', self.default_model)
-        temperature = kwargs.get('temperature', 0.7)
-        max_tokens = kwargs.get('max_tokens', 2048)
-        top_p = kwargs.get('top_p', 0.9)
-        
-        # 构造请求体
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "top_p": top_p
-        }
-        
+        images = images or []
+        if images:
+            return self._call_vl_model(prompt, images, parse_json, json_schema, max_retries, **kwargs)
+        else:
+            return self._call_text_model(prompt, parse_json, json_schema, max_retries, **kwargs)
+
+    def _call_text_model(
+        self,
+        prompt: str,
+        parse_json: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> Union[str, Dict[str, Any], None]:
+        for _ in range(max_retries):
+            try:
+                response = self.dashscope.Generation.call(
+                    model=self.model_name,
+                    prompt=prompt,
+                    **kwargs
+                )
+                if not response or not hasattr(response, 'output') or not response.output.text:
+                    continue
+
+                text = response.output.text.strip()
+                if not parse_json:
+                    return text
+
+                json_str = self._extract_json(text)
+                if not json_str:
+                    continue
+
+                result = json.loads(json_str)
+                if json_schema:
+                    missing = [k for k in json_schema if k not in result]
+                    if missing:
+                        print(f"[QwenAdapter] JSON 缺少字段: {missing}")
+                return result
+
+            except Exception as e:
+                print(f"[QwenAdapter Text Error] {e}")
+                continue
+        return None
+
+    def _call_vl_model(
+        self,
+        prompt: str,
+        images: List[str],
+        parse_json: bool = False,
+        json_schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> Union[str, Dict[str, Any], None]:
+        for _ in range(max_retries):
+            try:
+                response = self.dashscope.MultiModalConversation.call(
+                    model=self.vl_model_name,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"image": img} for img in images
+                        ] + [{"text": prompt}]
+                    }],
+                    **kwargs
+                )
+
+                if not response or not response.output or not response.output.choices:
+                    continue
+
+                text = response.output.choices[0].message.content[0].text.strip()
+                if not parse_json:
+                    return text
+
+                json_str = self._extract_json(text)
+                if not json_str:
+                    continue
+
+                result = json.loads(json_str)
+                if json_schema:
+                    missing = [k for k in json_schema if k not in result]
+                    if missing:
+                        print(f"[QwenAdapter] JSON 缺少字段: {missing}")
+                return result
+
+            except Exception as e:
+                print(f"[QwenAdapter VL Error] {e}")
+                continue
+        return None
+
+    def generate_chat(
+        self,
+        messages: List[Dict[str, str]],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        支持多轮对话（仅文本，不支持 VL）
+        messages 格式: [{"role": "user", "content": "..."}, ...]
+        """
         try:
-            # 发送请求
-            response = requests.post(
-                f"{self.api_base}/chat/completions",
-                headers=self.headers,
-                json=payload,
-                timeout=60
+            # DashScope 文本模型支持 messages 格式（需 qwen-turbo/max/plus 等）
+            response = self.dashscope.Generation.call(
+                model=self.model_name,
+                messages=messages,
+                **kwargs
             )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            # 解析响应
-            if result.get('choices') and len(result['choices']) > 0:
-                return result['choices'][0]['message']['content']
+
+            if response and response.output and response.output.text:
+                return {
+                    "content": response.output.text.strip(),
+                    "model": self.model_name,
+                    "usage": getattr(response, 'usage', {}),
+                    "id": getattr(response, 'request_id', '')
+                }
             else:
-                raise ValueError("No valid response from Qwen API")
-        
+                return {"content": "Error: No response", "error": "Empty response"}
+
         except Exception as e:
-            # 处理异常
-            print(f"Qwen API error: {str(e)}")
-            return f"Error: {str(e)}"
-    
-    def generate_chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        """
-        基于对话历史生成响应
-        
-        Args:
-            messages: 对话历史，格式为[{"role": "user/assistant/system", "content": "text"}, ...]
-            **kwargs: 额外参数
-                - model: 使用的模型名称
-                - temperature: 生成温度
-                - max_tokens: 最大生成长度
-                
-        Returns:
-            Dict[str, Any]: 包含响应和元数据的字典
-        """
-        model = kwargs.get('model', self.default_model)
-        temperature = kwargs.get('temperature', 0.7)
-        max_tokens = kwargs.get('max_tokens', 2048)
-        
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
-        
-        try:
-            response = requests.post(
-                f"{self.api_base}/chat/completions",
-                headers=self.headers,
-                json=payload,
-                timeout=60
-            )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            return {
-                "content": result.get('choices', [{}])[0].get('message', {}).get('content', ''),
-                "model": result.get('model', model),
-                "usage": result.get('usage', {}),
-                "id": result.get('id', '')
-            }
-        
-        except Exception as e:
-            return {
-                "content": f"Error: {str(e)}",
-                "error": str(e)
-            }
-    
+            return {"content": f"Error: {str(e)}", "error": str(e)}
+
     def embedding(self, texts: List[str], model: str = "text-embedding-v1") -> List[List[float]]:
-        """
-        生成文本嵌入
-        
-        Args:
-            texts: 文本列表
-            model: 嵌入模型名称
-            
-        Returns:
-            List[List[float]]: 嵌入向量列表
-        """
-        # 注意：Qwen的embedding API可能有不同的端点
-        # 这里使用通用的实现，实际应用中需要根据API文档调整
-        
-        payload = {
-            "model": model,
-            "input": texts
-        }
-        
         try:
-            response = requests.post(
-                f"{self.api_base}/embeddings",
-                headers=self.headers,
-                json=payload,
-                timeout=60
+            response = self.dashscope.TextEmbedding.call(
+                model=model,
+                input=texts
             )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            embeddings = []
-            for item in result.get('data', []):
-                embeddings.append(item.get('embedding', []))
-            
-            return embeddings
-        
+            if response and response.output and response.output.embeddings:
+                return [item.embedding for item in response.output.embeddings]
+            else:
+                return [[] for _ in texts]
         except Exception as e:
-            print(f"Embedding error: {str(e)}")
-            # 返回空嵌入
+            print(f"[QwenAdapter Embedding Error] {e}")
             return [[] for _ in texts]
-    
+
     def set_api_key(self, api_key: str) -> None:
-        """
-        设置API密钥
-        
-        Args:
-            api_key: 新的API密钥
-        """
-        self.api_key = api_key
-        self.headers["Authorization"] = f"Bearer {api_key}"
-    
+        self.dashscope.api_key = api_key
+
     def set_default_model(self, model: str) -> None:
-        """
-        设置默认模型
-        
-        Args:
-            model: 模型名称
-        """
-        self.default_model = model
-    
+        self.model_name = model
+
     def get_supported_models(self) -> List[str]:
-        """
-        获取支持的模型列表
-        
-        Returns:
-            List[str]: 支持的模型名称列表
-        """
         return [
-            "qwen-max",
-            "qwen-plus",
-            "qwen-turbo",
-            "qwen-max-longcontext"
+            "qwen-max", "qwen-plus", "qwen-turbo", "qwen-max-longcontext",
+            "qwen-vl-max", "qwen-vl-plus"
         ]
-    
+
     def batch_generate(self, prompts: List[str], **kwargs) -> List[str]:
-        """
-        批量生成文本
-        
-        Args:
-            prompts: 提示文本列表
-            **kwargs: 额外参数
-            
-        Returns:
-            List[str]: 生成的文本列表
-        """
-        results = []
-        for prompt in prompts:
-            results.append(self.generate(prompt, **kwargs))
-        return results
+        # 简单串行实现（DashScope SDK 本身不提供 batch 接口）
+        return [self.generate(prompt, **kwargs) for prompt in prompts]
+
+    @staticmethod
+    def _extract_json(text: str) -> Optional[str]:
+        """从文本中提取第一个合法 JSON 对象或数组"""
+        if not text or not isinstance(text, str):
+            return None
+
+        stack = []
+        start = -1
+        i = 0
+        n = len(text)
+
+        while i < n:
+            c = text[i]
+            if c in '{[':
+                if not stack:
+                    start = i
+                stack.append(c)
+            elif c in '}]':
+                if stack:
+                    opening = stack.pop()
+                    if (opening == '{' and c != '}') or (opening == '[' and c != ']'):
+                        stack.clear()
+                        start = -1
+                    elif not stack and start != -1:
+                        candidate = text[start:i+1]
+                        try:
+                            json.loads(candidate)
+                            return candidate
+                        except Exception:
+                            start = -1
+            i += 1
+        return None

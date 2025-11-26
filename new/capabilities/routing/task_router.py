@@ -3,138 +3,198 @@ from typing import Dict, Any, List, Optional, Tuple
 from ..capability_base import CapabilityBase
 import logging
 
-
 class TaskRouter(CapabilityBase):
-    """
-    任务路由器
-    负责根据任务特性选择最合适的执行器
-    """
-    
+    """任务路由器（支持自然语言输入 + 记忆上下文字符串）"""
+
     def __init__(self):
-        """
-        初始化任务路由器
-        """
         super().__init__()
         self.logger = logging.getLogger(__name__)
-        self.registry = None  # 将在initialize中设置
+        self.tree_manager = None
+        self._llm = None
         self.routing_strategies = {
             'default': self._default_routing_strategy,
             'semantic_match': self._semantic_match_strategy,
-            'load_balanced': self._load_balanced_strategy
+            'load_balanced': self._load_balanced_strategy,
+            'qwen_intelligent': self._qwen_intelligent_strategy,
         }
-    
+
     def get_capability_type(self) -> str:
-        """
-        获取能力类型
-        """
         return 'routing'
-    
-    def initialize(self, registry=None) -> bool:
-        """
-        初始化任务路由器
-        
-        Args:
-            registry: Agent注册表，用于获取可用Agent信息
-            
-        Returns:
-            bool: 是否初始化成功
-        """
+
+    def initialize(self, tree_manager=None, llm_client=None) -> bool:
         if not super().initialize():
             return False
-        
-        self.registry = registry
+        self.tree_manager = tree_manager
+        self._llm = llm_client
         return True
-    
-    def select_best_actor(self, agent_id: str, context: Dict[str, Any]) -> Optional[str]:
+
+    def select_best_actor(
+        self,
+        agent_id: str,
+        user_input: str,
+        memory_context: Optional[str] = None,
+        strategy: str = 'qwen_intelligent'
+    ) -> Optional[str]:
         """
-        从TaskCoordinator._select_best_actor迁移
-        选择最合适的Agent来执行任务
+        基于自然语言输入和记忆上下文选择最佳执行者
         
         Args:
-            agent_id: 当前Agent ID
-            context: 任务上下文
+            agent_id (str): 当前协调者 Agent ID
+            user_input (str): 用户的自然语言输入（如“分析最近的销售数据”）
+            memory_context (Optional[str]): 由 MemoryManager.build_conversation_context() 生成的记忆上下文
+            strategy (str): 路由策略，默认使用 qwen_intelligent
             
         Returns:
-            Optional[str]: 选定的Agent ID，如果没有找到则返回None
+            Optional[str]: 选中的子 Agent ID
         """
         try:
-            # 1. 确定使用的路由策略
-            strategy_type = context.get('routing_strategy', 'default')
-            strategy = self.routing_strategies.get(strategy_type, self.routing_strategies['default'])
-            
-            # 2. 获取候选Agent列表
-            candidates = self._get_candidate_agents(agent_id, context)
-            
+            candidates = self._get_candidate_agents(agent_id)
             if not candidates:
-                self.logger.warning(f"No candidate agents found for context: {context}")
+                self.logger.warning("No candidate agents available.")
                 return None
-            
-            # 3. 应用路由策略选择最佳Agent
-            best_agent_id = strategy(agent_id, context, candidates)
-            
+
+            strategy_func = self.routing_strategies.get(strategy)
+            if not strategy_func:
+                self.logger.warning(f"Unknown strategy '{strategy}', fallback to 'qwen_intelligent'")
+                strategy_func = self.routing_strategies['qwen_intelligent']
+
+            best_agent_id = strategy_func(
+                agent_id=agent_id,
+                user_input=user_input,
+                memory_context=memory_context,
+                candidates=candidates
+            )
+
             if best_agent_id:
-                self.logger.debug(f"Selected agent {best_agent_id} for context: {context}")
-                return best_agent_id
-            else:
-                self.logger.warning(f"Failed to select agent for context: {context}")
-                return None
-                
+                self.logger.debug(f"Selected agent: {best_agent_id} via {strategy}")
+            return best_agent_id
+
         except Exception as e:
-            self.logger.error(f"Error selecting best actor: {str(e)}", exc_info=True)
+            self.logger.error(f"Routing error: {e}", exc_info=True)
             return None
-    
-    def _get_candidate_agents(self, agent_id: str, context: Dict[str, Any]) -> List[str]:
+
+    def _get_candidate_agents(self, agent_id: str) -> List[str]:
         """
-        获取候选Agent列表
-        
-        Args:
-            agent_id: 当前Agent ID
-            context: 任务上下文
-            
-        Returns:
-            List[str]: 候选Agent ID列表
+        获取当前 agent 的所有直接子节点（不区分叶子或中间节点）
+        如果没有子节点，返回空列表。
         """
-        if not self.registry:
-            self.logger.error("Registry not initialized")
+        if not self.tree_manager:
+            self.logger.error("TreeManager not initialized")
             return []
-        
+
         try:
-            # 根据任务类型和Agent关系获取候选列表
-            task_type = context.get('task_type')
-            
-            # 1. 首先尝试获取当前Agent的直接子节点
-            children = self.registry.get_children(agent_id) if agent_id else []
-            
-            if not children:
-                self.logger.debug(f"No children for agent {agent_id}, checking siblings")
-                # 2. 如果没有子节点，尝试获取兄弟节点
-                parent = self.registry.get_parent(agent_id) if agent_id else None
-                if parent:
-                    children = self.registry.get_children(parent)
-                    # 过滤掉自己
-                    children = [child for child in children if child != agent_id]
-            
-            if not children:
-                # 3. 如果仍然没有，获取所有叶子节点
-                children = self._get_all_leaf_agents()
-            
-            # 4. 根据任务类型过滤候选Agent
-            if task_type:
-                filtered_candidates = []
-                for candidate_id in children:
-                    meta = self.registry.get_agent_meta(candidate_id)
-                    if meta:
-                        capabilities = meta.get('capability', [])
-                        if task_type in capabilities or not capabilities:  # 允许无能力声明的Agent处理任何任务
-                            filtered_candidates.append(candidate_id)
-                return filtered_candidates
-            
-            return children
-            
+            # 直接返回子节点列表（可能为空）
+            return self.tree_manager.get_children(agent_id) if agent_id else []
         except Exception as e:
-            self.logger.error(f"Error getting candidate agents: {str(e)}", exc_info=True)
+            self.logger.error(f"Error fetching children from TreeManager for agent '{agent_id}': {e}", exc_info=True)
             return []
-    
+
+    # ========== 策略函数签名统一更新 ==========
+
+    def _default_routing_strategy(
+        self,
+        agent_id: str,
+        user_input: str,
+        memory_context: Optional[str],
+        candidates: List[str]
+    ) -> Optional[str]:
+        # 简单轮询或首节点
+        return candidates[0] if candidates else None
+
+    def _semantic_match_strategy(
+        self,
+        agent_id: str,
+        user_input: str,
+        memory_context: Optional[str],
+        candidates: List[str]
+    ) -> Optional[str]:
+        if not candidates:
+            return None
+        best_score, best_agent = 0.0, None
+        for cid in candidates:
+            meta = self.registry.get_agent_meta(cid)
+            if not meta:
+                continue
+            score = self._calculate_semantic_score(user_input, meta)
+            if score > best_score:
+                best_score, best_agent = score, cid
+        return best_agent if best_score > 0.2 else candidates[0]
+
+
+    # ========== 智能策略：融合 user_input + memory_context ==========
+
+    def _qwen_intelligent_strategy(
+        self,
+        agent_id: str,
+        user_input: str,
+        memory_context: Optional[str],
+        candidates: List[str]
+    ) -> Optional[str]:
+        if not candidates:
+            return None
+
+        # 构建候选节点描述
+        actors = []
+        for cid in candidates:
+            meta = self.tree_manager.get_agent_meta(cid)
+            if not meta:
+                continue
+            actors.append({
+                "code": cid,
+                "name": meta.get("name", "Unnamed"),
+                "capability": meta.get("capability", []),
+                "description": meta.get("description", ""),
+                "datascope": meta.get("datascope", {})
+            })
+
+        if not actors:
+            return None
+
+        # 构建提示词
+        prompt = self._build_intelligent_prompt(
+            user_input=user_input,
+            memory_context=memory_context,
+            actors=actors
+        )
+
+        try:
+            response = self._call_qwen(prompt)
+            selected_code = self._parse_selected_code(response)
+            if selected_code and selected_code in candidates:
+                return selected_code
+        except Exception as e:
+            self.logger.error(f"Qwen intelligent routing failed: {e}")
+
+        # fallback
+        return self._default_routing_strategy(agent_id, user_input, memory_context, candidates)
+
+    def _build_intelligent_prompt(
+        self,
+        user_input: str,
+        memory_context: Optional[str],
+        actors: List[Dict]
+    ) -> str:
+        # 格式化记忆上下文
+        mem_part = memory_context.strip() if memory_context else "无相关记忆上下文"
+
+        # 格式化候选节点
+        actors_desc = "\n".join(
+            f"【{a['name']}】\n- 节点代码: {a['code']}\n- 能力: {', '.join(a['capability']) if a['capability'] else '通用'}\n"
+            f"- 描述: {a['description']}\n- 数据范围: {a['datascope']}\n"
+            for a in actors
+        )
+
+        return (
+            "你是一个智能任务调度专家，请根据用户当前请求和对话记忆，从可用子节点中选择最合适的一个。\n\n"
+            "【用户当前请求】\n"
+            f"{user_input}\n\n"
+            "【对话与记忆上下文】\n"
+            f"{mem_part}\n\n"
+            "【可用子节点列表】\n"
+            f"{actors_desc}\n\n"
+            "请严格只输出一个「节点代码」（例如：analyzer_v3），不要任何解释、标点或额外文字。\n"
+            "如果无法确定，请输出 None。"
+        )
     def _default_routing_strategy(self, agent_id: str, context: Dict[str, Any], candidates: List[str]) -> Optional[str]:
         """
         默认路由策略：选择第一个匹配的Agent
@@ -166,6 +226,19 @@ class TaskRouter(CapabilityBase):
         # 返回第一个候选Agent
         return candidates[0]
     
+
+    def _parse_selected_actor_name(self, llm_output: str) -> str:
+        """从大模型输出中提取节点名称（简单清洗）"""
+        return llm_output.strip().split('\n')[0].strip()
+    
+    def call_qwen(self,prompt: str) -> str:
+        from new.capabilities.llm.qwen_adapter import QwenAdapter
+        llm=QwenAdapter()
+        res=llm.generate(prompt)
+        return res
+
+
+
     def _semantic_match_strategy(self, agent_id: str, context: Dict[str, Any], candidates: List[str]) -> Optional[str]:
         """
         语义匹配策略：基于Agent描述和任务上下文进行语义匹配
@@ -218,44 +291,6 @@ class TaskRouter(CapabilityBase):
                 
         except Exception as e:
             self.logger.error(f"Error in semantic match strategy: {str(e)}", exc_info=True)
-            return self._default_routing_strategy(agent_id, context, candidates)
-    
-    def _load_balanced_strategy(self, agent_id: str, context: Dict[str, Any], candidates: List[str]) -> Optional[str]:
-        """
-        负载均衡策略：选择当前负载最低的Agent
-        
-        Args:
-            agent_id: 当前Agent ID
-            context: 任务上下文
-            candidates: 候选Agent列表
-            
-        Returns:
-            Optional[str]: 选定的Agent ID
-        """
-        if not candidates:
-            return None
-        
-        try:
-            # 获取各Agent的负载信息
-            agent_loads = {}
-            for candidate_id in candidates:
-                meta = self.registry.get_agent_meta(candidate_id)
-                if meta:
-                    # 获取当前负载或默认为0
-                    load = meta.get('current_load', 0)
-                    agent_loads[candidate_id] = load
-            
-            # 如果有负载信息，选择负载最低的
-            if agent_loads:
-                # 按负载排序，选择最低的
-                sorted_agents = sorted(agent_loads.items(), key=lambda x: x[1])
-                return sorted_agents[0][0]
-            else:
-                # 否则使用默认策略
-                return self._default_routing_strategy(agent_id, context, candidates)
-                
-        except Exception as e:
-            self.logger.error(f"Error in load balanced strategy: {str(e)}", exc_info=True)
             return self._default_routing_strategy(agent_id, context, candidates)
     
     def _calculate_semantic_score(self, task_description: str, agent_info: Dict[str, Any]) -> float:
