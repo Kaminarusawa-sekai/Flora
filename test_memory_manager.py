@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import List
 
 # === 假设你的模块路径如下，请根据实际调整 ===
-from new.capabilities.llm_memory.manager import UnifiedMemoryManager
-from new.external.memory_store.memory_repos import (
+from capabilities.llm_memory.manager import UnifiedMemoryManager
+from external.memory_store.memory_repos import (
     build_procedural_repo,
     build_resource_repo,
     build_vault_repo

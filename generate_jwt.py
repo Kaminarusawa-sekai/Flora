@@ -1,4 +1,4 @@
-from new.entry_layer.auth_middleware import create_auth_middleware
+from entry_layer.auth_middleware import create_auth_middleware
 
 # 创建AuthMiddleware实例
 auth_middleware = create_auth_middleware()

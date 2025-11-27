@@ -9,13 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import uvicorn
 
-from agent.agent_registry import AgentRegistry
-from actor_manager.actor_manager import ActorManager
-from agent.agent_actor import AgentActor
-from task_orchestrator.orchestrator import TaskOrchestrator
-from task_orchestrator.context import current_tenant_id, current_user_id
+
 from init_global_components import init_global_components
-from connector.dify_connector import DifyRunRegistry, DifyRunRecord, get_dify_registry
 from config import NEO4J_URI, NEO4J_USER, CONNECTOR_RECORD_DB_URL
 
 
@@ -27,10 +22,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fastapi-actor")
 
 
-
-# registry = AgentRegistry(uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD)
-# actor_manager = ActorManager(registry=registry, actor_class=AgentActor)
-# orchestrator = TaskOrchestrator(registry)
 
 # 使用线程池处理阻塞的 Actor 操作（因为 FastAPI 是异步的）
 executor = ThreadPoolExecutor(max_workers=20)
@@ -80,53 +71,39 @@ class GenerateResponse(BaseModel):
 
 
 
-async def test():
-    # await generate(GenerateRequest(input="hello", user_id="1"))
-    import thespian.actors as actors
-    system = actors.ActorSystem("simpleSystemBase")
 
-    handler = system.createActor(DataActor)
+def start_project():
+    """
+    启动整个项目
+    包括初始化全局组件、启动FastAPI应用和RabbitMQ桥接器
+    """
+    import asyncio
+    import threading
+    
+    # 1. 初始化全局组件
+    asyncio.run(init_global_components())
+    
+    # 2. 启动RabbitMQ桥接器（在后台线程中运行）
+    def start_rabbit_bridge_thread():
+        try:
+            start_rabbit_bridge()
+        except Exception as e:
+            logger.error(f"RabbitMQ bridge failed: {e}")
+    
+    rabbit_thread = threading.Thread(target=start_rabbit_bridge_thread, daemon=True)
+    rabbit_thread.start()
+    logger.info("RabbitMQ bridge started in background thread")
+    
+    # 3. 启动FastAPI应用
+    logger.info("Starting FastAPI application...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":
-    # uvicorn.run(app, host="0.0.0.0", port=8000)
-    # asyncio.run(init_global_components())
-    # asyncio.run(test())
-
-
-
-# rabbit_bridge.py
-import pika
-import json
-from thespian.actors import ActorSystem
-
-def start_rabbit_bridge(thespian_system_name="multiprocTCPBase"):
-    asys = ActorSystem(thespian_system_name)
-
-    def on_message(ch, method, properties, body):
-        try:
-            msg = json.loads(body)
-            # 发送给全局 LoopSchedulerActor
-            scheduler_addr = asys.createActor(None, globalName="loop_scheduler")
-            asys.tell(scheduler_addr, {
-                "type": "rabbitmq_trigger",
-                **msg
-            })
-        except Exception as e:
-            print(f"Bridge error: {e}")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-
-    connection = pika.BlockingConnection(pika.URLParameters("amqp://guest:guest@localhost:5672/"))
-    channel = connection.channel()
-    channel.basic_consume(queue='loop.trigger.queue', on_message_callback=on_message)
-    print("RabbitMQ bridge started...")
-    channel.start_consuming()
-
-
+    start_project()
     import thespian.actors as actors
     system = actors.ActorSystem("simpleSystemBase")
-    from agent.agent_actor import AgentActor
-    from agent.agent_registry import AgentRegistry
+    from agents.agent_actor import AgentActor
     from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
     registry = AgentRegistry.get_instance(
         uri=NEO4J_URI,
