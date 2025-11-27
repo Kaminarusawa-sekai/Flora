@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from thespian.actors import Actor, ActorAddress
@@ -6,9 +7,22 @@ from thespian.actors import Actor, ActorAddress
 from new.capabilities.llm_memory.memory_capability import MemoryCapability
 from new.capability_actors.mcp_actor import MCPCapabilityActor
 from new.common.messages import SubtaskResult, SubtaskError, TaskMessage, McpFallbackRequest
-
-
 from new.capabilities.registry import capability_registry
+
+# 导入草稿管理相关模块
+from new.common.draft.conversation_manager import ConversationManager
+from new.common.draft.task_draft import TaskDraft
+
+# 导入意图识别相关模块
+from new.common.intent.intent_router import classify_intent_with_qwen, should_clarify
+
+# 导入任务管理相关模块
+from new.common.tasks.task_registry import TaskRegistry
+from new.common.tasks.task import Task
+from new.common.tasks.task_type import TaskType
+
+# 导入循环调度器
+from new.capability_actors.loop_scheduler_actor import LoopSchedulerActor
 
 
 TASK_INTENTS = {
@@ -42,11 +56,23 @@ class AgentActor(Actor):
         self.agent_id: str = ""
         self.memory_cap: Optional[MemoryCapability] = None
         # self._task_coordinator = TaskCoordinator()
-        self.router=router = capability_registry.get_capability("routing")
+        self.router = capability_registry.get_capability("routing")
         
         self._aggregation_state: Dict[str, Dict] = {}
         self.task_id_to_sender: Dict[str, ActorAddress] = {}
         self.log = logging.getLogger("AgentActor")  # 初始日志，后续按 agent_id 覆盖
+        
+        # 添加草稿管理实例
+        self.conversation_manager = ConversationManager()
+        
+        # 添加任务注册表实例
+        self.task_registry = TaskRegistry()
+        
+        # 添加澄清选项状态
+        self.clarification_options: Optional[List[Dict[str, str]]] = None
+        
+        # 添加当前用户ID（实际应从消息中获取）
+        self.current_user_id: Optional[str] = None
 
     def receiveMessage(self, message: Any, sender: ActorAddress):
         try:
@@ -94,56 +120,108 @@ class AgentActor(Actor):
 
         current_desc = task.get("description") or task.get("content", "")
         self.task_id_to_sender[parent_task_id] = sender
+        
+        # 获取当前用户ID（实际应从消息中获取）
+        self.current_user_id = task.get("user_id", "default_user")
 
-        # === 阶段一：意图分类 ===
-        intent = self._llm_classify_task_intent(current_desc, decision_context)
-
-          # === 如果是针对历史任务的操作 ===
-        if intent_type != "new_task":
-            target_task = self._resolve_target_task(intent["target_task_reference"])
-            if not target_task:
-                self.send(sender, {"error": "未找到相关任务", "reference": intent["target_task_reference"]})
+        # === Step 1: 草稿判断 ===
+        # 检查用户是否想继续草稿，或当前是否有未完成的草稿
+        if self.conversation_manager.is_continue_request(current_desc):
+            if self.conversation_manager.restore_latest_draft():
+                self.send(sender, {
+                    "status": "draft_restored",
+                    "message": f"好的！我们继续刚才的任务。\n{self.conversation_manager.current_draft.last_question}"
+                })
+                return
+            else:
+                self.send(sender, {
+                    "status": "no_draft",
+                    "message": "抱歉，我没有找到未完成的任务草稿。你可以重新开始一个任务吗？"
+                })
                 return
 
-            # 路由到对应处理器
-            if intent_type == "comment_on_task":
-                self._handle_add_comment(target_task, intent["comment_text"], sender)
-            elif intent_type == "revise_result":
-                self._handle_revise_result(target_task, intent["revision_content"], sender)
-            elif intent_type == "re_run_task":
-                self._handle_re_run_task(target_task, sender)
-            elif intent_type == "cancel_task":
-                self._handle_cancel_any_task(target_task, sender)
-            elif intent_type in ["trigger_existing", "modify_loop_interval", "pause_loop", "resume_loop"]:
-                # 转发给循环调度器（需确保是 loop 类型）
-                if target_task.get("type") == "loop":
-                    self._forward_to_loop_scheduler(intent, target_task["task_id"], sender)
-                else:
-                    self.send(sender, {"error": "该任务不是循环任务"})
-            else:
-                self.send(sender, {"error": "不支持的操作类型"})
+        # === Step 2: 意图判断 ===
+        # 使用classify_intent_with_qwen判断用户意图
+        intent_result = classify_intent_with_qwen(current_desc)
+        
+        # === Step 3: 意图澄清 ===
+        # 如果意图模糊，生成澄清选项
+        if should_clarify(intent_result):
+            # 这里需要生成澄清选项，暂时返回默认的澄清请求
+            self.send(sender, {
+                "status": "need_clarification",
+                "message": "我不太确定你的意思，你能再详细说明一下吗？"
+            })
+            return
 
-    # === 否则：处理新任务 ===
+        # === Step 4: 任务操作判断 ===
+        # 根据意图和用户输入，判断具体的任务操作
+        intent_type = intent_result.get("intent", "new_task")
+        
+        # === Step 5: 任务执行 ===
+        # 根据任务操作执行相应的逻辑
+        if intent_type == "task":
+            # 处理任务相关操作
+            self._handle_task_operation(task, sender, current_desc, parent_task_id)
+        elif intent_type == "query":
+            # 处理查询相关操作
+            self._handle_query_operation(task, sender, current_desc)
+        elif intent_type == "chat":
+            # 处理闲聊相关操作
+            self._handle_chat_operation(task, sender, current_desc)
+        else:
+            # 处理其他意图
+            self.send(sender, {
+                "status": "not_supported",
+                "message": f"当前不支持{intent_type}类型的请求"
+            })
+            return
+    
+    def _handle_task_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
+        """处理任务相关操作"""
+        # 使用LLM判断具体的任务操作
+        task_operation = self._llm_classify_task_operation(current_desc)
+        operation_type = task_operation.get("operation_type", "new_task")
+        
+        # 路由到对应处理器
+        if operation_type == "new_task":
+            self._handle_new_task(task, sender, current_desc, parent_task_id)
+        elif operation_type == "comment_on_task":
+            self._handle_add_comment(task, task_operation.get("comment_text", ""), sender)
+        elif operation_type == "revise_result":
+            self._handle_revise_result(task, task_operation.get("revision_content", ""), sender)
+        elif operation_type == "re_run_task":
+            self._handle_re_run_task(task, sender)
+        elif operation_type == "cancel_task":
+            self._handle_cancel_any_task(task, sender)
+        elif operation_type in ["trigger_existing", "modify_loop_interval", "pause_loop", "resume_loop"]:
+            # 转发给循环调度器
+            self._forward_to_loop_scheduler(task_operation, task.get("task_id"), sender)
+        else:
+            self.send(sender, {
+                "error": "不支持的操作类型",
+                "operation_type": operation_type
+            })
+    
+    def _handle_new_task(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
+        """处理新增任务"""
+        # === Step 1: 路由决策 ===
+        decision_context = self.memory_cap.build_conversation_context(current_input=current_desc)
+        decision = self._llm_decide_task_strategy(current_desc, decision_context)
 
-
-
-            # === Step 1: 路由决策 ===
-            decision_context = self.memory_cap.build_conversation_context(current_input=current_desc)
-            decision = self._llm_decide_task_strategy(current_desc, decision_context)
-
-            if decision.get("is_loop", True):
-                self.add_loop_task(task, sender)
-                
-            
+        if decision.get("is_loop", False):
+            self.add_loop_task(task, sender)
+            return
 
         needs_vault = decision.get("requires_sensitive_data", False)
 
         # === Step 2: 能力路由 ===
+        select_node_id = None
         if self.router:
             select_node_id = self.router.select_best_actor(
                 agent_id=self.agent_id,
-                user_input=task_desc,
-                memory_context=context
+                user_input=current_desc,
+                memory_context=decision_context
             )
         if not select_node_id:
             self._dispatch_to_fallback(parent_task_id, decision_context, sender)
@@ -172,6 +250,75 @@ class AgentActor(Actor):
         self.memory_cap.add_memory_intelligently(
             f"Started processing task: {current_desc} (ID: {parent_task_id})"
         )
+    
+    def _handle_query_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str):
+        """处理查询相关操作"""
+        # 这里实现查询相关的逻辑
+        self.send(sender, {
+            "status": "query_result",
+            "message": f"查询结果：{current_desc}"
+        })
+    
+    def _handle_chat_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str):
+        """处理闲聊相关操作"""
+        # 这里实现闲聊相关的逻辑
+        self.send(sender, {
+            "status": "chat_response",
+            "message": f"闲聊回复：{current_desc}"
+        })
+    
+    def _llm_classify_task_operation(self, user_input: str) -> Dict[str, Any]:
+        """
+        使用LLM判断具体的任务操作
+        """
+        prompt = f"""你是一个智能任务操作系统。请分析用户当前输入是对任务的具体操作类型。
+
+            【用户输入】
+            {user_input}
+
+            系统支持以下任务操作：
+            1. new_task: 创建新任务（如“帮我查一下天气”）
+            2. comment_on_task: 对已有任务追加评论（如“刚才那个报告太简略了”、“漏了第三点”）
+            3. revise_result: 修订任务结果（如“把‘成功’改成‘部分成功’”、“更新数据为100”）
+            4. re_run_task: 重新执行任务（如“再试一次”、“重新跑一下”）
+            5. cancel_task: 取消任务（如“不用做了”）
+            6. archive_task: 归档任务（如“这个可以关了”）
+            7. trigger_existing: 立即触发循环任务（如“现在执行日报”）
+            8. modify_loop_interval: 修改循环任务间隔（如“改成每天执行”）
+            9. pause_loop: 暂停循环任务（如“暂停日报”）
+            10. resume_loop: 恢复循环任务（如“恢复日报”）
+
+            请输出严格 JSON：
+            {{
+            "operation_type": "...",
+            "comment_text": "仅 comment_on_task 时存在",
+            "revision_content": "仅 revise_result 时存在",
+            "reasoning": "..."
+            }}
+
+            operation_type 必须是上述之一。
+            """
+
+        try:
+            from new.capabilities.llm.qwen_adapter import QwenAdapter
+            llm = QwenAdapter()
+            response = llm.generate(prompt, parse_json=True, max_tokens=300, temperature=0.2)
+            
+            # 安全转换
+            return {
+                "operation_type": response.get("operation_type", "new_task"),
+                "comment_text": response.get("comment_text", ""),
+                "revision_content": response.get("revision_content", ""),
+                "reasoning": response.get("reasoning", "")
+            }
+        except Exception as e:
+            self.log.warning(f"Task operation classification failed: {e}. Falling back to new_task.")
+            return {
+                "operation_type": "new_task",
+                "comment_text": "",
+                "revision_content": "",
+                "reasoning": str(e)
+            }
 
     # ======================
     # 子任务结果处理（保持聚合逻辑不变）
@@ -183,13 +330,19 @@ class AgentActor(Actor):
         所以我们不在此启动 pika 消费者！
         而是让外部系统（或另一个 Actor）将 RabbitMQ 消息桥接到 Thespian。
         """
+        parent_task_id = task.get("task_id")
+        if not parent_task_id:
+            self.send(sender, {"error": "缺少任务ID", "task": task})
+            return
+            
+        current_desc = task.get("description") or task.get("content", "")
         self.log.info(f"Registering LOOP task: {parent_task_id}")
         
         # 构造循环执行的消息（当调度器触发时，会发回给自己）
         loop_execution_msg = {
             "message_type": "execute_loop_task",
             "original_task": task,
-            "decision": decision
+            "decision": {"is_loop": True}
         }
 
         # 向全局调度器注册
@@ -205,14 +358,33 @@ class AgentActor(Actor):
         loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(loop_scheduler, register_msg)
 
+        # 保存循环任务到注册表
+        loop_task = Task(
+            task_id=parent_task_id,
+            description=current_desc,
+            task_type=TaskType.LOOP,
+            user_id=self.current_user_id,
+            schedule=str(loop_interval),
+            next_run_time=datetime.now().fromtimestamp(time.time() + loop_interval),
+            original_input=current_desc
+        )
+        self.task_registry.create_task(loop_task)
+
         # 回复用户：已注册循环任务
         self.send(sender, {
             "status": "loop_registered",
             "task_id": parent_task_id,
             "interval_sec": loop_interval,
-            "reasoning": decision.get("reasoning", "")
+            "reasoning": "循环任务已成功注册"
         })
         return
+    
+    def _estimate_loop_interval(self, task_desc: str) -> int:
+        """
+        估算循环任务的执行间隔
+        """
+        # 这里可以使用LLM来估算，暂时返回默认值
+        return 3600  # 默认1小时
 
 
     def _llm_classify_task_intent(self, user_input: str, context: str) -> Dict[str, Any]:
@@ -257,20 +429,16 @@ class AgentActor(Actor):
             """
 
         try:
-            response = Generation.call(
-                model="qwen-max",
-                prompt=prompt,
-                format="json",
-                max_tokens=500,
-                temperature=0.2
-            )
-            output = json.loads(response.output.text.strip())
+            from new.capabilities.llm.qwen_adapter import QwenAdapter
+            llm = QwenAdapter()
+            response = llm.generate(prompt, parse_json=True, max_tokens=500, temperature=0.2)
+            
             # 安全转换
             return {
-                "intent_type": output.get("intent_type", "new_task"),
-                "task_reference": output.get("task_reference", ""),
-                "new_interval_sec": output.get("new_interval_sec"),
-                "reasoning": output.get("reasoning", "")
+                "intent_type": response.get("intent_type", "new_task"),
+                "task_reference": response.get("target_task_reference", ""),
+                "new_interval_sec": response.get("new_interval_sec"),
+                "reasoning": response.get("reasoning", "")
             }
         except Exception as e:
             self.log.warning(f"Intent classification failed: {e}. Falling back to new_task.")
@@ -278,14 +446,9 @@ class AgentActor(Actor):
 
     def _resolve_task_id_by_reference(self, reference: str) -> Optional[str]:
         """根据用户描述（如“日报”）匹配已注册的循环任务ID"""
-        # 从记忆中查找最近的循环任务注册记录
-        memories = self.manager.get_recent_memories(limit=20, keywords=["loop", "循环", "定时"])
-        for mem in memories:
-            content = mem.get("content", "").lower()
-            if reference.lower() in content or reference.lower() in mem.get("task_id", ""):
-                # 假设记忆中存了 task_id
-                return mem.get("task_id")
-        return None
+        # 使用task_registry根据引用查找任务
+        task = self.task_registry.find_task_by_reference(self.current_user_id, reference)
+        return task.task_id if task else None
 
 
     def _handle_trigger_existing(self, intent: Dict[str, Any], sender: ActorAddress):
@@ -296,7 +459,7 @@ class AgentActor(Actor):
             return
 
         # 向 LoopScheduler 发送“立即执行”消息（自定义类型）
-        loop_scheduler = self.createActor(None, globalName="loop_scheduler")
+        loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(loop_scheduler, {
             "type": "trigger_task_now",
             "task_id": task_id
@@ -310,7 +473,7 @@ class AgentActor(Actor):
             self.send(sender, {"error": "未找到相关循环任务"})
             return
 
-        loop_scheduler = self.createActor(None, globalName="loop_scheduler")
+        loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(loop_scheduler, {
             "type": "cancel_loop_task",
             "task_id": task_id
@@ -329,7 +492,7 @@ class AgentActor(Actor):
             self.send(sender, {"error": "未找到相关循环任务"})
             return
 
-        loop_scheduler = self.createActor(None, globalName="loop_scheduler")
+        loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(loop_scheduler, {
             "type": "update_loop_interval",
             "task_id": task_id,
@@ -354,31 +517,95 @@ class AgentActor(Actor):
             self.send(sender, {"error": "任务未找到"})
 
     def _handle_add_comment(self, task: dict, comment: str, sender: ActorAddress):
-        task_id = task["task_id"]
-        self.manager.add_comment_to_task(task_id, comment)
+        task_id = task.get("task_id") or task.get("target_task_id")
+        if not task_id:
+            self.send(sender, {"error": "缺少任务ID", "task": task})
+            return
+        
+        # 使用task_registry添加评论
+        target_task = self.task_registry.get_task(task_id)
+        if not target_task:
+            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            return
+        
+        # 添加评论
+        target_task.comments.append({"content": comment, "created_at": datetime.now().isoformat()})
+        self.task_registry.update_task(task_id, {"comments": target_task.comments})
         self.send(sender, {"status": "comment_added", "task_id": task_id})
 
     def _handle_revise_result(self, task: dict, new_content: str, sender: ActorAddress):
+        task_id = task.get("task_id") or task.get("target_task_id")
+        if not task_id:
+            self.send(sender, {"error": "缺少任务ID", "task": task})
+            return
+        
+        # 使用task_registry修改结果
+        target_task = self.task_registry.get_task(task_id)
+        if not target_task:
+            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            return
+        
         # 简单策略：全量替换；高级策略：结构化 patch
-        self.manager.update_task_result(task["task_id"], new_content)
-        self.send(sender, {"status": "result_revised", "task_id": task["task_id"]})
+        self.task_registry.update_task(task_id, {"corrected_result": new_content})
+        self.send(sender, {"status": "result_revised", "task_id": task_id})
 
     def _handle_re_run_task(self, task: dict, sender: ActorAddress):
         # 重新提交原任务描述
+        task_id = task.get("task_id") or task.get("target_task_id")
+        if not task_id:
+            self.send(sender, {"error": "缺少任务ID", "task": task})
+            return
+        
+        target_task = self.task_registry.get_task(task_id)
+        if not target_task:
+            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            return
+        
         new_task_msg = {
-            "task_id": f"{task['task_id']}_retry_{int(time.time())}",
-            "description": task["description"],
-            "original_task_id": task["task_id"]  # 用于追踪
+            "task_id": f"{task_id}_retry_{int(time.time())}",
+            "description": target_task.description,
+            "original_task_id": task_id,  # 用于追踪
+            "user_id": self.current_user_id
         }
-        self._execute_one_time_task(new_task_msg, sender)
+        
+        # 使用_handle_new_task重新执行任务
+        self._handle_new_task(new_task_msg, sender, target_task.description, new_task_msg["task_id"])
     
     def _handle_cancel_any_task(self, task: dict, sender: ActorAddress):
-        if task["type"] == "loop":
-            self._forward_to_loop_scheduler({"type": "cancel_loop_task", "task_id": task["task_id"]}, sender)
+        task_id = task.get("task_id") or task.get("target_task_id")
+        if not task_id:
+            self.send(sender, {"error": "缺少任务ID", "task": task})
+            return
+        
+        target_task = self.task_registry.get_task(task_id)
+        if not target_task:
+            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            return
+        
+        if target_task.type == TaskType.LOOP:
+            self._forward_to_loop_scheduler({"type": "cancel_loop_task", "task_id": task_id}, sender)
         else:
             # 普通任务：标记为 cancelled（若还在运行，可发取消信号）
-            self.manager.mark_task_cancelled(task["task_id"])
-            self.send(sender, {"status": "task_cancelled", "task_id": task["task_id"]})
+            self.task_registry.update_task(task_id, {"status": "cancelled"})
+            self.send(sender, {"status": "task_cancelled", "task_id": task_id})
+    
+    def _forward_to_loop_scheduler(self, intent: Dict[str, Any], task_id: str, sender: ActorAddress):
+        """转发给循环调度器"""
+        # 获取全局调度器地址（通过 globalName）
+        loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
+        
+        # 构造转发消息
+        forward_msg = {
+            "type": intent.get("type", "trigger_task_now"),
+            "task_id": task_id
+        }
+        
+        # 添加额外参数
+        if intent.get("type") == "update_loop_interval":
+            forward_msg["interval_sec"] = intent.get("new_interval_sec", 3600)
+        
+        self.send(loop_scheduler, forward_msg)
+        self.send(sender, {"status": "command_sent", "task_id": task_id, "command": forward_msg["type"]})
 
 
     def _resolve_target_task(self, reference: str) -> Optional[Dict[str, Any]]:
@@ -415,7 +642,7 @@ class AgentActor(Actor):
    
    
     def _send_to_scheduler(self, msg: dict, reply_to: ActorAddress):
-        scheduler = self.createActor(None, globalName="loop_scheduler")
+        scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(scheduler, msg)
         # 可选：等待响应或直接回复
         self.send(reply_to, {"status": "command_sent", **msg})
@@ -473,14 +700,20 @@ class AgentActor(Actor):
     # ======================
 
     def _ensure_memory_ready(self) -> bool:
-        if self.memory_cap is None or not self.memory_cap.is_initialized:
+        if self.memory_cap is None:
             self.log.error("Memory capability not ready")
             return False
         return True
 
     def _plan_subtasks(self, node_id: str, goal: str) -> List[Dict[str, Any]]:
-        planning_context = self.memory_cap.build_planning_context(planning_goal=goal)
-        return self._task_coordinator.plan_subtasks(node_id, planning_context)
+        """
+        简化实现：返回单个子任务，实际应使用任务协调器进行复杂规划
+        """
+        return [{
+            "node_id": node_id,
+            "description": goal,
+            "intent_params": {}
+        }]
 
     def _dispatch_subtasks(
         self,
@@ -531,7 +764,9 @@ class AgentActor(Actor):
             return None
 
     def _dispatch_to_fallback(self, task_id: str, context: str, sender: ActorAddress):
-        fallback_addr = self.createActor(McpLlmActor)
+        # 导入McpLlmActor
+        from new.capability_actors.mcp_actor import MCPCapabilityActor
+        fallback_addr = self.createActor(MCPCapabilityActor)
         self.send(fallback_addr, McpFallbackRequest(task_id=task_id, context=context))
         self._aggregation_state[task_id] = {
             "pending": {"MCP_FALLBACK_TASK"},
@@ -576,7 +811,7 @@ class AgentActor(Actor):
         try:
             from new.capabilities.llm.qwen_adapter import QwenAdapter
             llm = QwenAdapter()
-            result = llm.generate_text(prompt, max_tokens=300)
+            result = llm.generate(prompt, parse_json=True, max_tokens=300)
 
             # 确保字段存在且类型正确
             return {

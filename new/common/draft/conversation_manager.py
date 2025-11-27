@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import Dict, Optional, Any
-from datetime import datetime
+from typing import Dict, Optional, Any, List
+from datetime import datetime, timedelta
 import uuid
 import json
 
@@ -28,21 +28,51 @@ class ConversationManager:
     def __init__(self):
         self.state = AgentState.IDLE
         self.current_draft: Optional[TaskDraft] = None
-        self.saved_drafts: Dict[str, TaskDraft] = {}  # user_id → draft（单用户可简化为一个）
+        # 用字典存储不同用户的草稿栈，每个用户最多保存3个草稿
+        self.user_drafts: Dict[str, List[TaskDraft]] = {}  # user_id → [draft1, draft2, draft3]
     
-    def save_draft(self, draft: TaskDraft):
-        """保存草稿（覆盖最新）"""
-        self.saved_drafts["latest"] = draft
+    def _cleanup_expired_drafts(self, user_id: str):
+        """清理超过1小时的草稿"""
+        if user_id not in self.user_drafts:
+            return
+        
+        one_hour_ago = datetime.now() - timedelta(hours=1)
+        # 过滤出未过期的草稿
+        self.user_drafts[user_id] = [
+            draft for draft in self.user_drafts[user_id] 
+            if draft.updated_at > one_hour_ago
+        ]
+    
+    def save_draft(self, draft: TaskDraft, user_id: str = "default_user"):
+        """保存草稿（按用户ID分类，最多保存3个）"""
+        # 清理过期草稿
+        self._cleanup_expired_drafts(user_id)
+        
+        # 初始化用户草稿栈
+        if user_id not in self.user_drafts:
+            self.user_drafts[user_id] = []
+        
+        # 添加到栈顶
+        self.user_drafts[user_id].insert(0, draft)
+        
+        # 只保留最近3个草稿
+        if len(self.user_drafts[user_id]) > 3:
+            self.user_drafts[user_id] = self.user_drafts[user_id][:3]
+        
         self.state = AgentState.DRAFT_SAVED
     
-    def restore_latest_draft(self) -> Optional[TaskDraft]:
+    def restore_latest_draft(self, user_id: str = "default_user") -> Optional[TaskDraft]:
         """恢复最近草稿"""
-        draft = self.saved_drafts.get("latest")
-        if draft:
+        # 清理过期草稿
+        self._cleanup_expired_drafts(user_id)
+        
+        if user_id in self.user_drafts and self.user_drafts[user_id]:
+            # 从栈顶取出最新草稿
+            draft = self.user_drafts[user_id].pop(0)
             self.current_draft = draft
             self.state = AgentState.COLLECTING_PARAMS
-            del self.saved_drafts["latest"]  # 取出后清除，避免重复恢复
-        return draft
+            return draft
+        return None
     
     def clear_draft(self):
         self.current_draft = None
@@ -55,14 +85,14 @@ class ConversationManager:
         # 兜底：关键词匹配
         return any(kw in user_input for kw in CONTINUE_KEYWORDS)
     
-    def process_user_input_complete(self, user_input: str) -> str:
+    def process_user_input_complete(self, user_input: str, user_id: str = "default_user") -> str:
         """
         完整处理用户输入，含草稿管理、状态机、追问、切换
         返回应答文本
         """
         # Step 0: 特殊意图优先检测 —— “继续草稿”
         if self.is_continue_request(user_input):
-            if self.restore_latest_draft():
+            if self.restore_latest_draft(user_id):
                 return f"好的！我们继续刚才的任务。\n{self.current_draft.last_question}"
             else:
                 return "抱歉，我没有找到未完成的任务草稿。你可以重新开始一个任务吗？"
@@ -82,7 +112,7 @@ class ConversationManager:
                 # 保存当前草稿
                 draft = self.current_draft
                 draft.updated_at = datetime.now()
-                self.save_draft(draft)
+                self.save_draft(draft, user_id)
                 
                 # 清空当前状态，处理新意图
                 self.clear_draft()
