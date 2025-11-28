@@ -1,64 +1,31 @@
 """能力基类定义"""
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TypeVar, Generic
+
+# T 是一个泛型，代表具体的 Capability 类型
+T = TypeVar('T', bound='CapabilityBase')
 
 
 class CapabilityBase(ABC):
     """
-    所有能力组件的基类，提供通用接口和生命周期管理
+    所有能力的基类，只负责生命周期和基础元数据
     """
     
-    def __init__(self):
-        """
-        初始化能力组件
-        """
-        self.name = self.get_capability_name()
-        self.is_initialized = False
-    
-    def initialize(self) -> "CapabilityBase":
-        """
-        初始化能力组件
-        
-        Returns:
-            bool: 初始化是否成功
-        """
-        self.is_initialized = True
-        return self
-    
-    def get_capability_name(self) -> str:
-        """
-        获取能力名称
-        
-        Returns:
-            str: 能力名称
-        """
-        return self.__class__.__name__
-    
+    @abstractmethod
+    def initialize(self, config: Dict[str, Any]) -> None:
+        pass
+
+    @abstractmethod
+    def shutdown(self) -> None:
+        pass
+
     @abstractmethod
     def get_capability_type(self) -> str:
         """
-        获取能力类型
-        
-        Returns:
-            str: 能力类型标识符
+        返回能力类型，如 'llm', 'memory', 'data_access'
         """
         pass
+
+    def get_status(self) -> dict:
+        return {"status": "ok"}
     
-    def shutdown(self) -> None:
-        """
-        关闭能力组件，释放资源
-        """
-        self.is_initialized = False
-    
-    def get_status(self) -> Dict[str, Any]:
-        """
-        获取能力组件状态
-        
-        Returns:
-            Dict[str, Any]: 状态信息
-        """
-        return {
-            'name': self.name,
-            'type': self.get_capability_type(),
-            'initialized': self.is_initialized
-        }

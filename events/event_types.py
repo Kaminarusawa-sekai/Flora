@@ -5,69 +5,72 @@
 from enum import Enum
 from typing import Dict, Any, Optional
 
-from ..common.messages.event_messages import EventType as BaseEventType
 
-
-class EventType(Enum):
+class EventType(str, Enum):
     """事件类型枚举，包含所有系统事件类型"""
     # 基础系统事件
-    SYSTEM_STARTUP = BaseEventType.SYSTEM_STARTUP.value
-    SYSTEM_SHUTDOWN = BaseEventType.SYSTEM_SHUTDOWN.value
-    SYSTEM_ERROR = BaseEventType.SYSTEM_ERROR.value
+    SYSTEM_STARTUP = "SYSTEM_STARTUP"
+    SYSTEM_SHUTDOWN = "SYSTEM_SHUTDOWN"
+    SYSTEM_ERROR = "SYSTEM_ERROR"
     
-    # 基础任务事件
-    TASK_CREATED = BaseEventType.TASK_CREATED.value
-    TASK_COMPLETED = BaseEventType.TASK_COMPLETED.value
-    TASK_FAILED = BaseEventType.TASK_FAILED.value
-    TASK_PROGRESS = BaseEventType.TASK_PROGRESS.value
+    # 任务生命周期 (对应 Timeline 展示)
+    TASK_CREATED = "TASK_CREATED"
+    TASK_PLANNING = "TASK_PLANNING"       # 新增：规划中
+    TASK_DISPATCHED = "TASK_DISPATCHED"   # 新增：分发给子Agent
+    TASK_RUNNING = "TASK_RUNNING"
+    TASK_COMPLETED = "TASK_COMPLETED"
+    TASK_FAILED = "TASK_FAILED"
+    TASK_PROGRESS = "TASK_PROGRESS"
+    TASK_CANCELLED = "TASK_CANCELLED"
+    TASK_RESUMED = "TASK_RESUMED"
+    TASK_PAUSED = "TASK_PAUSED"
+    TASK_QUEUED = "TASK_QUEUED"
     
-    # 基础数据事件
-    DATA_UPDATED = BaseEventType.DATA_UPDATED.value
-    DATA_CREATED = BaseEventType.DATA_CREATED.value
-    DATA_DELETED = BaseEventType.DATA_DELETED.value
+    # 子任务事件
+    SUBTASK_SPAWNED = "SUBTASK_SPAWNED"
+    SUBTASK_COMPLETED = "SUBTASK_COMPLETED"
     
-    # 基础优化事件
-    OPTIMIZATION_STARTED = BaseEventType.OPTIMIZATION_STARTED.value
-    OPTIMIZATION_COMPLETED = BaseEventType.OPTIMIZATION_COMPLETED.value
-    PARAMETER_UPDATED = BaseEventType.PARAMETER_UPDATED.value
-    
-    # 基础资源事件
-    RESOURCE_ALLOCATED = BaseEventType.RESOURCE_ALLOCATED.value
-    RESOURCE_RELEASED = BaseEventType.RESOURCE_RELEASED.value
-    RESOURCE_EXHAUSTED = BaseEventType.RESOURCE_EXHAUSTED.value
-    
-    # 扩展任务事件
-    TASK_STARTED = "task_started"
-    TASK_CANCELLED = "task_cancelled"
-    TASK_RESUMED = "task_resumed"
-    TASK_PAUSED = "task_paused"
-    TASK_QUEUED = "task_queued"
-    SUBTASK_SPAWNED = "subtask_spawned"
+    # 调试/监控
+    AGENT_THINKING = "AGENT_THINKING"     # 记录 Agent 的思考过程 (CoT)
+    TOOL_CALLED = "TOOL_CALLED"           # 记录工具调用输入
+    TOOL_RESULT = "TOOL_RESULT"           # 记录工具调用输出
     
     # 智能体相关事件
-    AGENT_CREATED = "agent_created"
-    AGENT_DESTROYED = "agent_destroyed"
-    AGENT_UPDATED = "agent_updated"
-    AGENT_IDLE = "agent_idle"
-    AGENT_BUSY = "agent_busy"
+    AGENT_CREATED = "AGENT_CREATED"
+    AGENT_DESTROYED = "AGENT_DESTROYED"
+    AGENT_UPDATED = "AGENT_UPDATED"
+    AGENT_IDLE = "AGENT_IDLE"
+    AGENT_BUSY = "AGENT_BUSY"
     
-    # 数据扩展事件
-    DATA_QUERY_EXECUTED = "data_query_executed"
-    DATA_QUERY_FAILED = "data_query_failed"
-    DATA_EXPORTED = "data_exported"
+    # 基础数据事件
+    DATA_UPDATED = "DATA_UPDATED"
+    DATA_CREATED = "DATA_CREATED"
+    DATA_DELETED = "DATA_DELETED"
+    DATA_QUERY_EXECUTED = "DATA_QUERY_EXECUTED"
+    DATA_QUERY_FAILED = "DATA_QUERY_FAILED"
+    DATA_EXPORTED = "DATA_EXPORTED"
+    
+    # 基础优化事件
+    OPTIMIZATION_STARTED = "OPTIMIZATION_STARTED"
+    OPTIMIZATION_COMPLETED = "OPTIMIZATION_COMPLETED"
+    PARAMETER_UPDATED = "PARAMETER_UPDATED"
+    
+    # 基础资源事件
+    RESOURCE_ALLOCATED = "RESOURCE_ALLOCATED"
+    RESOURCE_RELEASED = "RESOURCE_RELEASED"
+    RESOURCE_EXHAUSTED = "RESOURCE_EXHAUSTED"
     
     # 能力相关事件
-    CAPABILITY_EXECUTED = "capability_executed"
-    CAPABILITY_FAILED = "capability_failed"
-    CAPABILITY_REGISTERED = "capability_registered"
+    CAPABILITY_EXECUTED = "CAPABILITY_EXECUTED"
+    CAPABILITY_FAILED = "CAPABILITY_FAILED"
+    CAPABILITY_REGISTERED = "CAPABILITY_REGISTERED"
     
     # 并行执行相关事件
-    PARALLEL_EXECUTION_STARTED = "parallel_execution_started"
-    PARALLEL_EXECUTION_COMPLETED = "parallel_execution_completed"
-    SUBTASK_COMPLETED = "subtask_completed"
+    PARALLEL_EXECUTION_STARTED = "PARALLEL_EXECUTION_STARTED"
+    PARALLEL_EXECUTION_COMPLETED = "PARALLEL_EXECUTION_COMPLETED"
     
     # 评论相关事件
-    COMMENT_ADDED = "comment_added"
+    COMMENT_ADDED = "COMMENT_ADDED"
 
 
 def get_event_type(value: str) -> Optional[EventType]:
@@ -96,7 +99,7 @@ def is_task_event(event_type: EventType) -> bool:
     Returns:
         True如果是任务相关事件，否则False
     """
-    return event_type.value.startswith('task_') or event_type.value.startswith('subtask_')
+    return event_type.value.startswith('TASK_') or event_type.value.startswith('SUBTASK_')
 
 
 def is_agent_event(event_type: EventType) -> bool:
@@ -109,7 +112,7 @@ def is_agent_event(event_type: EventType) -> bool:
     Returns:
         True如果是智能体相关事件，否则False
     """
-    return event_type.value.startswith('agent_')
+    return event_type.value.startswith('AGENT_')
 
 
 def is_data_event(event_type: EventType) -> bool:
@@ -122,4 +125,22 @@ def is_data_event(event_type: EventType) -> bool:
     Returns:
         True如果是数据相关事件，否则False
     """
-    return event_type.value.startswith('data_')
+    return event_type.value.startswith('DATA_')
+
+
+def is_debug_event(event_type: EventType) -> bool:
+    """
+    判断事件类型是否为调试相关事件
+    
+    Args:
+        event_type: 事件类型
+        
+    Returns:
+        True如果是调试相关事件，否则False
+    """
+    debug_events = [
+        EventType.AGENT_THINKING,
+        EventType.TOOL_CALLED,
+        EventType.TOOL_RESULT
+    ]
+    return event_type in debug_events

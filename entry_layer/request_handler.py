@@ -3,11 +3,16 @@
 Flora多智能体协作系统 - 请求处理器
 
 负责处理来自API服务器的请求，协调内部服务调用，并返回处理结果
+实现 CQRS 架构：
+1. Command (写/交互) -> 走 Actor
+2. Query (读) -> 走 Repository
 """
 
 import logging
+import uuid
 from typing import Dict, Any, Optional, Union, List
 from datetime import datetime
+from thespian.actors import ActorSystem
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +20,9 @@ logger = logging.getLogger(__name__)
 class RequestHandler:
     """
     请求处理器类，负责协调各模块处理具体业务逻辑
+    实现 CQRS 架构：
+    1. Command (写/交互) -> 走 Actor
+    2. Query (读) -> 走 Repository
     """
     
     def __init__(self, tenant_router=None, config: Optional[Dict[str, Any]] = None):
@@ -27,16 +35,40 @@ class RequestHandler:
         """
         self.config = config or {}
         self.tenant_router = tenant_router
+        self.actor_system = ActorSystem()
+        
+        # 初始化仓库 (用于读操作)
+        try:
+            from external.repositories.task_repo import TaskRepository
+            from external.repositories.draft_repo import DraftRepository
+            self.task_repo = TaskRepository()
+            self.draft_repo = DraftRepository()
+        except ImportError:
+            # 如果仓库模块不存在，使用模拟实现
+            logger.warning("Repository modules not found, using mock implementations")
+            self.task_repo = self._create_mock_repository("task")
+            self.draft_repo = self._create_mock_repository("draft")
         
         # 注册操作处理器
         self._operation_handlers = {
+            # Command (写/交互) 操作
+            'handle_chat_request': self.handle_chat_request,
+            'handle_clear_chat': self.handle_clear_chat,
+            'handle_task_command': self.handle_task_command,
+            'handle_add_task_comment': self._handle_add_task_comment,
+            
+            # Query (读) 操作
+            'handle_get_task_list': self.handle_get_task_list,
+            'handle_get_task_detail': self.handle_get_task_detail,
+            'handle_get_task_artifacts': self.handle_get_task_artifacts,
+            
+            # 保留的其他操作
             'create_task': self._handle_create_task,
             'create_task_and_comment': self._handle_create_task_and_comment,
             'get_task': self._handle_get_task,
             'update_task': self._handle_update_task,
             'delete_task': self._handle_delete_task,
             'get_agent': self._handle_get_agent,
-            'add_task_comment': self._handle_add_task_comment,
             'get_task_current_execution': self._handle_get_task_current_execution,
             'get_task_plan': self._handle_get_task_plan,
             'get_task_people': self._handle_get_task_persons,
@@ -109,6 +141,312 @@ class RequestHandler:
             
             # 重新抛出异常，让上层处理
             raise
+    
+    def _create_mock_repository(self, repo_type: str):
+        """
+        创建模拟仓库实例
+        
+        Args:
+            repo_type: 仓库类型
+            
+        Returns:
+            模拟仓库实例
+        """
+        class MockRepository:
+            def list_tasks(self, user_id: str, page: int = 1, size: int = 20):
+                return {
+                    "tasks": [],
+                    "total": 0,
+                    "page": page,
+                    "size": size
+                }
+            
+            def get_by_id(self, task_id: str):
+                return {
+                    "id": task_id,
+                    "name": f"Mock Task {task_id}",
+                    "status": "pending",
+                    "created_at": datetime.now().isoformat()
+                }
+            
+            def get_subtasks(self, task_id: str):
+                return []
+            
+            def get_artifacts(self, task_id: str):
+                return []
+        
+        return MockRepository()
+    
+    # --- 通道 A: Command (写/交互) -> 走 Actor ---
+    async def handle_chat_request(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        处理对话请求：HTTP -> RouterActor -> AgentActor
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            
+        Returns:
+            对话响应
+        """
+        user_id = context.get('user_id')
+        tenant_id = context.get('tenant_id')
+        messages = data.get('messages', [])
+        stream = data.get('stream', False)
+        
+        if not messages:
+            return {
+                "role": "assistant",
+                "content": "请提供对话消息"
+            }
+        
+        # 获取最新的用户消息
+        content = messages[-1].get('content', '')
+        
+        # 从租户路由获取 RouterActor 地址
+        router_addr = self.tenant_router.get_router_actor(tenant_id)
+        
+        # 构造消息
+        try:
+            from common.messages.base_message import UserRequestMessage
+            msg = UserRequestMessage(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                content=content,
+                stream=stream
+            )
+        except ImportError:
+            # 如果消息类不存在，使用字典格式
+            msg = {
+                "type": "UserRequestMessage",
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "content": content,
+                "stream": stream
+            }
+        
+        # 发送并等待 (ask)
+        try:
+            response = self.actor_system.ask(router_addr, msg, timeout=30)
+            
+            if response is None:
+                raise TimeoutError("Agent 响应超时")
+            
+            # 处理响应格式
+            if isinstance(response, dict):
+                return response
+            else:
+                # 假设响应是一个包含 content 属性的对象
+                return {
+                    "role": "assistant",
+                    "content": getattr(response, "content", str(response))
+                }
+        except Exception as e:
+            logger.error(f"Failed to handle chat request: {str(e)}", exc_info=True)
+            return {
+                "role": "assistant",
+                "content": f"处理请求时发生错误: {str(e)}"
+            }
+    
+    async def handle_clear_chat(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        清空当前会话/草稿
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            
+        Returns:
+            清空结果
+        """
+        user_id = context.get('user_id')
+        tenant_id = context.get('tenant_id')
+        
+        # 从租户路由获取 RouterActor 地址
+        router_addr = self.tenant_router.get_router_actor(tenant_id)
+        
+        # 构造消息
+        try:
+            from common.messages.base_message import ClearChatMessage
+            msg = ClearChatMessage(
+                id=str(uuid.uuid4()),
+                user_id=user_id
+            )
+        except ImportError:
+            # 如果消息类不存在，使用字典格式
+            msg = {
+                "type": "ClearChatMessage",
+                "id": str(uuid.uuid4()),
+                "user_id": user_id
+            }
+        
+        # 发送并等待 (ask)
+        try:
+            response = self.actor_system.ask(router_addr, msg, timeout=10)
+            
+            if response is None:
+                raise TimeoutError("清空会话超时")
+            
+            return {
+                "success": True,
+                "message": "会话已清空"
+            }
+        except Exception as e:
+            logger.error(f"Failed to clear chat: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "message": f"清空会话失败: {str(e)}"
+            }
+    
+    async def handle_task_command(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        task_id: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        处理任务控制指令
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            task_id: 任务ID
+            
+        Returns:
+            指令执行结果
+        """
+        command = data.get('command', '')
+        params = data.get('params', {})
+        
+        # 从租户路由获取 RouterActor 地址
+        tenant_id = context.get('tenant_id')
+        router_addr = self.tenant_router.get_router_actor(tenant_id)
+        
+        # 构造消息
+        try:
+            from common.messages.base_message import TaskCommandMessage
+            msg = TaskCommandMessage(
+                id=str(uuid.uuid4()),
+                task_id=task_id,
+                command=command,
+                params=params
+            )
+        except ImportError:
+            # 如果消息类不存在，使用字典格式
+            msg = {
+                "type": "TaskCommandMessage",
+                "id": str(uuid.uuid4()),
+                "task_id": task_id,
+                "command": command,
+                "params": params
+            }
+        
+        # 发送并等待 (ask)
+        try:
+            response = self.actor_system.ask(router_addr, msg, timeout=10)
+            
+            if response is None:
+                raise TimeoutError("指令执行超时")
+            
+            return {
+                "success": True,
+                "message": f"指令 '{command}' 已执行",
+                "task_id": task_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to execute task command: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "message": f"指令执行失败: {str(e)}",
+                "task_id": task_id
+            }
+    
+    # --- 通道 B: Query (读) -> 走 Repository ---
+    async def handle_get_task_list(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        直接查库，不打扰 Actor
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            
+        Returns:
+            任务列表
+        """
+        user_id = context.get('user_id')
+        page = data.get('page', 1)
+        size = data.get('size', 20)
+        
+        return self.task_repo.list_tasks(user_id, page, size)
+    
+    async def handle_get_task_detail(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        task_id: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        直接查库，不打扰 Actor
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            task_id: 任务ID
+            
+        Returns:
+            任务详情
+        """
+        # 聚合多个 Repo 的数据
+        task_info = self.task_repo.get_by_id(task_id)
+        # 也许还需要查一下子任务的情况
+        subtasks = self.task_repo.get_subtasks(task_id)
+        return {
+            **task_info,
+            "subtasks": subtasks,
+            "success": True
+        }
+    
+    async def handle_get_task_artifacts(
+        self,
+        data: Dict[str, Any],
+        context: Dict[str, Any],
+        task_id: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        获取任务生成的产物
+        
+        Args:
+            data: 请求数据
+            context: 请求上下文
+            task_id: 任务ID
+            
+        Returns:
+            任务产物列表
+        """
+        artifacts = self.task_repo.get_artifacts(task_id)
+        return {
+            "artifacts": artifacts,
+            "total": len(artifacts),
+            "success": True
+        }
     
     async def _handle_create_task(
         self,

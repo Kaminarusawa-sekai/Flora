@@ -6,21 +6,20 @@ from typing import Dict, Any, Optional
 from thespian.actors import Actor
 import logging
 
-from capabilities.registry import capability_registry
+from capabilities import get_capability
+from capabilities.connectors.connector_manager import UniversalConnectorManager
+from capabilities.routing.context_resolver import ContextResolver
 from .data_actor import DataActor
-from .dify_actor import DifyCapabilityActor
 from common.messages import (
     TaskMessage,
     SubtaskResultMessage,
     SubtaskErrorMessage,
     DataQueryResponse,
-    DifySchemaResponse,
-    DifyExecuteResponse,
-    DifyExecuteRequest,
     InvokeConnectorRequest,
     ConnectorExecutionSuccess,
     ConnectorExecutionFailure
 )
+from common.messages import DifySchemaResponse, DifyExecuteResponse
 
 class ExecutionActor(Actor):
     """
@@ -34,9 +33,11 @@ class ExecutionActor(Actor):
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.data_actor = None
-        self.dify_actor = None
-        self._pending_requests = {}  # 存储等待数据响应的请求
-        self._pending_aggregators = {}  # 存储等待聚合结果的请求
+        self._pending_requests = {}
+        self._pending_aggregators = {}
+        # 初始化连接器管理器和上下文解析器
+        self.connector_manager = UniversalConnectorManager()
+        self.context_resolver = ContextResolver()
         self._initialize_components()
     
     def _initialize_components(self):
@@ -48,10 +49,6 @@ class ExecutionActor(Actor):
             # Import here to avoid circular imports
             from capability_actors.result_aggregator_actor import ResultAggregatorActor
             self.ResultAggregatorActor = ResultAggregatorActor
-            
-            # 初始化UniversalConnectorOrchestrator
-            from capability_actors.universal_connector_orchestrator import UniversalConnectorOrchestrator
-            self.connector_orchestrator = self.createActor(UniversalConnectorOrchestrator)
             
             self.logger.info("ExecutionActor组件初始化成功")
         except Exception as e:
@@ -253,50 +250,43 @@ class ExecutionActor(Actor):
         context = {**req_info["context"], **params.get("additional_context", {})}
         memory = req_info["memory"]
         
-        if capability != "dify_workflow":
-            # 使用capability_registry执行普通能力函数
-            capability_instance = capability_registry.get_capability(capability)
-            if capability_instance:
-                result = capability_instance.run(context, memory)
-                # 发送任务结果
-                result_msg = SubtaskResultMessage(task_id, result)
-                self.send(req_info["sender"], result_msg)
-            else:
-                error_msg = f"Capability not found: {capability}"
-                self.logger.error(error_msg)
-                self.send(req_info["sender"], SubtaskErrorMessage(task_id, error_msg))
-            return
-        
-        # 使用UniversalConnectorOrchestrator执行连接器操作
         try:
-            # 构造连接器调用请求
-            connector_request = InvokeConnectorRequest(
-                connector_name="dify",
-                operation_name="execute",
-                inputs=context.get("inputs", {}),
-                params={
-                    "api_key": context.get("api_key"),
-                    "base_url": context.get("base_url"),
-                    "user": context.get("user", "user")
-                },
-                task_id=task_id,
-                reply_to=req_info["sender"]
-            )
+            result = None
+            if capability == "dify_workflow":
+                # 使用Connector Manager执行连接器操作
+                result = self.connector_manager.execute(
+                    connector_name="dify",
+                    operation_name="execute",
+                    inputs=context.get("inputs", {}),
+                    params={
+                        "api_key": context.get("api_key"),
+                        "base_url": context.get("base_url"),
+                        "user": context.get("user", "user")
+                    }
+                )
+            else:
+                # 本地能力执行
+                # 使用新的能力获取方式
+                try:
+                    capability_instance = get_capability(capability, expected_type=Any)
+                    if capability_instance:
+                        result = capability_instance.execute(context=context, memory=memory)
+                    else:
+                        raise Exception(f"Capability not found: {capability}")
+                except Exception as e:
+                    # 兼容旧的执行方式
+                    self.logger.warning(f"Failed to get capability using new method: {e}")
+                    raise Exception(f"Capability execution failed: {str(e)}")
             
-            # 发送请求到UniversalConnectorOrchestrator
-            self.send(self.connector_orchestrator, connector_request)
+            # 发送任务结果
+            result_msg = SubtaskResultMessage(task_id, result)
+            self.send(req_info["sender"], result_msg)
+            
         except Exception as e:
-            error_msg = f"Failed to execute connector operation: {e}"
+            error_msg = f"Task execution failed: {str(e)}"
             self.logger.error(error_msg)
             self.send(req_info["sender"], SubtaskErrorMessage(task_id, error_msg))
             
-    def _handle_dify_schema_response(self, msg: DifySchemaResponse) -> None:
-        """
-        处理Dify Schema响应
-        """
-        self.logger.info(f"Handling Dify Schema response for task: {msg.task_id}")
-        # 这里可以根据需要添加额外的处理逻辑
-        
     def _handle_connector_execution_success(self, msg: ConnectorExecutionSuccess) -> None:
         """
         处理连接器执行成功响应

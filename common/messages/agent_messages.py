@@ -407,3 +407,11 @@ class McpFallbackRequest(BaseMessage):
         message.task_id = data.get('task_id', '')
         message.context = data.get('context', {})
         return message
+
+
+class InitDataQueryActor(BaseMessage):
+    def __init__(self, agent_id: str, source: str = "", destination: str = "", timestamp: Optional[datetime] = None):
+        super().__init__('init_data_query_actor', source, destination, timestamp)
+        self.agent_id = agent_id
+    # message_type: ClassVar[MessageType] = MessageType.DATA_QUERY_REQUEST
+    # agent_id: str

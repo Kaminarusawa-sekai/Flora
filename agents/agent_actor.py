@@ -4,22 +4,27 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from thespian.actors import Actor, ActorAddress
 
-from capabilities.llm_memory.memory_capability import MemoryCapability
 from capability_actors.mcp_actor import MCPCapabilityActor
-from common.messages import SubtaskResult, SubtaskError, TaskMessage, McpFallbackRequest
-from capabilities.registry import capability_registry
+from common.messages import SubtaskResultMessage, SubtaskErrorMessage, TaskMessage, McpFallbackRequest
 
-# 导入草稿管理相关模块
-from common.draft.conversation_manager import ConversationManager
-from common.draft.task_draft import TaskDraft
+# 导入新的能力管理模块
+from capabilities import init_capabilities, get_capability, get_capability_registry
 
-# 导入意图识别相关模块
-from common.intent.intent_router import classify_intent_with_qwen, should_clarify
+# 导入能力接口
+from capabilities.llm.interface import ILLMCapability
+from capabilities.llm_memory.interface import IMemoryCapability
+from capabilities.routing.interface import ITaskRouter
+from capabilities.decision.interface import ITaskStrategyCapability, ITaskOperationCapability
 
-# 导入任务管理相关模块
-from common.tasks.task_registry import TaskRegistry
-from common.tasks.task import Task
-from common.tasks.task_type import TaskType
+# 导入类型定义
+from common.types.draft import TaskDraft
+from common.types.intent import IntentResult, IntentType
+from common.types.task import Task, TaskType, TaskStatus
+
+# 导入新的能力接口
+from capabilities.cognition.intent_router import IIntentRouterCapability
+from capabilities.context.conversation_manager import IConversationManagerCapability
+from capabilities.decision.task_planner import ITaskPlannerCapability
 
 # 导入循环调度器
 from capability_actors.loop_scheduler_actor import LoopSchedulerActor
@@ -59,25 +64,34 @@ class AgentActor(Actor):
     def __init__(self):
         super().__init__()
         self.agent_id: str = ""
-        self.memory_cap: Optional[MemoryCapability] = None
-        # self._task_coordinator = TaskCoordinator()
-        self.router = capability_registry.get_capability("routing")
+        self.memory_cap: Optional[IMemoryCapability] = None
         
         self._aggregation_state: Dict[str, Dict] = {}
         self.task_id_to_sender: Dict[str, ActorAddress] = {}
         self.log = logging.getLogger("AgentActor")  # 初始日志，后续按 agent_id 覆盖
-        
-        # 添加草稿管理实例
-        self.conversation_manager = ConversationManager()
-        
-        # 添加任务注册表实例
-        self.task_registry = TaskRegistry()
         
         # 添加澄清选项状态
         self.clarification_options: Optional[List[Dict[str, str]]] = None
         
         # 添加当前用户ID（实际应从消息中获取）
         self.current_user_id: Optional[str] = None
+        
+        # 初始化能力实例引用
+        self.conversation_manager: Optional[IConversationManagerCapability] = None
+        self.intent_router: Optional[IIntentRouterCapability] = None
+        self.task_planner: Optional[ITaskPlannerCapability] = None
+        
+        # 添加当前聚合器和原始客户端地址
+        self.current_aggregator = None
+        self.original_client_addr = None
+        
+        # 初始化能力管理
+        self.capability_manager = init_capabilities()
+        self.capability_registry = get_capability_registry()
+        
+        # 初始化能力实例
+        self.task_router: Optional[ITaskRouter] = None
+        self.task_planner: Optional[Any] = None
 
     def receiveMessage(self, message: Any, sender: ActorAddress):
         try:
@@ -103,82 +117,80 @@ class AgentActor(Actor):
 
     def _handle_init(self, msg: Dict[str, Any], sender: ActorAddress):
         self.agent_id = msg["agent_id"]
-        self.memory_cap = MemoryCapability(user_id=self.agent_id)
-        if not self.memory_cap.initialize():
-            self.log.error(f"Failed to initialize memory capability for agent {self.agent_id}")
-            self.send(sender, {"status": "init_failed", "agent_id": self.agent_id})
+        
+        try:
+            # 使用新的能力获取方式
+            self.memory_cap = get_capability("core_memory", expected_type=IMemoryCapability)
+            self.intent_router = get_capability("intent_router", expected_type=IIntentRouterCapability)
+            self.conversation_manager = get_capability("conversation_manager", expected_type=IConversationManagerCapability)
+            self.task_planner = get_capability("task_planner", expected_type=ITaskPlannerCapability)
+            
+            self.log = logging.getLogger(f"AgentActor_{self.agent_id}")
+            self.log.info(f"AgentActor initialized for {self.agent_id}")
+            self.send(sender, {"status": "initialized", "agent_id": self.agent_id})
+        except Exception as e:
+            self.log.error(f"Failed to initialize capabilities for agent {self.agent_id}: {e}")
+            self.send(sender, {"status": "init_failed", "agent_id": self.agent_id, "error": str(e)})
             return
-        self.log = logging.getLogger(f"AgentActor_{self.agent_id}")
-        self.log.info(f"AgentActor initialized for {self.agent_id}")
-        self.send(sender, {"status": "initialized", "agent_id": self.agent_id})
 
     def _handle_task(self, task: Dict[str, Any], sender: ActorAddress):
         """主任务处理入口：协调路由 → 规划 → 分发"""
         if not self._ensure_memory_ready():
             return
         
-        ##TODO：加入来自于mutifeature的人格记忆
+        # 获取用户输入和用户ID
+        user_input = task.get("content", task.get("description", ""))
+        user_id = task.get("user_id", "default_user")
         parent_task_id = task.get("task_id")
+        
         if not parent_task_id:
             self.log.error("Missing task_id in agent_task")
             return
-
-        current_desc = task.get("description") or task.get("content", "")
+            
         self.task_id_to_sender[parent_task_id] = sender
+        self.current_user_id = user_id
         
-        # 获取当前用户ID（实际应从消息中获取）
-        self.current_user_id = task.get("user_id", "default_user")
-
-        # === Step 1: 草稿判断 ===
-        # 检查用户是否想继续草稿，或当前是否有未完成的草稿
-        if self.conversation_manager.is_continue_request(current_desc):
-            if self.conversation_manager.restore_latest_draft():
-                self.send(sender, {
-                    "status": "draft_restored",
-                    "message": f"好的！我们继续刚才的任务。\n{self.conversation_manager.current_draft.last_question}"
-                })
-                return
-            else:
-                self.send(sender, {
-                    "status": "no_draft",
-                    "message": "抱歉，我没有找到未完成的任务草稿。你可以重新开始一个任务吗？"
-                })
-                return
-
-        # === Step 2: 意图判断 ===
-        # 使用classify_intent_with_qwen判断用户意图
-        intent_result = classify_intent_with_qwen(current_desc)
+        # --- 流程 ①：草稿判断 ---
+        # 使用新的对话管理能力
+        draft_response = self.conversation_manager.process_user_input(user_input, user_id)
         
-        # === Step 3: 意图澄清 ===
-        # 如果意图模糊，生成澄清选项
-        if should_clarify(intent_result):
-            # 这里需要生成澄清选项，暂时返回默认的澄清请求
+        # 检查是否需要继续处理（如果是恢复草稿，直接返回响应）
+        if "继续刚才的任务" in draft_response:
+            self.send(sender, {
+                "status": "draft_restored",
+                "message": draft_response
+            })
+            return
+        
+        # --- 流程 ②：意图判断 ---
+        # 使用新的意图识别能力
+        intent_result = self.intent_router.classify_intent(user_input)
+        
+        if intent_result.intent == IntentType.AMBIGUOUS:
+            # 处理澄清逻辑
             self.send(sender, {
                 "status": "need_clarification",
                 "message": "我不太确定你的意思，你能再详细说明一下吗？"
             })
             return
-
-        # === Step 4: 任务操作判断 ===
-        # 根据意图和用户输入，判断具体的任务操作
-        intent_type = intent_result.get("intent", "new_task")
         
-        # === Step 5: 任务执行 ===
-        # 根据任务操作执行相应的逻辑
-        if intent_type == "task":
-            # 处理任务相关操作
-            self._handle_task_operation(task, sender, current_desc, parent_task_id)
-        elif intent_type == "query":
-            # 处理查询相关操作
-            self._handle_query_operation(task, sender, current_desc)
-        elif intent_type == "chat":
-            # 处理闲聊相关操作
-            self._handle_chat_operation(task, sender, current_desc)
+        # --- 流程 ③：任务操作判断 ---
+        operation = self._llm_classify_task_operation(user_input, intent)
+        
+        if operation == "LOOP_TASK":
+            # 转入流程 ④ 循环任务处理
+            self._handle_loop_task_setup(task, sender)
+        elif operation == "NEW_TASK":
+            # 转入流程 ⑤ 新任务执行
+            self._handle_new_task_execution(task, sender)
+        elif operation in ["comment_on_task", "revise_result", "re_run_task", "cancel_task"]:
+            # 处理其他任务操作
+            self._handle_task_operation(task, sender, user_input, parent_task_id)
         else:
             # 处理其他意图
             self.send(sender, {
                 "status": "not_supported",
-                "message": f"当前不支持{intent_type}类型的请求"
+                "message": f"当前不支持{operation}类型的请求"
             })
             return
     
@@ -210,51 +222,8 @@ class AgentActor(Actor):
     
     def _handle_new_task(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
         """处理新增任务"""
-        # === Step 1: 路由决策 ===
-        decision_context = self.memory_cap.build_conversation_context(current_input=current_desc)
-        decision = self._llm_decide_task_strategy(current_desc, decision_context)
-
-        if decision.get("is_loop", False):
-            self.add_loop_task(task, sender)
-            return
-
-        needs_vault = decision.get("requires_sensitive_data", False)
-
-        # === Step 2: 能力路由 ===
-        select_node_id = None
-        if self.router:
-            select_node_id = self.router.select_best_actor(
-                agent_id=self.agent_id,
-                user_input=current_desc,
-                memory_context=decision_context
-            )
-        if not select_node_id:
-            self._dispatch_to_fallback(parent_task_id, decision_context, sender)
-            return
-
-        # === Step 3: 规划与分发子任务 ===
-        try:
-            plan = self._plan_subtasks(select_node_id, current_desc)
-            pending_tasks = self._dispatch_subtasks(
-                plan=plan,
-                parent_task_id=parent_task_id,
-                original_desc=current_desc,
-                needs_vault=needs_vault
-            )
-        except Exception as e:
-            self.log.error(f"Task planning/dispatch failed: {e}")
-            self._report_error(parent_task_id, str(e), sender)
-            return
-
-        # === Step 4: 记录状态 & 写入记忆 ===
-        self._aggregation_state[parent_task_id] = {
-            "pending": pending_tasks,
-            "results": {},
-            "sender": sender
-        }
-        self.memory_cap.add_memory_intelligently(
-            f"Started processing task: {current_desc} (ID: {parent_task_id})"
-        )
+        # 调用新的_handle_new_task_execution方法
+        self._handle_new_task_execution(task, sender)
     
     def _handle_query_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str):
         """处理查询相关操作"""
@@ -272,58 +241,156 @@ class AgentActor(Actor):
             "message": f"闲聊回复：{current_desc}"
         })
     
-    def _llm_classify_task_operation(self, user_input: str) -> Dict[str, Any]:
+    def _llm_classify_task_operation(self, user_input: str, intent: Any = None) -> str:
         """
         使用LLM判断具体的任务操作
         """
-        prompt = f"""你是一个智能任务操作系统。请分析用户当前输入是对任务的具体操作类型。
-
-            【用户输入】
-            {user_input}
-
-            系统支持以下任务操作：
-            1. new_task: 创建新任务（如“帮我查一下天气”）
-            2. comment_on_task: 对已有任务追加评论（如“刚才那个报告太简略了”、“漏了第三点”）
-            3. revise_result: 修订任务结果（如“把‘成功’改成‘部分成功’”、“更新数据为100”）
-            4. re_run_task: 重新执行任务（如“再试一次”、“重新跑一下”）
-            5. cancel_task: 取消任务（如“不用做了”）
-            6. archive_task: 归档任务（如“这个可以关了”）
-            7. trigger_existing: 立即触发循环任务（如“现在执行日报”）
-            8. modify_loop_interval: 修改循环任务间隔（如“改成每天执行”）
-            9. pause_loop: 暂停循环任务（如“暂停日报”）
-            10. resume_loop: 恢复循环任务（如“恢复日报”）
-
-            请输出严格 JSON：
-            {{
-            "operation_type": "...",
-            "comment_text": "仅 comment_on_task 时存在",
-            "revision_content": "仅 revise_result 时存在",
-            "reasoning": "..."
-            }}
-
-            operation_type 必须是上述之一。
-            """
-
         try:
-            from capabilities.llm.qwen_adapter import QwenAdapter
-            llm = QwenAdapter()
-            response = llm.generate(prompt, parse_json=True, max_tokens=300, temperature=0.2)
-            
-            # 安全转换
-            return {
-                "operation_type": response.get("operation_type", "new_task"),
-                "comment_text": response.get("comment_text", ""),
-                "revision_content": response.get("revision_content", ""),
-                "reasoning": response.get("reasoning", "")
-            }
+            # 使用新的任务操作分类能力
+            task_operation_capability = get_capability("task_operation", expected_type=ITaskOperationCapability)
+            return task_operation_capability.classify_task_operation(user_input, intent)
         except Exception as e:
             self.log.warning(f"Task operation classification failed: {e}. Falling back to new_task.")
-            return {
-                "operation_type": "new_task",
-                "comment_text": "",
-                "revision_content": "",
-                "reasoning": str(e)
-            }
+            return "NEW_TASK"
+    
+    def _handle_loop_task_setup(self, task: Dict[str, Any], sender: ActorAddress):
+        """处理循环任务设置"""
+        # 调用现有的add_loop_task方法
+        self.add_loop_task(task, sender)
+    
+    def _handle_new_task_execution(self, task: Dict[str, Any], sender: ActorAddress):
+        """处理新任务执行"""
+        # 获取当前任务描述
+        current_desc = task.get("description") or task.get("content", "")
+        parent_task_id = task.get("task_id")
+        
+        # === Step 1: 循环任务检测 ===
+        decision_context = self.memory_cap.build_conversation_context(current_input=current_desc)
+        decision = self._llm_decide_task_strategy(current_desc, decision_context)
+        
+        if decision.get("is_loop", False):
+            self.add_loop_task(task, sender)
+            return
+        
+        # === Step 2: 能力路由 ===
+        routing_result = None
+        try:
+            # 使用新的能力获取方式获取任务路由器
+            self.task_router = get_capability("routing", expected_type=ITaskRouter)
+            if self.task_router:
+                routing_result = self.task_router.select_best_actor(current_desc, context={})
+        except Exception as e:
+            self.log.warning(f"Failed to get task router: {e}")
+        
+        if not routing_result:
+            # 如果routing_result为空则调用MCPactor做执行
+            from capability_actors.mcp_actor import MCPCapabilityActor
+            mcp_actor = self.createActor(MCPCapabilityActor)
+            self.send(mcp_actor, {
+                "type": "execute_task",
+                "task_id": parent_task_id,
+                "task_type": "leaf_task",
+                "context": {
+                    "memory_context": decision_context,
+                    "instructions": {},
+                    "original_task": current_desc,
+                    "capability": "mcp"
+                },
+                "capabilities": {
+                    "name": "mcp"
+                }
+            })
+            return
+        
+        # === Step 3: 判断是否为叶子节点 ===
+        if self._is_leaf_node(routing_result):
+            # --- 叶子节点路径 ---
+            self._execute_leaf_logic(task, sender)
+        else:
+            # --- 管理节点路径 (流程 ⑥ 任务规划) ---
+            # 调用 capabilities/decision/task_planner.py
+            subtasks = None
+            try:
+                # 使用新的能力获取方式获取任务规划器
+                self.task_planner = get_capability("planning", expected_type=Any)
+                if self.task_planner:
+                    subtasks = self.task_planner.generate_plan(current_desc)
+            except Exception as e:
+                self.log.warning(f"Failed to get task planner: {e}")
+            
+            if not subtasks:
+                # 如果task_planner为None，使用默认的单任务规划
+                subtasks = [{"node_id": routing_result, "description": current_desc, "intent_params": {}}]
+            
+            # --- 流程 ⑦ & ⑧：创建聚合器 Actor ---
+            # 这里不要自己循环发送，而是创建一个临时的 Aggregator Actor 来管理这一组子任务
+            # 这样 AgentActor 不会被阻塞，保持无状态
+            from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+            aggregator_addr = self.createActor(TaskGroupAggregatorActor)
+            
+            # 构建 Group Request
+            from common.messages import TaskGroupRequest
+            group_request = TaskGroupRequest(
+                parent_task_id=parent_task_id,
+                subtasks=subtasks, # 包含子任务描述
+                strategy="optuna" if self._should_optimize() else "standard", # 流程 ⑨ 优化判断
+                original_sender=sender # 让聚合器直接回给最初的请求者，或者回给 self
+            )
+            
+            # 发送给聚合器，当前 Agent 任务暂时结束（等待回调）
+            self.send(aggregator_addr, group_request)
+    
+    def _should_optimize(self) -> bool:
+        """判断是否需要优化"""
+        # 简单实现：默认不需要优化
+        return False
+    
+    def _is_leaf_node(self, agent_id: str) -> bool:
+        """
+        判断当前Agent是否为叶子节点
+        通过TreeManager查询是否有子节点
+
+        Args:
+            agent_id: Agent节点ID
+
+        Returns:
+            bool: 是否为叶子节点
+        """
+        from agents.tree.tree_manager import TreeManager
+        tree_manager = TreeManager()
+        children = tree_manager.get_children(agent_id)
+        return len(children) == 0
+    
+    def _execute_leaf_logic(self, task: Dict[str, Any], sender: ActorAddress):
+        """处理叶子节点执行逻辑"""
+        # --- 流程 ⑩：准备单任务执行 ---
+        # 不需要 TaskExecutionService，直接找 ExecutionActor
+        
+        # 获取 ExecutionActor (通常是单例或池化)
+        from capability_actors.execution_actor import ExecutionActor
+        exec_actor = self.createActor(ExecutionActor)
+        
+        # 构建执行请求
+        exec_request = {
+            "type": "execute_task",
+            "task_id": task.get("task_id"),
+            "content": task.get("description", task.get("content", "")),
+            "params": task.get("context", {}), # 此时参数可能还不完整
+            "sender": sender # 记录谁发起的
+        }
+        
+        # 发布任务开始事件
+        from events.event_bus import event_bus
+        from events.event_types import EventType
+        event_bus.publish_task_event(
+            task_id=task.get("task_id"),
+            event_type=EventType.TASK_STARTED.value,
+            source="AgentActor",
+            agent_id=self.agent_id,
+            data={"node_id": self.agent_id, "type": "leaf_execution"}
+        )
+        
+        self.send(exec_actor, exec_request)
 
     # ======================
     # 子任务结果处理（保持聚合逻辑不变）
@@ -373,7 +440,11 @@ class AgentActor(Actor):
             next_run_time=datetime.now().fromtimestamp(time.time() + loop_interval),
             original_input=current_desc
         )
-        self.task_registry.create_task(loop_task)
+        # 使用任务规划能力保存任务
+        try:
+            self.task_planner.task_repo.create_task(loop_task)
+        except Exception as e:
+            self.log.warning(f"Failed to save loop task: {e}")
 
         # 回复用户：已注册循环任务
         self.send(sender, {
@@ -668,17 +739,58 @@ class AgentActor(Actor):
             self._handle_execution_result(msg, sender)
 
     def _handle_execution_result(self, result_msg: Dict[str, Any], sender: ActorAddress):
+        """处理执行结果"""
         task_id = result_msg.get("task_id")
-        if not task_id or "." not in task_id:
-            return
-        parent_id = task_id.split(".")[0]
-        state = self._aggregation_state.get(parent_id)
-        if not state:
-            return
-        state["results"][task_id] = result_msg.get("result", {})
-        state["pending"].discard(task_id)
-        if not state["pending"]:
-            self._finalize_aggregation(parent_id, state)
+        result_data = result_msg.get("result", {})
+        status = result_data.get("status", "SUCCESS")
+        
+        if status == "SUCCESS":
+            # 1. 写入记忆
+            if self.memory_cap:
+                self.memory_cap.add_memory_intelligently(f"Task completed: {task_id}")
+            
+            # 2. 如果这是父任务的子任务，检查是否聚合完成
+            if self.current_aggregator:
+                # 通知聚合器
+                self.send(self.current_aggregator, result_msg)
+            else:
+                # 3. 如果是根任务，直接返回给用户 (Step ⑫)
+                final_response = self._format_response(result_data)
+                # 假设 original_sender 在上下文中保存了
+                original_sender = self.task_id_to_sender.get(task_id, sender)
+                self.send(original_sender, final_response)
+                
+                # 4. 发布事件
+                from events.event_bus import event_bus
+                from events.event_types import EventType
+                event_bus.publish_task_event(
+                    task_id=task_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    source="AgentActor",
+                    agent_id=self.agent_id,
+                    data={"result": result_data}
+                )
+        elif status == "FAILED":
+            # 触发 MCP Fallback 机制 (Step ⑤ 的 fallback)
+            self._trigger_fallback(task_id, result_data.get("error_msg", "执行失败"))
+    
+    def _format_response(self, result_data: Dict[str, Any]) -> Dict[str, Any]:
+        """格式化响应"""
+        return {
+            "status": "completed",
+            "result": result_data,
+            "message": "任务执行完成"
+        }
+    
+    def _trigger_fallback(self, task_id: str, error_msg: str):
+        """触发MCP Fallback机制"""
+        from capability_actors.mcp_actor import MCPCapabilityActor
+        mcp_actor = self.createActor(MCPCapabilityActor)
+        self.send(mcp_actor, {
+            "type": "fallback_request",
+            "task_id": task_id,
+            "error_msg": error_msg
+        })
 
     def _handle_execution_error(self, error_msg: Dict[str, Any], sender: ActorAddress):
         task_id = error_msg.get("task_id")
@@ -869,8 +981,8 @@ class AgentActor(Actor):
                 """
 
         try:
-            from capabilities.llm.qwen_adapter import QwenAdapter
-            llm = QwenAdapter()
+            # 使用新的能力获取方式获取LLM能力
+            llm = get_capability("qwen", expected_type=ILLMCapability)
             result = llm.generate(prompt, parse_json=True, max_tokens=300)
 
             # 确保字段存在且类型正确

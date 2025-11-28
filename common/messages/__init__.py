@@ -32,7 +32,8 @@ from .agent_messages import (
     DifyExecuteResponse,
     DataQueryRequest,
     DataQueryResponse,
-    McpFallbackRequest
+    McpFallbackRequest,
+    InitDataQueryActor
 )
 from .connector_messages import (
     ExecuteConnectorRequest,
@@ -89,5 +90,6 @@ __all__ = [
     "ConnectorResult",
     "ConnectorError",
     "PrepareConnectorResponse",
-    "ConnectorStatusResponse"
+    "ConnectorStatusResponse",
+    "InitDataQueryActor"
 ]

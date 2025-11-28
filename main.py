@@ -1,138 +1,187 @@
-# main.py
-
-from fastapi import FastAPI, HTTPException, Header, Request, status
-from pydantic import BaseModel
-from typing import Optional
+"""系统启动主入口"""
 import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
-import uvicorn
+import argparse
+import threading
+from typing import Dict, Any, Optional
 
-
-from init_global_components import init_global_components
-from config import NEO4J_URI, NEO4J_USER, CONNECTOR_RECORD_DB_URL
-
-
-# ----------------------------
-# 配置
-# ----------------------------
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("fastapi-actor")
-
-
-
-# 使用线程池处理阻塞的 Actor 操作（因为 FastAPI 是异步的）
-executor = ThreadPoolExecutor(max_workers=20)
-
-
-
-# ----------------------------
-# 生命周期管理（优雅关闭）
-# ----------------------------
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 启动时（可选，你当前没有 startup 逻辑，所以留空或加日志）
-    logger.info("Starting up application...")
-    await init_global_components()
-    yield  # 应用运行期间
-    # 关闭时
-    logger.info("Shutting down actors...")
-    ActorManager.get_instance().stop_all()
-    logger.info("Closing Neo4j connection...")
-    registry = AgentRegistry.get_instance()
-    registry.close()
-    executor.shutdown(wait=True)
-    logger.info("Shutdown complete.")
-
-
-# ----------------------------
-# FastAPI App
-# ----------------------------
-
-app = FastAPI(
-    title="Agent Actor API",
-    version="1.0",
-    lifespan=lifespan  # 👈 关键：使用 lifespan 替代 on_event
+# 初始化日志配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
+
+# 导入能力模块
+from capabilities import init_capabilities
+from capabilities.llm.interface import ILLMCapability
+from capabilities.llm_memory.interface import IMemoryCapability
+from capabilities.text_to_sql.text_to_sql import ITextToSQL
+
+# 导入API服务器
+from entry_layer.api_server import APIServer
+
+# 导入Thespian Actor系统相关组件
+from thespian.actors import ActorSystem
+from agents.agent_actor import AgentActor
+from capability_actors.loop_scheduler_actor import LoopSchedulerActor
 
 
-class GenerateRequest(BaseModel):
-    input: str  # 用户输入的一句话
-    user_id: str  # 👈 注意：你路由中用了 request.user_id，所以 BaseModel 必须包含它！
-
-
-class GenerateResponse(BaseModel):
-    result: str
-    agent_id: str
-    task_id: str
-
-
-
-
-def start_project():
+def init_actor_system() -> ActorSystem:
     """
-    启动整个项目
-    包括初始化全局组件、启动FastAPI应用和RabbitMQ桥接器
+    初始化Thespian Actor系统
+    
+    Returns:
+        ActorSystem: Thespian Actor系统实例
     """
-    import asyncio
-    import threading
+    logger.info("=== 初始化Thespian Actor系统 ===")
     
-    # 1. 初始化全局组件
-    asyncio.run(init_global_components())
+    # 初始化Actor系统
+    actor_system = ActorSystem('simpleSystemBase')
     
-    # 2. 启动RabbitMQ桥接器（在后台线程中运行）
-    def start_rabbit_bridge_thread():
-        try:
-            start_rabbit_bridge()
-        except Exception as e:
-            logger.error(f"RabbitMQ bridge failed: {e}")
+    # 启动核心Actor
+    logger.info("启动核心Actor...")
     
-    rabbit_thread = threading.Thread(target=start_rabbit_bridge_thread, daemon=True)
-    rabbit_thread.start()
-    logger.info("RabbitMQ bridge started in background thread")
+    # 启动AgentActor
+    agent_actor = actor_system.createActor(AgentActor)
+    logger.info(f"✓ 成功启动AgentActor: {agent_actor}")
     
-    # 3. 启动FastAPI应用
-    logger.info("Starting FastAPI application...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 启动LoopSchedulerActor
+    loop_scheduler_actor = actor_system.createActor(LoopSchedulerActor)
+    logger.info(f"✓ 成功启动LoopSchedulerActor: {loop_scheduler_actor}")
+    
+    return actor_system
+
+
+def start_api_server(config: Optional[Dict[str, Any]] = None) -> APIServer:
+    """
+    启动FastAPI服务器
+    
+    Args:
+        config: 服务器配置
+        
+    Returns:
+        APIServer: API服务器实例
+    """
+    logger.info("=== 启动FastAPI服务器 ===")
+    
+    # 创建API服务器实例
+    api_server = APIServer(config)
+    
+    # 在后台线程中启动服务器
+    host = config.get('host', '0.0.0.0') if config else '0.0.0.0'
+    port = config.get('port', 8000) if config else 8000
+    
+    server_thread = threading.Thread(
+        target=api_server.run,
+        kwargs={'host': host, 'port': port},
+        daemon=True
+    )
+    server_thread.start()
+    
+    logger.info(f"✓ FastAPI服务器已启动，监听地址: http://{host}:{port}")
+    logger.info(f"✓ API文档地址: http://{host}:{port}/docs")
+    logger.info(f"✓ 健康检查地址: http://{host}:{port}/health")
+    
+    return api_server
+
+
+def run_system_demo():
+    """
+    运行系统演示（原有功能）
+    """
+    print("=== 初始化能力模块 ===")
+    
+    # 初始化所有能力
+    manager = init_capabilities()
+    
+    print("\n=== 获取LLM能力 ===")
+    try:
+        # 获取LLM能力
+        llm = manager.get_capability("qwen", expected_type=ILLMCapability)
+        print(f"✓ 成功获取LLM能力: {type(llm).__name__}")
+        print(f"✓ 能力类型: {llm.get_capability_type()}")
+    except Exception as e:
+        print(f"✗ 获取LLM能力失败: {e}")
+    
+    print("\n=== 获取Memory能力 ===")
+    try:
+        # 获取Memory能力
+        memory = manager.get_capability("core_memory", expected_type=IMemoryCapability)
+        print(f"✓ 成功获取Memory能力: {type(memory).__name__}")
+        print(f"✓ 能力类型: {memory.get_capability_type()}")
+    except Exception as e:
+        print(f"✗ 获取Memory能力失败: {e}")
+    
+    print("\n=== 获取TextToSQL能力 ===")
+    try:
+        # 获取TextToSQL能力
+        text_to_sql = manager.get_capability("vanna", expected_type=ITextToSQL)
+        print(f"✓ 成功获取TextToSQL能力: {type(text_to_sql).__name__}")
+        print(f"✓ 能力类型: {text_to_sql.get_capability_type()}")
+    except Exception as e:
+        print(f"✗ 获取TextToSQL能力失败: {e}")
+    
+    print("\n=== 示例完成 ===")
+    print("\n使用说明:")
+    print("1. 修改config.json文件可以配置各能力的参数")
+    print("2. 调用manager.update_capability_config()可以动态更新配置")
+    print("3. 调用manager.save_config()可以保存配置到文件")
+    print("4. 所有能力都实现了统一的生命周期管理接口")
+
+
+def main():
+    """
+    主函数，启动整个系统
+    """
+    parser = argparse.ArgumentParser(description='Flora 多智能体协作系统')
+    parser.add_argument('--demo', action='store_true', help='运行系统演示模式')
+    parser.add_argument('--host', default='0.0.0.0', help='API服务器主机地址')
+    parser.add_argument('--port', type=int, default=8000, help='API服务器端口')
+    parser.add_argument('--debug', action='store_true', help='调试模式')
+    
+    args = parser.parse_args()
+    
+    if args.demo:
+        # 运行演示模式
+        run_system_demo()
+        return
+    
+    logger.info("=== Flora 多智能体协作系统启动 ===")
+    
+    # 1. 初始化能力模块
+    logger.info("=== 初始化能力模块 ===")
+    manager = init_capabilities()
+    logger.info("✓ 能力模块初始化完成")
+    
+    # 2. 初始化Actor系统
+    actor_system = init_actor_system()
+    
+    # 3. 启动API服务器
+    api_config = {
+        'debug': args.debug,
+        'host': args.host,
+        'port': args.port
+    }
+    api_server = start_api_server(api_config)
+    
+    logger.info("\n=== 系统启动完成 ===")
+    logger.info("Flora 多智能体协作系统已成功启动！")
+    logger.info("按 Ctrl+C 停止系统...")
+    
+    try:
+        # 保持主进程运行
+        while True:
+            pass
+    except KeyboardInterrupt:
+        logger.info("\n=== 正在停止系统 ===")
+        
+        # 关闭Actor系统
+        logger.info("关闭Thespian Actor系统...")
+        actor_system.shutdown()
+        logger.info("✓ Actor系统已关闭")
+        
+        logger.info("系统已成功停止！")
 
 
 if __name__ == "__main__":
-    start_project()
-    import thespian.actors as actors
-    system = actors.ActorSystem("simpleSystemBase")
-    from agents.agent_actor import AgentActor
-    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-    registry = AgentRegistry.get_instance(
-        uri=NEO4J_URI,
-        user=NEO4J_USER,
-        password=NEO4J_PASSWORD
-    )
-
-    connector_record = get_dify_registry(CONNECTOR_RECORD_DB_URL)
-    # agent_id=registry.get_agent_id_by_user("tenant_001", "user_001")
-    # mes=registry.get_agent_by_id(agent_id)
-    # capabilities=registry.get_direct_children(agent_id)
-    handler = system.createActor(AgentActor)
-    from agent.message import InitMessage,TaskMessage,SubtaskErrorMessage
-    init_msg = InitMessage(
-        agent_id="private_domain",
-        capabilities="做各类营销任务",           # Leaf: ["book_flight"]; Branch: ["route_flight"]
-        memory_key = "private_domain",       # 默认 = agent_id
-        registry=registry,
-
-    )
-    result = system.ask(handler, init_msg, timeout=1000)
-    print("Final Result:", result)
-    tsk_msg=TaskMessage(task_id="task_001", context={"帮我做下裂变活动": "裂变活动"})
-    result = system.ask(handler, tsk_msg, timeout=1000)
-    if isinstance(result,SubtaskErrorMessage ) or result is None:  # actor 退出
-        from llm.qwen import QwenLLM
-        llm=QwenLLM()
-        resp=llm.generate("用户问了"+'{"帮我做下裂变活动": "裂变活动"}'+"，但是智能体崩溃了，你首先要尽可能根据用户的意图，生成一个最合适的回答用户，其再再判断一下是否需要就执行失败向用户道歉，如果需要你就向用户真诚的道歉。")
-    print("Final Result:", result)
-
-    system.shutdown()
-
+    main()

@@ -1,72 +1,51 @@
 """文本到SQL转换接口"""
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Optional, List, Dict, Any
+from ..capability_base import CapabilityBase
 
-
-class TextToSQL(ABC):
+class ITextToSQL(CapabilityBase):
     """文本到SQL转换接口定义"""
     
     @abstractmethod
-    async def generate_sql(self, natural_language_query: str, **kwargs) -> str:
+    def initialize(self, config: Dict[str, Any]) -> None:
         """
-        从自然语言查询生成SQL
+        初始化文本到SQL转换能力
         
-        Args:
-            natural_language_query: 自然语言查询语句
-            **kwargs: 其他参数
-            
-        Returns:
-            生成的SQL语句
+        config 应包含：
+        - agent_id: str
+        - agent_meta: dict (可选)
+        - 其他配置项如模型路径、数据库连接等
         """
         pass
-    
+
     @abstractmethod
-    async def execute_sql(self, sql: str, **kwargs) -> Dict[str, Any]:
+    def shutdown(self) -> None:
         """
-        执行SQL查询
-        
-        Args:
-            sql: 要执行的SQL语句
-            **kwargs: 其他参数
-            
-        Returns:
-            查询结果
+        关闭文本到SQL转换能力
         """
         pass
-    
-    @abstractmethod
-    async def get_table_info(self, table_name: Optional[str] = None) -> Dict[str, Any]:
+
+
+    def get_capability_type(self) -> str:
         """
-        获取表结构信息
-        
-        Args:
-            table_name: 表名，可选。如果不提供，获取所有表的信息
-            
-        Returns:
-            表结构信息
+        返回能力类型
+        """
+        return "text_to_sql"
+
+    @abstractmethod
+    def execute_query(self, user_query: str, context: dict = None) -> dict:
+        """
+        执行查询的核心流程：Context -> SQL -> Result
         """
         pass
+
+
+
     
+
     @abstractmethod
-    async def add_training_data(self, query: str, sql: str) -> bool:
+    def execute_query(self, user_query: str, context: dict = None) -> dict:
         """
-        添加训练数据
-        
-        Args:
-            query: 自然语言查询
-            sql: 对应的SQL语句
-            
-        Returns:
-            是否添加成功
-        """
-        pass
-    
-    @abstractmethod
-    async def get_training_data(self) -> List[Dict[str, Any]]:
-        """
-        获取所有训练数据
-        
-        Returns:
-            训练数据列表
+        执行查询的核心流程：Context -> SQL -> Result
         """
         pass

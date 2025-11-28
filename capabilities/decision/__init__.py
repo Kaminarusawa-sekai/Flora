@@ -1,5 +1,9 @@
-"""决策引擎适配模块"""
+from .interface import ITaskStrategyCapability, ITaskOperationCapability
+from .decision_impl import TaskStrategyCapability, TaskOperationCapability
 
-from .engine_adapter import DecisionEngineAdapter
-
-__all__ = ['DecisionEngineAdapter']
+__all__ = [
+    "ITaskStrategyCapability",
+    "ITaskOperationCapability",
+    "TaskStrategyCapability",
+    "TaskOperationCapability"
+]

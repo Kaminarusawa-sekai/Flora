@@ -444,28 +444,26 @@ class RepeatTaskRequest(BaseMessage):
         message.reply_to = data.get('reply_to', '')
         return message
 
-class TaskGroupRequest(BaseMessage):
+class UserRequestMessage(BaseMessage):
     """
-    任务组请求消息
-    请求执行一组任务并聚合结果
+    用户请求消息
+    用户 -> Router -> Agent
     """
     
-    def __init__(self, source: str, destination: str, group_id: str, tasks: List[TaskSpec], reply_to: str, timestamp: Optional[datetime] = None):
+    def __init__(self, source: str, destination: str, user_id: str, content: str, timestamp: Optional[datetime] = None):
         """
-        初始化任务组请求消息
+        初始化用户请求消息
         
         Args:
             source: 消息源
             destination: 消息目的地
-            group_id: 任务组ID
-            tasks: 任务列表
-            reply_to: 结果返回地址
+            user_id: 用户ID
+            content: 请求内容
             timestamp: 时间戳
         """
-        super().__init__('task_group_request', source, destination, timestamp)
-        self.group_id = group_id
-        self.tasks = tasks
-        self.reply_to = reply_to
+        super().__init__('user_request', source, destination, timestamp)
+        self.user_id = user_id
+        self.content = content
     
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -473,9 +471,60 @@ class TaskGroupRequest(BaseMessage):
         """
         base_dict = super().to_dict()
         base_dict.update({
-            "group_id": self.group_id,
-            "tasks": [task.__dict__ for task in self.tasks],  # 转换为字典列表
-            "reply_to": self.reply_to
+            "user_id": self.user_id,
+            "content": self.content
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'UserRequestMessage':
+        """
+        从字典创建用户请求消息
+        """
+        message = super().from_dict(data)
+        message.user_id = data.get('user_id', '')
+        message.content = data.get('content', '')
+        return message
+
+
+class TaskGroupRequest(BaseMessage):
+    """
+    任务组请求消息
+    Agent -> TaskGroupAggregator (包含一组子任务)
+    """
+    
+    def __init__(self, source: str, destination: str, parent_task_id: str, subtasks: List[TaskSpec], strategy: str = "standard", original_sender: str = None, context: Dict[str, Any] = None, timestamp: Optional[datetime] = None):
+        """
+        初始化任务组请求消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            parent_task_id: 父任务ID
+            subtasks: 子任务列表
+            strategy: 执行策略 (e.g., "optuna", "standard")
+            original_sender: 原始发送者地址
+            context: 上下文参数
+            timestamp: 时间戳
+        """
+        super().__init__('task_group_request', source, destination, timestamp)
+        self.parent_task_id = parent_task_id
+        self.subtasks = subtasks
+        self.strategy = strategy
+        self.original_sender = original_sender
+        self.context = context or {}
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "parent_task_id": self.parent_task_id,
+            "subtasks": [task.__dict__ for task in self.subtasks],  # 转换为字典列表
+            "strategy": self.strategy,
+            "original_sender": self.original_sender,
+            "context": self.context
         })
         return base_dict
     
@@ -485,11 +534,123 @@ class TaskGroupRequest(BaseMessage):
         从字典创建任务组请求消息
         """
         message = super().from_dict(data)
-        message.group_id = data.get('group_id', '')
+        message.parent_task_id = data.get('parent_task_id', '')
         # 从字典恢复TaskSpec对象
-        tasks = [TaskSpec(**task_dict) for task_dict in data.get('tasks', [])]
-        message.tasks = tasks
-        message.reply_to = data.get('reply_to', '')
+        subtasks = [TaskSpec(**task_dict) for task_dict in data.get('subtasks', [])]
+        message.subtasks = subtasks
+        message.strategy = data.get('strategy', 'standard')
+        message.original_sender = data.get('original_sender')
+        message.context = data.get('context', {})
+        return message
+
+
+class AgentTaskMessage(BaseMessage):
+    """
+    智能体任务消息
+    Aggregator -> ExecutionActor (单任务指令)
+    """
+    
+    def __init__(self, source: str, destination: str, task_id: str, task_type: str, content: str, context: Dict[str, Any] = None, execution_mode: str = "standard", sender_addr: str = None, timestamp: Optional[datetime] = None):
+        """
+        初始化智能体任务消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            task_id: 任务ID
+            task_type: 任务类型 (e.g., "LEAF", "COMPLEX")
+            content: 任务内容
+            context: 上下文参数
+            execution_mode: 执行模式 (e.g., "standard", "connector")
+            sender_addr: 发送者地址
+            timestamp: 时间戳
+        """
+        super().__init__('agent_task', source, destination, timestamp)
+        self.task_id = task_id
+        self.task_type = task_type
+        self.content = content
+        self.context = context or {}
+        self.execution_mode = execution_mode
+        self.sender_addr = sender_addr
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "task_id": self.task_id,
+            "task_type": self.task_type,
+            "content": self.content,
+            "context": self.context,
+            "execution_mode": self.execution_mode,
+            "sender_addr": self.sender_addr
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AgentTaskMessage':
+        """
+        从字典创建智能体任务消息
+        """
+        message = super().from_dict(data)
+        message.task_id = data.get('task_id', '')
+        message.task_type = data.get('task_type', 'LEAF')
+        message.content = data.get('content', '')
+        message.context = data.get('context', {})
+        message.execution_mode = data.get('execution_mode', 'standard')
+        message.sender_addr = data.get('sender_addr')
+        return message
+
+
+class TaskExecutionResult(BaseMessage):
+    """
+    任务执行结果消息
+    ExecutionActor -> Aggregator -> Agent (结果)
+    """
+    
+    def __init__(self, source: str, destination: str, task_id: str, status: str, result_data: Any = None, error_msg: str = None, timestamp: Optional[datetime] = None):
+        """
+        初始化任务执行结果消息
+        
+        Args:
+            source: 消息源
+            destination: 消息目的地
+            task_id: 任务ID
+            status: 执行状态 (e.g., "SUCCESS", "FAILED")
+            result_data: 执行结果数据
+            error_msg: 错误信息
+            timestamp: 时间戳
+        """
+        super().__init__('task_execution_result', source, destination, timestamp)
+        self.task_id = task_id
+        self.status = status
+        self.result_data = result_data
+        self.error_msg = error_msg
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为字典
+        """
+        base_dict = super().to_dict()
+        base_dict.update({
+            "task_id": self.task_id,
+            "status": self.status,
+            "result_data": self.result_data,
+            "error_msg": self.error_msg
+        })
+        return base_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TaskExecutionResult':
+        """
+        从字典创建任务执行结果消息
+        """
+        message = super().from_dict(data)
+        message.task_id = data.get('task_id', '')
+        message.status = data.get('status', 'FAILED')
+        message.result_data = data.get('result_data')
+        message.error_msg = data.get('error_msg')
         return message
 
 

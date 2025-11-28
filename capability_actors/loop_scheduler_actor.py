@@ -6,10 +6,9 @@ import json
 from typing import Any, Dict
 from datetime import datetime
 
-# 导入任务相关模块
-from common.tasks.task import Task
-from common.tasks.task_registry import TaskRegistry
-from common.tasks.task_type import TaskType
+# 导入任务相关类型
+from common.types.task import Task, TaskType, TaskStatus
+from external.repositories.task_repo import TaskRepository
 from events.event_bus import event_bus
 from events.event_types import EventType
 
@@ -26,8 +25,8 @@ class LoopSchedulerActor(Actor):
     def __init__(self):
         super().__init__()
         self.log = logging.getLogger("LoopSchedulerActor")
-        # 初始化任务注册表
-        self.task_registry = TaskRegistry()
+        # 初始化任务仓库
+        self.task_repo = TaskRepository()
         self._listen_to_trigger_queue()  # 如果需要主动消费
 
     def _listen_to_trigger_queue(self):
@@ -50,7 +49,7 @@ class LoopSchedulerActor(Actor):
                 task_id = msg["task_id"]
                 # 从数据库或内存中获取任务
                 try:
-                    task = self.task_registry.get_task(task_id)
+                    task = self.task_repo.get_task(task_id)
                     if task:
                         # 构造执行消息
                         execution_msg = {
@@ -82,7 +81,7 @@ class LoopSchedulerActor(Actor):
                     task = self.task_registry.get_task(task_id)
                     if task:
                         task.schedule = str(msg["interval_sec"])
-                        self.task_registry.update_task(task_id, {"schedule": task.schedule})
+                        self.task_repo.update_task(task_id, {"schedule": task.schedule})
                         self.send(sender, {"status": "interval_updated", "task_id": task_id})
                         
                         # 发送任务更新事件
@@ -104,7 +103,7 @@ class LoopSchedulerActor(Actor):
                     task = self.task_registry.get_task(task_id)
                     if task:
                         # 暂停逻辑
-                        self.task_registry.update_task(task_id, {"status": "paused"})
+                        self.task_repo.update_task(task_id, {"status": TaskStatus.PAUSED})
                         self.send(sender, {"status": "paused", "task_id": task_id})
                         
                         # 发送任务暂停事件
@@ -126,7 +125,7 @@ class LoopSchedulerActor(Actor):
                     task = self.task_registry.get_task(task_id)
                     if task:
                         # 恢复逻辑
-                        self.task_registry.update_task(task_id, {"status": "running"})
+                        self.task_repo.update_task(task_id, {"status": TaskStatus.RUNNING})
                         self.send(sender, {"status": "resumed", "task_id": task_id})
                         
                         # 发送任务恢复事件
@@ -146,7 +145,8 @@ class LoopSchedulerActor(Actor):
                 task_id = msg["task_id"]
                 try:
                     # 删除任务逻辑
-                    self.task_registry.delete_task(task_id)
+                    # 使用更新状态来取消任务，因为TaskRepository没有delete_task方法
+                    self.task_repo.update_task(task_id, {"status": TaskStatus.CANCELLED})
                     self.send(sender, {"status": "cancelled", "task_id": task_id})
                     
                     # 发送任务取消事件
@@ -178,7 +178,7 @@ class LoopSchedulerActor(Actor):
         try:
             # 保存任务到注册表
             # 注意：这里我们直接使用Task类，因为TaskRegistry期望的是Task对象
-            from common.tasks.task import Task
+            # Task is already imported from common.types.task
             from datetime import datetime
             
             task = Task(
@@ -191,7 +191,7 @@ class LoopSchedulerActor(Actor):
                 original_input=message.get("original_task", {}).get("description", "循环任务")
             )
             
-            self.task_registry.create_task(task)
+            self.task_repo.create_task(task)
             self.send(sender, {"status": "registered", "task_id": task_id})
             
             # 发送循环任务注册事件
@@ -242,7 +242,7 @@ class LoopSchedulerActor(Actor):
             )
             
             # 更新任务的下次运行时间
-            self.task_registry.update_task(task_id, {
+            self.task_repo.update_task(task_id, {
                 "next_run_time": datetime.now().fromtimestamp(time.time() + interval_sec)
             })
         except Exception as e:

@@ -3,12 +3,9 @@ from typing import Dict, Any, Optional, List
 import logging
 from .node_service import NodeService
 from .relationship_service import RelationshipService
-from ...external.agent_structure.structure_interface import AgentStructureInterface
-from ...external.agent_structure.structure_factory import create_agent_structure
-from ...common.config.config_manager import config_manager
+from external.repositories.agent_structure_repo import AgentStructureRepository
+from common.config.config_manager import config_manager
 
-
-##TODO:全局唯一实例，统一初始化
 
 class TreeManager:
     """
@@ -17,7 +14,7 @@ class TreeManager:
     负责管理Agent的树形结构和关系
     """
     
-    def __init__(self, structure: Optional[AgentStructureInterface] = None):
+    def __init__(self):
         """
         初始化树形结构管理器
         
@@ -26,18 +23,11 @@ class TreeManager:
         """
         self.logger = logging.getLogger(__name__)
         
-        # 如果没有提供结构管理器，自动创建
-        if not structure:
-            try:
-                structure_config = config_manager.get("agent_structure") or {"type": "neo4j"}
-                structure = create_agent_structure(structure_config)
-            except Exception as e:
-                self.logger.error(f"创建结构管理器失败: {e}")
-                structure = None
-        
+
+        self.agent_structure_repo = AgentStructureRepository()
         # 初始化节点服务和关系服务
-        self.node_service = NodeService(structure)
-        self.relationship_service = RelationshipService(structure)
+        self.node_service = NodeService(self.agent_structure_repo)
+        self.relationship_service = RelationshipService(self.agent_structure_repo)
         
         # Actor引用管理
         self.actor_refs = {}
@@ -500,3 +490,6 @@ class TreeManager:
                 self._build_influenced_subgraph_recursive(
                     graph, child_id, threshold, max_hops, current_hops + 1, influence_strength
                 )
+
+##TODO:全局唯一实例，统一初始化
+treeManager = TreeManager()

@@ -6,19 +6,23 @@ import uuid
 @dataclass
 class TaskDraft:
     id: str
-    action_type: str              # e.g., "create_task", "schedule_meeting"
-    collected_params: Dict        # 已收集的参数
-    missing_params: List[str]     # 还缺哪些字段
-    last_question: str            # 上次问的问题
-    created_at: datetime
-    updated_at: datetime
+    user_id: str
+    intent_type: str          # 用户想干什么 (e.g., "query_sales")
+    collected_params: Dict    # 已收集的参数 (e.g., {"region": "north"})
+    missing_params: List[str] # 缺少的参数 (e.g., ["date"])
+    status: str               # "COLLECTING", "READY", "ABORTED"
+    last_question: Optional[str] = None            # 上次问的问题
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
     
     def to_dict(self):
         return {
             "id": self.id,
-            "action_type": self.action_type,
+            "user_id": self.user_id,
+            "intent_type": self.intent_type,
             "collected_params": self.collected_params,
             "missing_params": self.missing_params,
+            "status": self.status,
             "last_question": self.last_question,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat()

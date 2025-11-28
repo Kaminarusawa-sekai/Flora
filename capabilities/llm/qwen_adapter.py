@@ -1,10 +1,10 @@
 """Qwen LLM适配器（基于 DashScope SDK）"""
 from typing import Dict, Any, List, Optional, Union
 import json
-from ..capability_base import CapabilityBase
+from .interface import ILLMCapability
 
 
-class QwenAdapter(CapabilityBase):
+class QwenAdapter(ILLMCapability):
     """
     基于 DashScope SDK 的 Qwen 适配器
     支持文本生成、多模态（VL）、JSON 解析、对话历史等
@@ -16,8 +16,6 @@ class QwenAdapter(CapabilityBase):
         model_name: str = "qwen-max",
         vl_model_name: str = "qwen-vl-max"
     ):
-        super().__init__()
-        
         # 尝试从 config 获取 API Key（如果未传入）
         if not api_key:
             try:
@@ -36,6 +34,21 @@ class QwenAdapter(CapabilityBase):
         self.model_name = model_name
         self.vl_model_name = vl_model_name
         self.dashscope = dashscope
+        self.is_initialized = False
+
+    def initialize(self, config: Dict[str, Any]) -> None:
+        # 从配置中获取参数（如果提供）
+        if 'api_key' in config:
+            self.dashscope.api_key = config['api_key']
+        if 'model_name' in config:
+            self.model_name = config['model_name']
+        if 'vl_model_name' in config:
+            self.vl_model_name = config['vl_model_name']
+        self.is_initialized = True
+
+    def shutdown(self) -> None:
+        # 清理资源
+        self.is_initialized = False
 
     def get_capability_type(self) -> str:
         return 'llm'
@@ -171,19 +184,19 @@ class QwenAdapter(CapabilityBase):
         except Exception as e:
             return {"content": f"Error: {str(e)}", "error": str(e)}
 
-    def embedding(self, texts: List[str], model: str = "text-embedding-v1") -> List[List[float]]:
+    def embedding(self, text: str, model: str = "text-embedding-v1") -> List[float]:
         try:
             response = self.dashscope.TextEmbedding.call(
                 model=model,
-                input=texts
+                input=[text]
             )
             if response and response.output and response.output.embeddings:
-                return [item.embedding for item in response.output.embeddings]
+                return response.output.embeddings[0].embedding
             else:
-                return [[] for _ in texts]
+                return []
         except Exception as e:
             print(f"[QwenAdapter Embedding Error] {e}")
-            return [[] for _ in texts]
+            return []
 
     def set_api_key(self, api_key: str) -> None:
         self.dashscope.api_key = api_key

@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 from abc import ABC
 from cachetools import TTLCache
 
-from ..capability_base import CapabilityBase
+from .interface import IMemoryCapability
 from .manager import UnifiedMemoryManager, SHARED_MEM0_CLIENT
 from .memory_interfaces import (
     IVaultRepository,
@@ -21,7 +21,7 @@ from ..llm.qwen_adapter import QwenAdapter
 logger = logging.getLogger(__name__)
 
 
-class MemoryCapability(CapabilityBase):
+class MemoryCapability(IMemoryCapability):
     """
     记忆能力组件：为指定用户/智能体提供统一记忆管理能力。
     
@@ -32,7 +32,7 @@ class MemoryCapability(CapabilityBase):
     
     使用方式：
         cap = MemoryCapability(user_id="user_123")
-        cap.initialize()
+        cap.initialize({})
         cap.add_memory_intelligently("我喜欢喝茶")
         context = cap.build_conversation_context("当前对话")
     """
@@ -55,15 +55,13 @@ class MemoryCapability(CapabilityBase):
         if not user_id or not isinstance(user_id, str):
             raise ValueError("user_id must be a non-empty string")
 
-        # 初始化基类（会调用 get_capability_name）
-        super().__init__()
-
         self.user_id = user_id
         self._vault_repo = vault_repo
         self._procedural_repo = procedural_repo
         self._resource_repo = resource_repo
         self._mem0_client = mem0_client
         self._qwen_client = qwen_client
+        self.is_initialized = False
 
         # 动态配置缓存（仅首次有效）
         with self._cache_lock:
@@ -75,10 +73,10 @@ class MemoryCapability(CapabilityBase):
     def get_capability_type(self) -> str:
         return "memory"
 
-    def initialize(self) -> bool:
+    def initialize(self, config: Dict[str, Any]) -> None:
         """初始化记忆能力，获取或创建 UnifiedMemoryManager 实例"""
         if self.is_initialized:
-            return True
+            return
 
         try:
             with self._cache_lock:
@@ -98,25 +96,28 @@ class MemoryCapability(CapabilityBase):
                     self._manager_cache[self.user_id] = self._memory_manager
 
             self.is_initialized = True
-            return True
 
         except Exception as e:
             logger.error(f"Failed to initialize MemoryCapability for user={self.user_id}: {e}", exc_info=True)
             self.is_initialized = False
-            return False
 
     def shutdown(self) -> None:
         """关闭能力（不销毁缓存中的 manager，仅标记状态）"""
-        super().shutdown()  # 调用基类，设置 is_initialized=False
+        self.is_initialized = False
         logger.debug(f"MemoryCapability shutdown for user={self.user_id}")
 
     # ==============================
-    # 代理常用记忆接口（封装 UnifiedMemoryManager）
+    # 代理常用记忆操作接口（封装 UnifiedMemoryManager）
     # ==============================
 
-    def add_memory_intelligently(self, content: str) -> None:
+    def add_memory_intelligently(self, content: Any, metadata: Dict = None) -> None:
         self._ensure_initialized()
         self._memory_manager.add_memory_intelligently(content)
+
+    def retrieve_relevant_memory(self, query: str) -> str:
+        self._ensure_initialized()
+        # 假设 UnifiedMemoryManager 有类似的方法，如果没有则需要实现
+        return self._memory_manager.build_conversation_context(query)
 
     def build_conversation_context(self, current_input: str = "") -> str:
         self._ensure_initialized()

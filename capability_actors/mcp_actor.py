@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional, List
 from thespian.actors import Actor
 import logging
-from ..capabilities.registry import capability_registry
+from capabilities import get_capability
 
 
 class MCPCapabilityActor(Actor):
@@ -26,13 +26,15 @@ class MCPCapabilityActor(Actor):
         初始化MCP能力
         """
         try:
-            # 通过能力注册表获取MCP能力
-            self.mcp_capability = capability_registry.get_capability("mcp")
-            
-            if self.mcp_capability:
-                self.logger.info("MCP能力初始化成功")
-            else:
-                self.logger.warning("MCP能力未找到，将使用基础实现")
+            # 通过新的能力获取方式获取MCP能力
+            try:
+                self.mcp_capability = get_capability("mcp", expected_type=Any)
+                if self.mcp_capability:
+                    self.logger.info("MCP能力初始化成功")
+                else:
+                    self.logger.warning("MCP能力未找到，将使用基础实现")
+            except Exception as e:
+                self.logger.warning(f"Failed to get MCP capability: {e}")
         except Exception as e:
             self.logger.error(f"MCP能力初始化失败: {e}")
     

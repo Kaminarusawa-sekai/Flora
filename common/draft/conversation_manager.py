@@ -78,6 +78,8 @@ class ConversationManager:
         self.current_draft = None
         self.state = AgentState.IDLE
 
+
+    ##TODO: 添加其他处理函数
     def is_continue_request(self, user_input: str) -> bool:
         """
         判断是否为“继续草稿”请求

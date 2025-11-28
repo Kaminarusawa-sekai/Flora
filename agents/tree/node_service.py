@@ -2,9 +2,9 @@
 from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime, timedelta
-from ...external.agent_structure.structure_interface import AgentStructureInterface
-from ...external.agent_structure.neo4j_structure import Neo4JAgentStructure
-from ...common.config.config_manager import config_manager
+
+from external.repositories.agent_structure_repo import AgentStructureRepository
+from common.config.config_manager import config_manager
 
 
 class NodeService:
@@ -14,7 +14,7 @@ class NodeService:
     基于现有AgentRegistry功能重构
     """
     
-    def __init__(self, structure: Optional[AgentStructureInterface] = None):
+    def __init__(self, structure: Optional[AgentStructureRepository] = None):
         """
         初始化节点服务
         
@@ -37,12 +37,13 @@ class NodeService:
         if not self.structure:
             try:
                 # 从配置中获取Neo4j配置
-                neo4j_config = get_config("neo4j")
-                if neo4j_config:
-                    self.structure = Neo4JAgentStructure(
-                        uri=neo4j_config.get("uri", "bolt://localhost:7687"),
-                        user=neo4j_config.get("user", "neo4j"),
-                        password=neo4j_config.get("password", "password")
+                from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+
+                if NEO4J_URI and NEO4J_USER and NEO4J_PASSWORD:
+                    self.structure = AgentStructureRepository(
+                        uri=NEO4J_URI,
+                        user=NEO4J_USER,
+                        password=NEO4J_PASSWORD
                     )
                     self.logger.info("Neo4j结构管理器初始化成功")
                 else:
@@ -53,12 +54,12 @@ class NodeService:
                 self.logger.error(f"初始化结构管理器失败: {e}")
                 self.structure = self._create_memory_structure()
     
-    def _create_memory_structure(self) -> AgentStructureInterface:
+    def _create_memory_structure(self) :
         """
         创建内存版本的结构管理器
         用于开发和测试环境
         """
-        class MemoryAgentStructure(AgentStructureInterface):
+        class MemoryAgentStructure():
             def __init__(self):
                 self.agents = {}
                 self.relationships = {}
@@ -346,4 +347,4 @@ class NodeService:
         if self.structure:
             self.structure.close()
         self.node_cache.clear()
-        self.logger.info("节点服务已关闭")
+        self.logger.info("节点服务已关闭")

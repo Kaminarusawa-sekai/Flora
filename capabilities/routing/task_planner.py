@@ -12,7 +12,7 @@ import logging
 import json
 import networkx as nx
 from typing import Dict, Any, List, Tuple
-from external.agent_structure.structure_interface import AgentStructureInterface
+from external.repositories.agent_structure_repo import AgentStructureRepository
 
 
 class TaskPlanner(CapabilityBase):
@@ -99,7 +99,7 @@ class TaskPlanner(CapabilityBase):
             - edges_data: [{"from": "...", "to": "...", "weight": 0.x}, ...]
         """
         try:
-            structure = AgentStructureInterface.get_instance()
+            structure = AgentStructureRepository()
             # 假设新接口方法返回结构化 dict 而非 nx.DiGraph
             result = structure.get_influenced_subgraph_with_scc(
                 root_code=root_code,

@@ -10,7 +10,31 @@ import uvicorn
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import Dict, Any, Optional, Annotated
+from typing import Dict, Any, Optional, Annotated, List
+from pydantic import BaseModel
+
+# 定义请求模型
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    stream: bool = False
+
+class CommandRequest(BaseModel):
+    command: str
+    params: Optional[Dict[str, Any]] = None
+
+class FeedbackRequest(BaseModel):
+    content: str
+    rating: Optional[int] = None
+
+# 定义认证信息模型
+class AuthInfo(BaseModel):
+    user_id: str
+    tenant_id: str
+    role: Optional[str] = None
 
 # 导入入口层其他组件
 from entry_layer.auth_middleware import AuthMiddleware, get_current_auth_info
@@ -110,7 +134,7 @@ class APIServer:
         注册API路由
         """
         # 获取当前认证信息的依赖项
-        AuthInfo = Annotated[Dict[str, Any], Depends(get_current_auth_info)]
+        AuthInfoDep = Annotated[Dict[str, Any], Depends(get_current_auth_info)]
         
         @self.app.get("/health")
         async def health_check():
@@ -120,189 +144,149 @@ class APIServer:
                 "service": "flora-api-server"
             }
         
-        # API v1路由组
-        @self.app.post("/api/v1/task")
-        async def create_task(
+        # === 对话路由 (Command) ===
+        @self.app.post("/api/v1/chat/completions")
+        async def chat_completions(
             request: Request,
-            data: Dict[str, Any],
-            auth_info: AuthInfo
+            chat_request: ChatRequest,
+            auth_info: AuthInfoDep
         ):
-            """创建新任务"""
+            """发送对话消息（兼容 OpenAI 格式）"""
             return await self._handle_request(
                 request=request,
-                operation="create_task",
-                data=data,
-                auth_info=auth_info
-            )
-
-        @self.app.post("/api/v1/task/with-comment")
-        async def create_task_and_comment(
-            request: Request,
-            data: Dict[str, Any],
-            auth_info: AuthInfo
-        ):
-            """创建新任务并追加评论"""
-            return await self._handle_request(
-                request=request,
-                operation="create_task_and_comment",
-                data=data,
+                operation="handle_chat_request",
+                data={
+                    "messages": [msg.dict() for msg in chat_request.messages],
+                    "stream": chat_request.stream
+                },
                 auth_info=auth_info
             )
         
-        @self.app.get("/api/v1/task/{task_id}")
-        async def get_task(
+        @self.app.post("/api/v1/chat/clear")
+        async def clear_chat(
             request: Request,
-            task_id: str,
-            auth_info: AuthInfo
+            auth_info: AuthInfoDep
         ):
-            """获取任务状态"""
+            """清空当前会话/草稿"""
             return await self._handle_request(
                 request=request,
-                operation="get_task",
+                operation="handle_clear_chat",
+                data={},
+                auth_info=auth_info
+            )
+        
+        # === 任务查询路由 (Query) ===
+        @self.app.get("/api/v1/tasks")
+        async def get_task_list(
+            request: Request,
+            auth_info: AuthInfoDep,
+            page: int = 1,
+            size: int = 20
+        ):
+            """获取任务列表"""
+            return await self._handle_request(
+                request=request,
+                operation="handle_get_task_list",
+                data={"page": page, "size": size},
+                auth_info=auth_info
+            )
+        
+        @self.app.get("/api/v1/tasks/{task_id}")
+        async def get_task_detail(
+            request: Request,
+            task_id: str,
+            auth_info: AuthInfoDep
+        ):
+            """获取任务详情"""
+            return await self._handle_request(
+                request=request,
+                operation="handle_get_task_detail",
+                data={}, 
                 auth_info=auth_info,
                 task_id=task_id
             )
         
-        @self.app.put("/api/v1/task/{task_id}")
-        async def update_task(
+        @self.app.get("/api/v1/tasks/{task_id}/timeline")
+        async def get_task_timeline(
             request: Request,
             task_id: str,
-            data: Dict[str, Any],
-            auth_info: AuthInfo
+            auth_info: AuthInfoDep
         ):
-            """更新任务"""
-            return await self._handle_request(
-                request=request,
-                operation="update_task",
-                data=data,
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.delete("/api/v1/task/{task_id}")
-        async def delete_task(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """删除任务"""
-            return await self._handle_request(
-                request=request,
-                operation="delete_task",
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.post("/api/v1/task/{task_id}/comment")
-        async def add_task_comment(
-            request: Request,
-            task_id: str,
-            data: Dict[str, Any],
-            auth_info: AuthInfo
-        ):
-            """为任务追加评论"""
-            return await self._handle_request(
-                request=request,
-                operation="add_task_comment",
-                data=data,
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/task/{task_id}/current")
-        async def get_task_current_execution(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """获取任务当前执行内容"""
-            return await self._handle_request(
-                request=request,
-                operation="get_task_current_execution",
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/task/{task_id}/plan")
-        async def get_task_plan(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """获取任务计划执行的n项内容"""
-            return await self._handle_request(
-                request=request,
-                operation="get_task_plan",
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/task/{task_id}/people")
-        async def get_task_people(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """获取任务下人员的情况"""
-            return await self._handle_request(
-                request=request,
-                operation="get_task_people",
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/task/{task_id}/leaf-agents")
-        async def get_task_leaf_agents(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """获取任务下各个叶子智能体执行情况"""
-            return await self._handle_request(
-                request=request,
-                operation="get_task_leaf_agents",
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/task/{task_id}/execution-path")
-        async def get_task_execution_path(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfo
-        ):
-            """获取任务整体执行路径"""
+            """获取执行路径/进度"""
             return await self._handle_request(
                 request=request,
                 operation="get_task_execution_path",
+                data={},
                 auth_info=auth_info,
                 task_id=task_id
             )
         
-        @self.app.get("/api/v1/task/{task_id}/progress")
-        async def get_task_progress(
+        @self.app.get("/api/v1/tasks/{task_id}/artifacts")
+        async def get_task_artifacts(
             request: Request,
             task_id: str,
-            auth_info: AuthInfo
+            auth_info: AuthInfoDep
         ):
-            """获取任务进度详情"""
+            """获取任务生成的产物（文件、图表）"""
             return await self._handle_request(
                 request=request,
-                operation="get_task_progress",
+                operation="handle_get_task_artifacts",
+                data={},
                 auth_info=auth_info,
                 task_id=task_id
             )
         
+        # === 控制服务 (Control Service) ===
+        @self.app.post("/api/v1/tasks/{task_id}/command")
+        async def send_task_command(
+            request: Request,
+            task_id: str,
+            command_request: CommandRequest,
+            auth_info: AuthInfoDep
+        ):
+            """发送控制指令（暂停/恢复/取消）"""
+            return await self._handle_request(
+                request=request,
+                operation="handle_task_command",
+                data={
+                    "command": command_request.command,
+                    "params": command_request.params
+                },
+                auth_info=auth_info,
+                task_id=task_id
+            )
+        
+        @self.app.post("/api/v1/tasks/{task_id}/feedback")
+        async def send_task_feedback(
+            request: Request,
+            task_id: str,
+            feedback_request: FeedbackRequest,
+            auth_info: AuthInfoDep
+        ):
+            """人工反馈/评论（用于 Human-in-the-loop）"""
+            return await self._handle_request(
+                request=request,
+                operation="handle_add_task_comment",
+                data={
+                    "content": feedback_request.content,
+                    "rating": feedback_request.rating
+                },
+                auth_info=auth_info,
+                task_id=task_id
+            )
+        
+        # === 保留的其他路由 ===
         @self.app.get("/api/v1/agent/{agent_id}")
         async def get_agent(
             request: Request,
             agent_id: str,
-            auth_info: AuthInfo
+            auth_info: AuthInfoDep
         ):
             """获取智能体信息"""
             return await self._handle_request(
                 request=request,
                 operation="get_agent",
+                data={},
                 auth_info=auth_info,
                 agent_id=agent_id
             )

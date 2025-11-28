@@ -1,16 +1,15 @@
 """能力注册表"""
-from typing import Dict, Any, Type, Optional
-from .capability_base import CapabilityBase
-
-
 import logging
-from typing import Dict, Any, Type, Optional, Callable
+from typing import Dict, Any, Type, Optional, Callable, TypeVar
 from .capability_base import CapabilityBase
+
+# T 是一个泛型，代表具体的 Capability 类型
+T = TypeVar('T', bound='CapabilityBase')
 
 
 class CapabilityRegistry:
     """
-    能力注册表（支持依赖注入）
+    能力注册表（支持依赖注入和泛型类型推断）
     """
     
     _instance = None
@@ -53,14 +52,32 @@ class CapabilityRegistry:
         
         return self.register(capability_type, factory)
 
-    def get_capability(self, capability_type: str) -> Optional[CapabilityBase]:
-        if capability_type in self._factories:
+    # 关键优化：使用泛型 T，让 IDE 知道返回的是什么具体的类
+    def get_capability(self, name: str, expected_type: Type[T]) -> T:
+        """
+        获取指定类型的能力实例
+        
+        Args:
+            name: 能力名称
+            expected_type: 期望的能力类型
+            
+        Returns:
+            符合期望类型的能力实例
+            
+        Raises:
+            ValueError: 能力不存在
+            TypeError: 能力类型不匹配
+        """
+        if name in self._factories:
             try:
-                return self._factories[capability_type]()
+                cap = self._factories[name]()
+                if not isinstance(cap, expected_type):
+                    raise TypeError(f"Capability {name} is not of type {expected_type.__name__}")
+                return cap
             except Exception as e:
-                logging.error(f"Failed to create capability '{capability_type}': {e}")
-                return None
-        return None
+                logging.error(f"Failed to create capability '{name}': {e}")
+                raise
+        raise ValueError(f"Capability {name} not found")
 
     def has_capability(self, capability_type: str) -> bool:
         """

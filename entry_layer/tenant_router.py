@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, Union, Callable
 from collections import defaultdict
 import asyncio
+from thespian.actors import ActorSystem
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,22 @@ class TenantRouter:
             'services_count': services_count,
             'per_tenant_services': {}
         }
+    
+    def get_router_actor(self, tenant_id: str):
+        """
+        根据租户ID获取全局唯一的 RouterActor 地址
+        
+        Args:
+            tenant_id: 租户ID
+            
+        Returns:
+            RouterActor 地址
+        """
+        # 假设所有 RouterActor 注册时都用了 "Router_{tenant_id}" 的别名
+        return ActorSystem().createActor(
+            'agents.router_actor.RouterActor',
+            globalName=f"Router_{tenant_id}"
+        )
 
 
 # 工厂函数，用于创建租户路由分发器实例
