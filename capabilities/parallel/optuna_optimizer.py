@@ -3,7 +3,7 @@ import optuna
 from typing import List, Dict, Any, Tuple, Optional
 from abc import ABC, abstractmethod
 from ..capability_base import CapabilityBase
-from ..llm.dimension_parser import DimensionParserCapability
+from ..dimension.dimension_parser import DimensionParserCapability
 from .parallel_optimization_interface import (ParallelOptimizationInterface,
                                               OptimizationOrchestratorInterface,
                                               ExecutionManagerInterface)

@@ -3,26 +3,38 @@ import logging
 import pickle
 import json
 import base64
-from typing import Optional, Any
+from typing import Optional
+from datetime import datetime, timedelta
 from thespian.actors import ActorAddress
 
-# 导入Redis适配器
-from ...external.database.redis_adapter import redis_adapter
+from common.types.actor_reference import ActorReferenceDTO
+from external.repositories.actor_reference_repo import ActorReferenceRepo
+from external.database.redis_client import RedisClient
 
 
 class ActorReferenceManager:
     """Actor引用管理工具类"""
-    
+
     def __init__(self):
         self.logger = logging.getLogger("ActorReferenceManager")
-    
-    def serialize_address(self, addr: ActorAddress) -> str:
+
+        # 初始化Repository
+        try:
+            redis_client = RedisClient()
+            self.repo = ActorReferenceRepo(redis_client)
+            self.logger.info("✓ ActorReferenceManager 初始化成功")
+        except Exception as e:
+            self.logger.error(f"✗ ActorReferenceManager 初始化失败: {e}")
+            # 使用内存模式的repo
+            self.repo = ActorReferenceRepo(redis_client=None)
+
+    def serialize_address(self, addr: ActorAddress) -> Optional[str]:
         """
         序列化ActorAddress为字符串
-        
+
         Args:
             addr: Thespian ActorAddress对象
-            
+
         Returns:
             str: 序列化后的字符串
         """
@@ -33,7 +45,7 @@ class ActorReferenceManager:
             return base64.b64encode(serialized).decode('ascii')
         except Exception as e:
             self.logger.error(f"使用pickle序列化ActorAddress失败: {e}")
-            
+
             # 备选方案1: 使用str()
             try:
                 addr_str = str(addr)
@@ -41,7 +53,7 @@ class ActorReferenceManager:
                 return json.dumps({"type": "str", "value": addr_str})
             except Exception as e2:
                 self.logger.error(f"使用str()序列化ActorAddress失败: {e2}")
-                
+
                 # 备选方案2: 使用__str__属性
                 try:
                     if hasattr(addr, '__str__'):
@@ -49,31 +61,31 @@ class ActorReferenceManager:
                         return json.dumps({"type": "__str__", "value": str_repr})
                 except Exception as e3:
                     self.logger.error(f"使用__str__序列化ActorAddress失败: {e3}")
-            
+
             # 最后的备选方案: 返回None
             self.logger.critical("无法序列化ActorAddress")
             return None
-    
+
     def deserialize_address(self, addr_str: str) -> Optional[ActorAddress]:
         """
         从字符串反序列化为ActorAddress
-        
+
         Args:
             addr_str: 序列化后的字符串
-            
+
         Returns:
             ActorAddress: 反序列化后的ActorAddress对象，如果失败返回None
         """
         if not addr_str:
             return None
-        
+
         try:
             # 尝试使用pickle反序列化
             decoded = base64.b64decode(addr_str.encode('ascii'))
             return pickle.loads(decoded)
         except Exception as e:
             self.logger.error(f"使用pickle反序列化ActorAddress失败: {e}")
-            
+
             # 尝试解析JSON格式
             try:
                 data = json.loads(addr_str)
@@ -90,95 +102,214 @@ class ActorReferenceManager:
                             self.logger.error(f"处理字符串类型地址失败: {e2}")
             except Exception as e2:
                 self.logger.error(f"解析JSON格式地址失败: {e2}")
-        
+
         # 所有尝试都失败
         self.logger.critical(f"无法反序列化ActorAddress: {addr_str}")
         return None
-    
+
     def create_redis_key(self, prefix: str, tenant_id: str, node_id: str) -> str:
         """
-        创建Redis键
-        
+        创建Redis键（为了兼容性保留）
+
         Args:
             prefix: 键前缀
             tenant_id: 租户ID
             node_id: 节点ID
-            
+
         Returns:
             str: 完整的Redis键
         """
         return f"{prefix}:{tenant_id}:{node_id}"
-    
-    # Redis操作方法，集成Redis适配器
-    
-    def get_redis_client(self) -> Optional[Any]:
-        """
-        获取Redis客户端实例
-        
-        Returns:
-            redis.Redis: Redis客户端实例，如果不可用返回None
-        """
-        return redis_adapter.get_client()
-    
+
+    # ============= Repository操作方法 =============
+
     def is_redis_available(self) -> bool:
         """
         检查Redis是否可用
-        
+
         Returns:
             bool: Redis是否可用
         """
-        return redis_adapter.is_available()
-    
+        return self.repo.is_redis_available()
+
+    def save_actor_reference(self, tenant_id: str, node_id: str,
+                           actor_address: ActorAddress, ttl: int = 3600) -> bool:
+        """
+        保存Actor引用
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+            actor_address: Actor地址
+            ttl: 过期时间（秒），默认3600秒（1小时）
+
+        Returns:
+            bool: 是否保存成功
+        """
+        # 序列化地址
+        serialized_addr = self.serialize_address(actor_address)
+        if not serialized_addr:
+            return False
+
+        # 创建DTO
+        now = datetime.now()
+        dto = ActorReferenceDTO(
+            tenant_id=tenant_id,
+            node_id=node_id,
+            actor_address=serialized_addr,
+            created_at=now,
+            expires_at=now + timedelta(seconds=ttl),
+            last_heartbeat=now
+        )
+
+        # 保存
+        return self.repo.save(dto, ttl=ttl)
+
+    def get_actor_reference(self, tenant_id: str, node_id: str) -> Optional[ActorAddress]:
+        """
+        获取Actor引用
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+
+        Returns:
+            ActorAddress: Actor地址，如果不存在返回None
+        """
+        # 从repo获取DTO
+        dto = self.repo.get(tenant_id, node_id)
+        if not dto:
+            return None
+
+        # 反序列化地址
+        return self.deserialize_address(dto.actor_address)
+
+    def delete_actor_reference(self, tenant_id: str, node_id: str) -> bool:
+        """
+        删除Actor引用
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+
+        Returns:
+            bool: 是否删除成功
+        """
+        return self.repo.delete(tenant_id, node_id)
+
+    def refresh_actor_ttl(self, tenant_id: str, node_id: str, ttl: int = 3600) -> bool:
+        """
+        刷新Actor引用的TTL
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+            ttl: 过期时间（秒），默认3600秒（1小时）
+
+        Returns:
+            bool: 是否刷新成功
+        """
+        return self.repo.refresh_ttl(tenant_id, node_id, ttl)
+
+    def update_heartbeat(self, tenant_id: str, node_id: str) -> bool:
+        """
+        更新Actor引用的心跳时间
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+
+        Returns:
+            bool: 是否更新成功
+        """
+        # 刷新TTL并更新心跳
+        success = self.repo.refresh_ttl(tenant_id, node_id)
+        if success:
+            self.repo.update_heartbeat(tenant_id, node_id)
+        return success
+
+    def exists(self, tenant_id: str, node_id: str) -> bool:
+        """
+        检查Actor引用是否存在
+
+        Args:
+            tenant_id: 租户ID
+            node_id: 节点ID
+
+        Returns:
+            bool: 是否存在
+        """
+        return self.repo.exists(tenant_id, node_id)
+
+    # ============= 兼容性方法（为了保持与旧代码的兼容） =============
+
+    def get_redis_client(self) -> Optional[RedisClient]:
+        """
+        获取Redis客户端实例（兼容性方法）
+
+        Returns:
+            RedisClient: Redis客户端实例，如果不可用返回None
+        """
+        return self.repo.redis_client if self.repo.is_redis_available() else None
+
     def set_with_ttl(self, key: str, value: str, ttl: int = 3600) -> bool:
         """
-        设置带TTL的Redis键值对
-        
+        设置带TTL的Redis键值对（兼容性方法）
+
         Args:
             key: Redis键
             value: Redis值
             ttl: 过期时间（秒），默认3600秒（1小时）
-            
+
         Returns:
             bool: 是否设置成功
         """
-        return redis_adapter.set_with_ttl(key, value, ttl)
-    
+        if self.repo.is_redis_available():
+            return self.repo.redis_client.set(key, value, ttl=ttl)
+        return False
+
     def get(self, key: str) -> Optional[str]:
         """
-        获取Redis键的值
-        
+        获取Redis键的值（兼容性方法）
+
         Args:
             key: Redis键
-            
+
         Returns:
             str: Redis值，如果不存在或失败返回None
         """
-        return redis_adapter.get(key)
-    
+        if self.repo.is_redis_available():
+            return self.repo.redis_client.get(key)
+        return None
+
     def delete(self, key: str) -> bool:
         """
-        删除Redis键
-        
+        删除Redis键（兼容性方法）
+
         Args:
             key: Redis键
-            
+
         Returns:
             bool: 是否删除成功
         """
-        return redis_adapter.delete(key)
-    
+        if self.repo.is_redis_available():
+            return self.repo.redis_client.delete(key)
+        return False
+
     def expire(self, key: str, ttl: int = 3600) -> bool:
         """
-        设置Redis键的过期时间
-        
+        设置Redis键的过期时间（兼容性方法）
+
         Args:
             key: Redis键
             ttl: 过期时间（秒），默认3600秒（1小时）
-            
+
         Returns:
             bool: 是否设置成功
         """
-        return redis_adapter.expire(key, ttl)
+        if self.repo.is_redis_available():
+            return self.repo.redis_client.expire(key, ttl)
+        return False
 
 
 # 创建全局实例

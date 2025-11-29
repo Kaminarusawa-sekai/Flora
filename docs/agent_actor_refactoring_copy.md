@@ -1,0 +1,350 @@
+# AgentActor 任务处理流程重构说明
+
+## 整体架构
+
+```
+用户输入
+  ↓
+InteractionActor (前台)
+  ↓
+ConversationManager
+  ├─ 意图识别 (IntentRouter)
+  ├─ 参数补充判断
+  └─ 返回处理结果
+  ↓
+AgentActor (后台) ← 只接收task相关的意图
+  ↓
+┌─────────────────────────────────────────┐
+│  AgentActor 任务处理流程                 │
+└─────────────────────────────────────────┘
+  ↓
+0-是否是参数补完逻辑
+
+① 检查是否为叶子节点
+  ├─ 是 → 直接ExecutionActor执行
+  └─ 否 → 继续流程
+  ↓
+② 任务操作分类 (TaskOperationCapability)
+  ├─ 创建类 (new_task, new_loop_task, etc.)
+  ├─ 执行控制类 (execute, pause, resume, cancel)
+  ├─ 循环管理类 (modify_loop, pause_loop, etc.)
+  ├─ 修改类 (revise_result, revise_process, comment)
+  ├─ 查询类 (query_status, query_result, list_tasks)
+  └─ 其他...
+  ↓
+③ 根据操作类型分发
+  ├─ 创建类 → 继续流程
+  ├─ 执行控制类 → 执行对应操作
+  ├─ 循环管理类 → 转发到LoopScheduler
+  ├─ 修改类 → 执行修改操作
+  └─ 查询类 → 查询并返回结果
+  ↓
+④ 节点选择 (TaskRouter.select_best_actor)
+  ├─ 找到合适节点 → 转发
+  └─ 没有找到 → MCP Fallback
+  ↓
+⑤ 任务规划 (TaskPlanner)
+  ├─ 分析任务依赖
+  ├─ 生成执行计划
+  └─ 分解子任务
+  ↓
+⑥ 并行判断
+  ├─ 值得并行 → 标记为parallel
+  └─ 不值得 → 标记为sequential
+  ↓
+⑦ 构建TaskGroupRequest
+  └─ 发送给TaskGroupAggregatorActor
+  ↓
+⑧ 等待结果聚合
+  └─ 返回给InteractionActor → 用户
+```
+
+## 详细流程说明
+
+### 0  conversationmanager集成intent检查
+
+ capabilities/context/conversation_manager.py中分离IConversationManagerCapability到对应的文件
+ 在ConversationManager的initialize中初始化IntentRouter
+ 从agent_actor中去除相关的逻辑
+
+ ### 0.5 补完参数消息检查
+
+ 如果是补完消息，直接分发给对应的ExecutionActor
+
+### ① 叶子节点检查
+
+**目的**: 快速路径，如果Agent自己就能处理，不需要复杂的路由和规划
+
+**实现**:
+```python
+def _is_leaf_node(self, task_description: str) -> bool:
+    """
+    判断当前Agent是否为叶子节点（能直接执行任务）
+
+    判断标准：
+    使用agents/tree/tree_manager.py中的相关方法进行判断
+    """
+
+def _execute_as_leaf(self, task: Dict[str, Any], sender):
+    """作为叶子节点直接执行"""
+    task_id = task.get("task_id")
+    description = task.get("content")
+
+    # 直接创建ExecutionActor并执行
+    exec_actor = self.createActor(ExecutionActor)
+
+    exec_msg = {
+        "type": "execute",
+        "task_id": task_id,
+        "capability": self._infer_capability(description),
+        "parameters": self._extract_parameters(description),
+        "reply_to": self.myAddress
+    }
+
+    self.send(exec_actor, exec_msg)
+```
+
+### ② 任务操作分类
+
+**使用**: `TaskOperationCapability`
+
+**操作类型**:
+
+1. **创建类** (CREATION):
+   - `NEW_TASK` - 创建新任务
+   - `NEW_LOOP_TASK` - 创建循环任务
+   - `NEW_DELAYED_TASK` - 创建延时任务
+   - `NEW_SCHEDULED_TASK` - 创建定时任务
+
+2. **执行控制类** (EXECUTION):
+   - `EXECUTE_TASK` - 立即执行
+   - `TRIGGER_LOOP_TASK` - 触发循环任务
+   - `PAUSE_TASK` - 暂停
+   - `RESUME_TASK` - 恢复
+   - `CANCEL_TASK` - 取消
+   - `RETRY_TASK` - 重试
+
+3. **循环管理类** (LOOP_MANAGEMENT):
+   - `MODIFY_LOOP_INTERVAL` - 修改间隔
+   - `PAUSE_LOOP` - 暂停循环
+   - `RESUME_LOOP` - 恢复循环
+   - `CANCEL_LOOP` - 取消循环
+
+4. **修改类** (MODIFICATION):
+   - `REVISE_RESULT` - 修改结果
+   - `REVISE_PROCESS` - 修改过程
+   - `COMMENT_ON_TASK` - 添加评论
+   - `MODIFY_TASK_PARAMS` - 修改参数
+
+5. **查询类** (QUERY):
+   - `QUERY_TASK_STATUS` - 查询状态
+   - `QUERY_TASK_RESULT` - 查询结果
+   - `LIST_TASKS` - 列出任务
+
+**实现**:
+```python
+def _classify_task_operation(self, user_input: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """使用TaskOperationCapability分类任务操作"""
+    from capabilities import get_capability
+    from capabilities.cognition.task_operation import ITaskOperationCapability
+
+    task_op_cap = get_capability("task_operation", expected_type=ITaskOperationCapability)
+
+    if task_op_cap:
+        return task_op_cap.classify_operation(user_input, context)
+    else:
+        # Fallback
+        return {
+            "operation_type": TaskOperationType.NEW_TASK,
+            "category": TaskOperationCategory.CREATION,
+            "parameters": {}
+        }
+```
+
+### ③ 操作分发
+
+**根据操作类型执行不同的处理逻辑**:
+
+```python
+def _dispatch_operation(self, operation_result: Dict[str, Any], task: Dict[str, Any], sender):
+    """根据操作类型分发"""
+    operation_type = operation_result["operation_type"]
+    category = operation_result["category"]
+
+    if category == TaskOperationCategory.CREATION:
+        # 创建类 → 继续任务执行流程
+        self._handle_task_creation(task, sender)
+
+    elif category == TaskOperationCategory.EXECUTION:
+        # 执行控制类 → 执行对应操作
+        self._handle_execution_control(operation_type, operation_result, task, sender)
+
+    elif category == TaskOperationCategory.LOOP_MANAGEMENT:
+        # 循环管理类 → 转发到LoopScheduler
+        self._forward_to_loop_scheduler(operation_result, task, sender)
+
+    elif category == TaskOperationCategory.MODIFICATION:
+        # 修改类 → 执行修改操作
+        self._handle_task_modification(operation_type, operation_result, task, sender)
+
+    elif category == TaskOperationCategory.QUERY:
+        # 查询类 → 查询并返回
+        self._handle_task_query(operation_type, operation_result, task, sender)
+
+    else:
+        # 未知类型
+        self.send(sender, {
+            "message_type": "task_error",
+            "task_id": task.get("task_id"),
+            "error": f"不支持的操作类型: {operation_type}"
+        })
+```
+
+### ④ 节点选择
+
+**使用**: `TaskRouter.select_best_actor`
+
+```python
+def _select_execution_node(self, task_description: str) -> Optional[ActorAddress]:
+    """选择最佳执行节点"""
+    from capabilities import get_capability
+    from capabilities.routing.task_router import ITaskRouter
+
+    task_router = get_capability("routing", expected_type=ITaskRouter)
+
+    if task_router:
+        # 使用TaskRouter选择最佳节点
+        node_result = task_router.select_best_actor(task_description)
+
+        if node_result and node_result.get("actor_address"):
+            return node_result["actor_address"]
+
+    return None
+
+def _execute_with_mcp_fallback(self, task: Dict[str, Any], sender):
+    """使用MCP Fallback执行"""
+    self.log.info(f"No suitable actor found, using MCP fallback")
+
+    # 调用MCP执行
+    # TODO: 实现MCP调用逻辑
+    pass
+```
+
+### ⑤ 任务规划
+
+**使用**: `TaskPlanner`
+
+```python
+def _plan_task_execution(self, task_description: str) -> Dict[str, Any]:
+    """规划任务执行"""
+    from capabilities import get_capability
+    from capabilities.routing.task_planner import ITaskPlanner
+
+    task_planner = get_capability("planning", expected_type=ITaskPlanner)
+
+    if task_planner:
+        # 生成执行计划
+        plan = task_planner.plan_task(task_description)
+        return plan
+    else:
+        # Fallback: 简单计划
+        return {
+            "subtasks": [{"description": task_description}],
+            "dependencies": [],
+            "parallel_groups": []
+        }
+```
+
+### ⑥ 并行判断
+
+```python
+def _should_execute_in_parallel(self, subtasks: List[Dict[str, Any]]) -> bool:
+    """判断子任务是否值得并行执行"""
+
+    # 判断标准：
+    #由llm进行判断，具体的判断逻辑放在capbility里，这里通过能力来引用
+```
+
+### ⑦ 构建TaskGroupRequest
+
+```python
+def _build_task_group_request(self, plan: Dict[str, Any], parent_task_id: str) -> Dict[str, Any]:
+    """构建TaskGroupRequest"""
+
+    subtasks = plan.get("subtasks", [])
+    parallel = self._should_execute_in_parallel(subtasks)
+
+    return {
+        "message_type": "execute_task_group",
+        "parent_task_id": parent_task_id,
+        "subtasks": subtasks,
+        "execution_mode": "parallel" if parallel else "sequential",
+        "aggregation_strategy": "map_reduce",
+        "reply_to": self.myAddress
+    }
+
+def _send_to_task_group_aggregator(self, task_group_request: Dict[str, Any]):
+    """发送到TaskGroupAggregatorActor"""
+    from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+
+    aggregator = self.createActor(TaskGroupAggregatorActor)
+    self.send(aggregator, task_group_request)
+```
+
+## 完整流程示例
+
+```python
+def _handle_task(self, task: Dict[str, Any], sender: ActorAddress):
+    """
+    主任务处理入口（重构后）
+
+    InteractionActor已经完成了意图识别和对话处理，
+    AgentActor只负责任务执行
+    """
+    user_input = task.get("content")
+    task_id = task.get("task_id")
+    reply_to = task.get("reply_to", sender)
+
+    self.log.info(f"[AgentActor] Handling task {task_id}")
+
+    # ① 检查是否为叶子节点
+    if self._is_leaf_node(user_input):
+        self.log.info("Task can be executed as leaf node")
+        self._execute_as_leaf(task, reply_to)
+        return
+
+    # ② 任务操作分类
+    operation_result = self._classify_task_operation(user_input, context={})
+    operation_type = operation_result["operation_type"]
+    category = operation_result["category"]
+
+    self.log.info(f"Operation classified as: {operation_type.value} ({category.value})")
+
+    # ③ 根据操作类型分发
+    if category != TaskOperationCategory.CREATION:
+        # 非创建类操作，直接处理
+        self._dispatch_operation(operation_result, task, reply_to)
+        return
+
+    # ④ 节点选择
+    node_addr = self._select_execution_node(user_input)
+
+    if not node_addr:
+        # ④.1 没有合适节点，使用MCP Fallback
+        self.log.info("No suitable node found, using MCP fallback")
+        self._execute_with_mcp_fallback(task, reply_to)
+        return
+
+    # ⑤ 任务规划
+    plan = self._plan_task_execution(user_input)
+
+    # ⑥ 并行判断
+    parallel = self._should_execute_in_parallel(plan.get("subtasks", []))
+
+    # ⑦ 构建TaskGroupRequest
+    task_group_request = self._build_task_group_request(plan, task_id)
+
+    # ⑧ 发送到TaskGroupAggregatorActor
+    self._send_to_task_group_aggregator(task_group_request)
+```
+

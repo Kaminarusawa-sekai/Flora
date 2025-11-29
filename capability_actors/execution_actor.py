@@ -1,304 +1,509 @@
-"""Execution Actor - 任务执行处理者
-负责处理智能体任务的执行逻辑，包括并行和顺序执行
-与DataActor交互获取必要的执行参数
+"""Execution Actor - 具体执行处理者
+负责连接外部系统和内部函数进行具体执行
+⑪ 具体执行：
+- 连接外部系统（HTTP、Dify等）
+- 处理不同的执行步骤（Dify需要先获取参数再执行）
+- 调用内部能力函数
+- 返回执行结果
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
 from thespian.actors import Actor
 import logging
+import requests
 
 from capabilities import get_capability
-from capabilities.connectors.connector_manager import UniversalConnectorManager
-from capabilities.routing.context_resolver import ContextResolver
-from .data_actor import DataActor
-from common.messages import (
-    TaskMessage,
-    SubtaskResultMessage,
-    SubtaskErrorMessage,
-    DataQueryResponse,
-    InvokeConnectorRequest,
-    ConnectorExecutionSuccess,
-    ConnectorExecutionFailure
-)
-from common.messages import DifySchemaResponse, DifyExecuteResponse
+from events.event_bus import event_bus
+from events.event_types import EventType
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class ExecutionActor(Actor):
     """
-    任务执行处理者
-    - 处理叶子任务的执行
-    - 与DataActor协作获取执行参数
-    - 支持并行和顺序执行
-    - 处理中间任务并生成子任务
+    ⑪ 具体执行器
+    负责实际调用外部系统和内部函数
     """
-    
+
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.data_actor = None
-        self._pending_requests = {}
-        self._pending_aggregators = {}
-        # 初始化连接器管理器和上下文解析器
-        self.connector_manager = UniversalConnectorManager()
-        self.context_resolver = ContextResolver()
-        self._initialize_components()
-    
-    def _initialize_components(self):
-        """初始化组件"""
-        try:
-            # 创建数据actor引用
-            self.data_actor = self.createActor(DataActor)
-            
-            # Import here to avoid circular imports
-            from capability_actors.result_aggregator_actor import ResultAggregatorActor
-            self.ResultAggregatorActor = ResultAggregatorActor
-            
-            self.logger.info("ExecutionActor组件初始化成功")
-        except Exception as e:
-            self.logger.error(f"ExecutionActor组件初始化失败: {e}")
-    
+        self._pending_requests = {}  # task_id -> request_info
+        self.logger.info("ExecutionActor initialized")
+
     def receiveMessage(self, msg: Any, sender: str) -> None:
         """
         接收消息并处理
-        
+
         Args:
             msg: 消息内容
             sender: 发送者
         """
         try:
-            # 处理叶子任务请求
-            if isinstance(msg, dict) and msg.get("type") == "leaf_task":
-                self._handle_leaf_task_request(msg, sender)
-            
-            # 处理数据查询响应（来自DataActor）
-            elif isinstance(msg, DataQueryResponse):
-                self._handle_data_response(msg)
-            
-            # 处理聚合完成消息
-            elif isinstance(msg, dict) and msg.get("type") == "aggregation_complete":
-                self._handle_aggregation_complete(msg, sender)
-            
-            # 处理聚合错误消息
-            elif isinstance(msg, dict) and msg.get("type") == "aggregation_error":
-                self._handle_aggregation_error(msg, sender)
-            
-            # 处理Dify Schema响应
-            elif isinstance(msg, DifySchemaResponse):
-                self._handle_dify_schema_response(msg)
-            # 处理Dify执行响应
-            elif isinstance(msg, DifyExecuteResponse):
-                self._handle_dify_execute_response(msg)
-            # 处理连接器执行成功响应
-            elif isinstance(msg, ConnectorExecutionSuccess):
-                self._handle_connector_execution_success(msg)
-            # 处理连接器执行失败响应
-            elif isinstance(msg, ConnectorExecutionFailure):
-                self._handle_connector_execution_failure(msg)
-            # 处理其他任务类型
-            else:
-                self.logger.warning(f"Unknown message type: {type(msg)}")
-                task_id = msg.get("task_id", "unknown") if isinstance(msg, dict) else getattr(msg, "task_id", "unknown")
-                self.send(sender, SubtaskErrorMessage(task_id, f"Unknown message type: {type(msg)}"))
-        except Exception as e:
-            self.logger.error(f"Execution failed: {e}")
-            task_id = getattr(msg, "task_id", "unknown")
-            self.send(sender, SubtaskErrorMessage(task_id, str(e)))
-    
-    def _handle_leaf_task_request(self, msg: Dict[str, Any], sender: str) -> None:
-        """处理叶子任务请求"""
-        self.logger.info(f"Handling leaf task: {msg['task_id']}")
-        
-        # 记录等待的数据请求
-        self._pending_requests[msg['task_id']] = {
-            "context": msg['context'],
-            "memory": msg['memory'],
-            "capability": msg['capability'],
-            "sender": sender,
-            "agent_id": msg['agent_id']
-        }
-        
-        # 向DataActor请求获取执行参数
-        self.send(self.data_actor, {
-            "type": "get_capability_params",
-            "capability": msg['capability'],
-            "task_id": msg['task_id']
-        })
-    
+            if isinstance(msg, dict):
+                msg_type = msg.get("type")
 
-    
-    def _handle_data_response(self, msg: DataQueryResponse) -> None:
-        """处理来自DataActor的数据响应"""
-        task_id = msg.task_id
-        req_info = self._pending_requests.pop(task_id, None)
-        
-        if not req_info:
-            self.logger.warning(f"No pending request found for task: {task_id}")
-            return
-        
-        try:
-            # 实际执行任务
-            result = self._execute_task(task_id, msg.params, req_info)
-            
-            # 检查结果是否包含子任务
-            if isinstance(result, dict) and "subtasks" in result:
-                self._handle_subtasks_generation(task_id, result["subtasks"], req_info)
+                if msg_type == "execute":
+                    # ⑪ 具体执行请求
+                    self._handle_execute(msg, sender)
+                elif msg_type == "resume_execution":
+                    # 恢复暂停的任务执行
+                    self._handle_resume_execution(msg, sender)
+                elif msg_type == "dify_schema_response":
+                    # Dify Schema 响应
+                    self._handle_dify_schema_response(msg, sender)
+                else:
+                    self.logger.warning(f"Unknown message type: {msg_type}")
+                    self._send_error(msg.get("task_id", "unknown"),
+                                   f"Unknown message type: {msg_type}",
+                                   msg.get("reply_to", sender))
             else:
-                # 没有子任务，直接返回结果
-                self.send(req_info["sender"], {
-                    "type": "subtask_result",
-                    "task_id": task_id,
-                    "result": result
-                })
+                self.logger.warning(f"Unknown message format: {type(msg)}")
+
         except Exception as e:
-            self.logger.error(f"Task execution failed: {task_id} - {str(e)}")
-            self.send(req_info["sender"], SubtaskErrorMessage(task_id, str(e)))
-    
-    def _handle_subtasks_generation(self, task_id: str, subtasks: list, req_info: dict) -> None:
-        """处理中间任务生成的子任务"""
-        if not subtasks:
-            # 没有子任务，返回空结果
-            result_msg = SubtaskResultMessage(task_id, {})
-            self.send(req_info["sender"], result_msg)
+            self.logger.error(f"ExecutionActor error: {e}")
+            task_id = msg.get("task_id", "unknown") if isinstance(msg, dict) else "unknown"
+            reply_to = msg.get("reply_to", sender) if isinstance(msg, dict) else sender
+            self._send_error(task_id, str(e), reply_to)
+
+    def _handle_execute(self, msg: Dict[str, Any], sender: str) -> None:
+        """
+        ⑪ 具体执行 - 根据能力类型选择执行方式
+
+        Args:
+            msg: 执行消息，包含 task_id, capability, parameters, reply_to
+            sender: 发送者
+        """
+        task_id = msg.get("task_id")
+        capability = msg.get("capability")
+        parameters = msg.get("parameters", {})
+        reply_to = msg.get("reply_to", sender)
+
+        self.logger.info(f"⑪ 具体执行: task={task_id}, capability={capability}")
+
+        # 保存请求信息
+        self._pending_requests[task_id] = {
+            "capability": capability,
+            "parameters": parameters,
+            "reply_to": reply_to
+        }
+
+        # 发布执行开始事件
+        event_bus.publish_task_event(
+            task_id=task_id,
+            event_type=EventType.CAPABILITY_EXECUTED.value,
+            source="ExecutionActor",
+            agent_id="system",
+            data={"capability": capability, "status": "started"}
+        )
+
+        # 根据能力类型选择执行方式
+        if capability == "dify" or capability == "dify_workflow":
+            self._execute_dify(task_id, parameters, reply_to)
+        elif capability == "http" or capability.startswith("http_"):
+            self._execute_http(task_id, parameters, reply_to)
+        elif capability == "data" or capability == "data_query":
+            self._execute_data_query(task_id, parameters, reply_to)
+        else:
+            # 尝试从能力注册表获取并执行
+            self._execute_capability(task_id, capability, parameters, reply_to)
+
+    def _execute_dify(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+        """
+        执行 Dify 工作流
+        步骤：
+        1. 先获取 Dify Schema（如果需要）
+        2. 补充参数
+        3. 执行工作流
+
+        Args:
+            task_id: 任务ID
+            parameters: 参数
+            reply_to: 回复地址
+        """
+        self.logger.info(f"Executing Dify workflow for task {task_id}")
+
+        try:
+            # 检查是否需要先获取Schema
+            if parameters.get("needs_schema", False):
+                # 先获取Schema
+                self._fetch_dify_schema(task_id, parameters, reply_to)
+            else:
+                # 直接执行
+                self._execute_dify_workflow(task_id, parameters, reply_to)
+
+        except Exception as e:
+            self.logger.error(f"Dify execution failed: {e}")
+            self._send_error(task_id, str(e), reply_to)
+
+    def _fetch_dify_schema(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+        """
+        获取 Dify Schema
+
+        Args:
+            task_id: 任务ID
+            parameters: 参数
+            reply_to: 回复地址
+        """
+        api_key = parameters.get("api_key")
+        base_url = parameters.get("base_url")
+        workflow_id = parameters.get("workflow_id")
+
+        if not all([api_key, base_url, workflow_id]):
+            self._send_error(task_id, "Missing required parameters for Dify", reply_to)
             return
-        
-        # 创建ResultAggregatorActor实例来处理子任务聚合
-        aggregator = self.createActor(self.ResultAggregatorActor)
-        
-        # 初始化aggregator
-        aggregator_init_msg = {
-            "type": "initialize",
-            "trace_id": task_id,
-            "max_retries": 3,
-            "timeout": 300,
-            "aggregation_strategy": "map_reduce",
-            "pending_tasks": [subtask["task_id"] for subtask in subtasks]
-        }
-        self.send(aggregator, aggregator_init_msg)
-        
-        # 保存聚合器信息
-        self._pending_aggregators[task_id] = {
-            "aggregator": aggregator,
-            "sender": req_info["sender"],
-            "task_id": task_id
-        }
-        
-        # 发送每个子任务到执行队列
-        for subtask in subtasks:
-            self.send(self.data_actor, {
-                "type": "get_capability_params",
-                "capability": subtask["capability"],
-                "task_id": subtask["task_id"]
-            })
-            
-            # 记录子任务请求信息
-            self._pending_requests[subtask["task_id"]] = {
-                "context": subtask["context"],
-                "memory": subtask["memory"],
-                "capability": subtask["capability"],
-                "sender": aggregator,  # 结果发送给aggregator
-                "agent_id": subtask["agent_id"]
+
+        try:
+            # 调用Dify API获取Schema
+            url = f"{base_url}/v1/workflows/{workflow_id}/parameters"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
             }
-    
-    def _handle_aggregation_complete(self, msg: dict, sender: str) -> None:
-        """处理聚合完成消息"""
-        trace_id = msg.get("trace_id")
-        if not trace_id:
-            self.logger.warning("No trace_id found in aggregation complete message")
-            return
-        
-        # 找到对应的任务信息
-        pending_info = None
-        for task_id, info in self._pending_aggregators.items():
-            if info["aggregator"] == sender:
-                pending_info = info
-                del self._pending_aggregators[task_id]
-                break
-        
-        if not pending_info:
-            self.logger.warning(f"No pending aggregator found for sender: {sender}")
-            return
-        
-        # 向原始发送者返回聚合结果
-        result_msg = SubtaskResultMessage(pending_info["task_id"], msg["aggregated_result"])
-        self.send(pending_info["sender"], result_msg)
-    
-    def _handle_aggregation_error(self, msg: dict, sender: str) -> None:
-        """处理聚合错误消息"""
-        trace_id = msg.get("trace_id")
-        if not trace_id:
-            self.logger.warning("No trace_id found in aggregation error message")
-            return
-        
-        # 找到对应的任务信息
-        pending_info = None
-        for task_id, info in self._pending_aggregators.items():
-            if info["aggregator"] == sender:
-                pending_info = info
-                del self._pending_aggregators[task_id]
-                break
-        
-        if not pending_info:
-            self.logger.warning(f"No pending aggregator found for sender: {sender}")
-            return
-        
-        # 向原始发送者返回错误信息
-        error_msg = SubtaskErrorMessage(pending_info["task_id"], msg["error"])
-        self.send(pending_info["sender"], error_msg)
-    
-    def _execute_task(self, task_id: str, params: Dict[str, Any], req_info: Dict[str, Any]) -> None:
-        """
-        实际执行任务
-        """
-        capability = req_info["capability"]
-        context = {**req_info["context"], **params.get("additional_context", {})}
-        memory = req_info["memory"]
-        
-        try:
-            result = None
-            if capability == "dify_workflow":
-                # 使用Connector Manager执行连接器操作
-                result = self.connector_manager.execute(
-                    connector_name="dify",
-                    operation_name="execute",
-                    inputs=context.get("inputs", {}),
-                    params={
-                        "api_key": context.get("api_key"),
-                        "base_url": context.get("base_url"),
-                        "user": context.get("user", "user")
-                    }
-                )
-            else:
-                # 本地能力执行
-                # 使用新的能力获取方式
-                try:
-                    capability_instance = get_capability(capability, expected_type=Any)
-                    if capability_instance:
-                        result = capability_instance.execute(context=context, memory=memory)
-                    else:
-                        raise Exception(f"Capability not found: {capability}")
-                except Exception as e:
-                    # 兼容旧的执行方式
-                    self.logger.warning(f"Failed to get capability using new method: {e}")
-                    raise Exception(f"Capability execution failed: {str(e)}")
-            
-            # 发送任务结果
-            result_msg = SubtaskResultMessage(task_id, result)
-            self.send(req_info["sender"], result_msg)
-            
+
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+
+            schema = response.json()
+
+            # 更新参数中的 schema 信息
+            self._pending_requests[task_id]["schema"] = schema
+
+            # 现在执行工作流
+            self._execute_dify_workflow(task_id, parameters, reply_to)
+
         except Exception as e:
-            error_msg = f"Task execution failed: {str(e)}"
-            self.logger.error(error_msg)
-            self.send(req_info["sender"], SubtaskErrorMessage(task_id, error_msg))
-            
-    def _handle_connector_execution_success(self, msg: ConnectorExecutionSuccess) -> None:
+            self.logger.error(f"Failed to fetch Dify schema: {e}")
+            self._send_error(task_id, f"Failed to fetch Dify schema: {str(e)}", reply_to)
+
+    def _execute_dify_workflow(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
         """
-        处理连接器执行成功响应
+        执行 Dify 工作流
+
+        Args:
+            task_id: 任务ID
+            parameters: 参数
+            reply_to: 回复地址
         """
-        self.logger.info(f"Handling connector execution success for task: {msg.task_id}")
-        result_msg = SubtaskResultMessage(msg.task_id, msg.result)
-        self.send(msg.reply_to, result_msg)
-    
-    def _handle_connector_execution_failure(self, msg: ConnectorExecutionFailure) -> None:
+        # 检查必需参数
+        required_params = ["api_key", "base_url", "workflow_id"]
+        missing_params = self._check_missing_parameters(required_params, parameters)
+
+        if missing_params:
+            # 请求补充参数
+            self._request_missing_parameters(task_id, missing_params, parameters, reply_to)
+            return
+
+        api_key = parameters.get("api_key")
+        base_url = parameters.get("base_url")
+        workflow_id = parameters.get("workflow_id")
+        inputs = parameters.get("inputs", {})
+        user = parameters.get("user", "default_user")
+
+        try:
+            # 调用Dify API执行工作流
+            url = f"{base_url}/v1/workflows/run"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "inputs": inputs,
+                "response_mode": "blocking",
+                "user": user
+            }
+
+            response = requests.post(url, json=payload, headers=headers, timeout=120)
+            response.raise_for_status()
+
+            result = response.json()
+
+            # 发送成功结果
+            self._send_success(task_id, result, reply_to)
+
+        except Exception as e:
+            self.logger.error(f"Dify workflow execution failed: {e}")
+            self._send_error(task_id, f"Dify execution failed: {str(e)}", reply_to)
+
+    def _execute_http(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
         """
-        处理连接器执行失败响应
+        执行 HTTP 请求
+
+        Args:
+            task_id: 任务ID
+            parameters: 参数，包含 url, method, headers, data等
+            reply_to: 回复地址
         """
-        self.logger.info(f"Handling connector execution failure for task: {msg.task_id}")
-        error_msg = SubtaskErrorMessage(msg.task_id, msg.error)
-        self.send(msg.reply_to, error_msg)
+        self.logger.info(f"Executing HTTP request for task {task_id}")
+
+        try:
+            # 检查必需参数
+            required_params = ["url"]
+            missing_params = self._check_missing_parameters(required_params, parameters)
+
+            if missing_params:
+                # 请求补充参数
+                self._request_missing_parameters(task_id, missing_params, parameters, reply_to)
+                return
+
+            url = parameters.get("url")
+            method = parameters.get("method", "GET").upper()
+            headers = parameters.get("headers", {})
+            data = parameters.get("data")
+            timeout = parameters.get("timeout", 30)
+
+            # 发送HTTP请求
+            if method == "GET":
+                response = requests.get(url, headers=headers, params=data, timeout=timeout)
+            elif method == "POST":
+                response = requests.post(url, headers=headers, json=data, timeout=timeout)
+            elif method == "PUT":
+                response = requests.put(url, headers=headers, json=data, timeout=timeout)
+            elif method == "DELETE":
+                response = requests.delete(url, headers=headers, timeout=timeout)
+            else:
+                self._send_error(task_id, f"Unsupported HTTP method: {method}", reply_to)
+                return
+
+            response.raise_for_status()
+
+            # 尝试解析JSON，如果失败则返回文本
+            try:
+                result = response.json()
+            except:
+                result = {"text": response.text, "status_code": response.status_code}
+
+            self._send_success(task_id, result, reply_to)
+
+        except Exception as e:
+            self.logger.error(f"HTTP request failed: {e}")
+            self._send_error(task_id, f"HTTP request failed: {str(e)}", reply_to)
+
+    def _execute_data_query(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+        """
+        执行数据查询
+
+        Args:
+            task_id: 任务ID
+            parameters: 参数
+            reply_to: 回复地址
+        """
+        self.logger.info(f"Executing data query for task {task_id}")
+
+        try:
+            from capability_actors.data_actor import DataActor
+
+            # 创建 DataActor
+            data_actor = self.createActor(DataActor)
+
+            # 构建查询请求
+            query_msg = {
+                "type": "query",
+                "task_id": task_id,
+                "query": parameters.get("query"),
+                "params": parameters.get("params", {}),
+                "reply_to": reply_to
+            }
+
+            # 发送查询请求
+            self.send(data_actor, query_msg)
+
+        except Exception as e:
+            self.logger.error(f"Data query failed: {e}")
+            self._send_error(task_id, f"Data query failed: {str(e)}", reply_to)
+
+    def _execute_capability(self, task_id: str, capability: str,
+                          parameters: Dict[str, Any], reply_to: str) -> None:
+        """
+        执行通用能力函数
+
+        Args:
+            task_id: 任务ID
+            capability: 能力名称
+            parameters: 参数
+            reply_to: 回复地址
+        """
+        self.logger.info(f"Executing capability {capability} for task {task_id}")
+
+        try:
+            # 从能力注册表获取能力
+            capability_instance = get_capability(capability, expected_type=Any)
+
+            if capability_instance and hasattr(capability_instance, 'execute'):
+                # 调用能力的execute方法
+                result = capability_instance.execute(
+                    context=parameters.get("context", {}),
+                    memory=parameters.get("memory_context", {})
+                )
+                self._send_success(task_id, result, reply_to)
+            else:
+                self._send_error(task_id, f"Capability {capability} not found or not executable", reply_to)
+
+        except Exception as e:
+            self.logger.error(f"Capability execution failed: {e}")
+            self._send_error(task_id, f"Capability execution failed: {str(e)}", reply_to)
+
+    def _handle_resume_execution(self, msg: Dict[str, Any], sender: str) -> None:
+        """
+        处理恢复执行请求
+
+        Args:
+            msg: 包含 task_id, parameters, reply_to
+            sender: 发送者
+        """
+        task_id = msg.get("task_id")
+        parameters = msg.get("parameters", {})
+        reply_to = msg.get("reply_to", sender)
+
+        self.logger.info(f"Resuming execution for task {task_id}")
+
+        # 从pending_requests中获取原始请求信息
+        if task_id not in self._pending_requests:
+            self.logger.warning(f"Task {task_id} not found in pending requests")
+            self._send_error(task_id, "Task not found in pending requests", reply_to)
+            return
+
+        req_info = self._pending_requests[task_id]
+        capability = req_info["capability"]
+
+        # 合并补充的参数
+        original_params = req_info["parameters"]
+        original_params.update(parameters)
+
+        self.logger.info(f"Resuming {capability} execution with updated parameters")
+
+        # 根据能力类型继续执行
+        if capability == "dify" or capability == "dify_workflow":
+            self._execute_dify(task_id, original_params, reply_to)
+        elif capability == "http" or capability.startswith("http_"):
+            self._execute_http(task_id, original_params, reply_to)
+        elif capability == "data" or capability == "data_query":
+            self._execute_data_query(task_id, original_params, reply_to)
+        else:
+            self._execute_capability(task_id, capability, original_params, reply_to)
+
+    def _check_missing_parameters(self, required_params: List[str],
+                                  parameters: Dict[str, Any]) -> List[str]:
+        """
+        检查缺失的参数
+
+        Args:
+            required_params: 必需参数列表
+            parameters: 当前参数字典
+
+        Returns:
+            缺失的参数列表
+        """
+        missing = []
+        for param in required_params:
+            if param not in parameters or parameters[param] is None or parameters[param] == "":
+                missing.append(param)
+        return missing
+
+    def _request_missing_parameters(self, task_id: str, missing_params: List[str],
+                                   parameters: Dict[str, Any], reply_to: str) -> None:
+        """
+        请求补充缺失的参数（通过ConversationManager）
+
+        Args:
+            task_id: 任务ID
+            missing_params: 缺失参数列表
+            parameters: 当前参数
+            reply_to: 回复地址（AgentActor的地址）
+        """
+        self.logger.info(f"Task {task_id} missing parameters: {missing_params}")
+
+        # 获取 ConversationManager
+        from capabilities.context.conversation_manager import IConversationManagerCapability
+        conversation_manager = get_capability("conversation_manager", expected_type=IConversationManagerCapability)
+
+        if conversation_manager:
+            # 暂停任务并请求参数
+            question = conversation_manager.pause_task_for_parameters(
+                task_id=task_id,
+                missing_params=missing_params,
+                task_context={"collected_params": parameters},
+                user_id="default_user"  # TODO: 从参数中获取user_id
+            )
+
+            # 发送暂停消息给AgentActor，AgentActor会转发给前台InteractionActor
+            # 重要：包含ExecutionActor自己的地址，以便恢复时能找到
+            pause_response = {
+                "message_type": "task_paused",
+                "task_id": task_id,
+                "missing_params": missing_params,
+                "question": question,
+                "execution_actor_address": self.myAddress  # 添加ExecutionActor地址
+            }
+
+            self.send(reply_to, pause_response)
+
+            # 发布任务暂停事件
+            event_bus.publish_task_event(
+                task_id=task_id,
+                event_type=EventType.TASK_PAUSED.value,
+                source="ExecutionActor",
+                agent_id="system",
+                data={"missing_params": missing_params, "question": question}
+            )
+        else:
+            # 如果没有ConversationManager，返回错误
+            self._send_error(task_id, f"Missing required parameters: {', '.join(missing_params)}", reply_to)
+
+    def _handle_dify_schema_response(self, msg: Dict[str, Any], sender: str) -> None:
+        """处理 Dify Schema 响应"""
+        task_id = msg.get("task_id")
+        schema = msg.get("schema")
+
+        if task_id in self._pending_requests:
+            req_info = self._pending_requests[task_id]
+            req_info["schema"] = schema
+
+            # 继续执行工作流
+            self._execute_dify_workflow(task_id, req_info["parameters"], req_info["reply_to"])
+
+    def _send_success(self, task_id: str, result: Any, reply_to: str) -> None:
+        """发送成功结果"""
+        response = {
+            "type": "subtask_result",
+            "task_id": task_id,
+            "result": result
+        }
+
+        self.send(reply_to, response)
+
+        # 发布执行成功事件
+        event_bus.publish_task_event(
+            task_id=task_id,
+            event_type=EventType.CAPABILITY_EXECUTED.value,
+            source="ExecutionActor",
+            agent_id="system",
+            data={"status": "success", "result": result}
+        )
+
+        # 清理请求信息
+        if task_id in self._pending_requests:
+            del self._pending_requests[task_id]
+
+    def _send_error(self, task_id: str, error: str, reply_to: str) -> None:
+        """发送错误响应"""
+        response = {
+            "type": "subtask_error",
+            "task_id": task_id,
+            "error": error
+        }
+
+        self.send(reply_to, response)
+
+        # 发布执行失败事件
+        event_bus.publish_task_event(
+            task_id=task_id,
+            event_type=EventType.CAPABILITY_FAILED.value,
+            source="ExecutionActor",
+            agent_id="system",
+            data={"status": "failed", "error": error}
+        )
+
+        # 清理请求信息
+        if task_id in self._pending_requests:
+            del self._pending_requests[task_id]

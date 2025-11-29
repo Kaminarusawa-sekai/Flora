@@ -6,7 +6,7 @@ import threading
 from thespian.actors import Actor, ActorAddress
 
 # 导入Actor引用管理工具
-from ..common.utils.actor_reference_manager import actor_reference_manager
+from common.utils.actor_reference_manager import actor_reference_manager
 
 
 class UserRequest:
@@ -157,14 +157,14 @@ class RouterActor(Actor):
         """处理Actor注销"""
         tenant_id = msg.get("tenant_id")
         node_id = msg.get("node_id")
-        
+
         if not tenant_id or not node_id:
             self.logger.error("注销失败：缺少tenant_id或node_id")
             return
-        
+
         # 使用工具类创建键
-            key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
-        
+        key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
+
         # 从存储后端移除
         if self.use_redis:
             success = actor_reference_manager.delete(key)
@@ -176,27 +176,27 @@ class RouterActor(Actor):
         else:
             if key in self._memory_dict:
                 del self._memory_dict[key]
-        
+
         self.logger.info(f"Actor注销成功: {key}")
     
     def _handle_refresh_ttl(self, msg: Dict[str, Any]):
         """处理TTL刷新"""
         tenant_id = msg.get("tenant_id")
         node_id = msg.get("node_id")
-        
+
         if not tenant_id or not node_id:
             self.logger.error("刷新TTL失败：缺少tenant_id或node_id")
             return
-        
+
         # 使用工具类创建键
-            key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
-        
+        key = actor_reference_manager.create_redis_key("session", tenant_id, node_id)
+
         # 刷新TTL
         if self.use_redis:
             success = actor_reference_manager.expire(key, self.default_ttl)
             if not success:
                 self.logger.warning("使用Redis刷新TTL失败")
-        
+
         # 同时更新内存字典中的过期时间（作为备份）
         if hasattr(self, '_memory_dict') and key in self._memory_dict:
             self._memory_dict[key]["expires_at"] = time.time() + self.default_ttl

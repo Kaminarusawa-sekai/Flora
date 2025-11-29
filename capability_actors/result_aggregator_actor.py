@@ -44,9 +44,12 @@ class ResultAggregatorActor(Actor):
         try:
             if isinstance(message, dict):
                 msg_type = message.get("type")
-                
+
                 if msg_type == "initialize":
                     self._handle_initialize(message, sender)
+                elif msg_type == "execute_subtask":
+                    # ⑩ 接收执行子任务请求，转发给 ExecutionActor
+                    self._handle_execute_subtask(message, sender)
                 elif msg_type == "add_subtask":
                     self._handle_add_subtask(message, sender)
                 elif msg_type == "subtask_result":
@@ -74,6 +77,47 @@ class ResultAggregatorActor(Actor):
         except Exception as e:
             logger.error(f"ResultAggregatorActor execution failed: {e}")
             self._send_error_to_creator(str(e))
+
+    def _handle_execute_subtask(self, msg: Dict[str, Any], sender: Any) -> None:
+        """
+        ⑩ 单任务执行 - 将任务发送给 ExecutionActor 进行具体执行
+
+        Args:
+            msg: 包含 task_id, task_spec, capability, parameters
+            sender: 发送者
+        """
+        from capability_actors.execution_actor import ExecutionActor
+
+        task_id = msg.get("task_id")
+        task_spec = msg.get("task_spec")
+        capability = msg.get("capability")
+        parameters = msg.get("parameters")
+
+        logger.info(f"⑩ 单任务执行: 转发任务 {task_id} 到 ExecutionActor")
+
+        # 创建 ExecutionActor
+        execution_actor = self.createActor(ExecutionActor)
+
+        # 构建执行请求
+        execute_request = {
+            "type": "execute",
+            "task_id": task_id,
+            "capability": capability,
+            "parameters": parameters,
+            "reply_to": self.myAddress
+        }
+
+        # 发送到 ExecutionActor
+        self.send(execution_actor, execute_request)
+
+        # 添加到待处理任务
+        if task_id not in self._pending_tasks:
+            self._pending_tasks[task_id] = {
+                "capability": capability,
+                "parameters": parameters,
+                "execution_actor": execution_actor
+            }
+            self._retries[task_id] = 0
     
     def _handle_initialize(self, msg: Dict[str, Any], sender: Any) -> None:
         """初始化聚合器"""

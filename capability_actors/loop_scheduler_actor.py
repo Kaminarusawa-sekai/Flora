@@ -27,6 +27,10 @@ class LoopSchedulerActor(Actor):
         self.log = logging.getLogger("LoopSchedulerActor")
         # 初始化任务仓库
         self.task_repo = TaskRepository()
+        # 标记哪些任务需要优化: {task_id: bool}
+        self.optimization_enabled: Dict[str, bool] = {}
+        # 存储任务当前的优化参数: {task_id: parameters}
+        self.optimized_parameters: Dict[str, Dict[str, Any]] = {}
         self._listen_to_trigger_queue()  # 如果需要主动消费
 
     def _listen_to_trigger_queue(self):
@@ -51,17 +55,22 @@ class LoopSchedulerActor(Actor):
                 try:
                     task = self.task_repo.get_task(task_id)
                     if task:
-                        # 构造执行消息
+                        # 构造执行消息 - 应用优化参数
                         execution_msg = {
                             "message_type": "execute_loop_task",
                             "original_task": {"description": task.description},
                             "decision": {"is_loop": True}
                         }
+
+                        # 如果有优化参数，添加到消息中
+                        if task_id in self.optimized_parameters:
+                            execution_msg["optimized_parameters"] = self.optimized_parameters[task_id]
+
                         # 获取目标Actor地址
                         target_addr = self.createActor(None, globalName="agent_actor")
                         self.send(target_addr, execution_msg)
                         self.send(sender, {"status": "triggered_now", "task_id": task_id})
-                        
+
                         # 发送任务触发事件
                         event_bus.publish_task_event(
                             task_id=task_id,
@@ -75,10 +84,13 @@ class LoopSchedulerActor(Actor):
                 except Exception as e:
                     self.log.error(f"Error triggering task {task_id}: {e}")
                     self.send(sender, {"status": "error", "reason": str(e)})
+            elif msg_type == "apply_optimization":
+                # 新增：应用优化参数
+                self._handle_apply_optimization(msg, sender)
             elif msg_type == "update_loop_interval":
                 task_id = msg["task_id"]
                 try:
-                    task = self.task_registry.get_task(task_id)
+                    task = self.task_repo.get_task(task_id)
                     if task:
                         task.schedule = str(msg["interval_sec"])
                         self.task_repo.update_task(task_id, {"schedule": task.schedule})
@@ -100,7 +112,7 @@ class LoopSchedulerActor(Actor):
             elif msg_type == "pause_loop_task":
                 task_id = msg["task_id"]
                 try:
-                    task = self.task_registry.get_task(task_id)
+                    task = self.task_repo.get_task(task_id)
                     if task:
                         # 暂停逻辑
                         self.task_repo.update_task(task_id, {"status": TaskStatus.PAUSED})
@@ -122,7 +134,7 @@ class LoopSchedulerActor(Actor):
             elif msg_type == "resume_loop_task":
                 task_id = msg["task_id"]
                 try:
-                    task = self.task_registry.get_task(task_id)
+                    task = self.task_repo.get_task(task_id)
                     if task:
                         # 恢复逻辑
                         self.task_repo.update_task(task_id, {"status": TaskStatus.RUNNING})
@@ -165,6 +177,8 @@ class LoopSchedulerActor(Actor):
         task_id = msg["task_id"]
         interval = msg["interval_sec"]
         message = msg["message"]
+        optimization_enabled = msg.get("optimization_enabled", False)  # 新增：是否启用优化
+        optimization_config = msg.get("optimization_config", {})        # 新增：优化配置
 
         # 构造 LoopTask（地址转为字符串）
         loop_task = LoopTask(
@@ -180,7 +194,7 @@ class LoopSchedulerActor(Actor):
             # 注意：这里我们直接使用Task类，因为TaskRegistry期望的是Task对象
             # Task is already imported from common.types.task
             from datetime import datetime
-            
+
             task = Task(
                 task_id=task_id,
                 description=message.get("original_task", {}).get("description", "循环任务"),
@@ -190,10 +204,18 @@ class LoopSchedulerActor(Actor):
                 next_run_time=datetime.now().fromtimestamp(time.time() + interval),
                 original_input=message.get("original_task", {}).get("description", "循环任务")
             )
-            
+
             self.task_repo.create_task(task)
+
+            # 保存优化配置
+            self.optimization_enabled[task_id] = optimization_enabled
+
+            # 如果启用优化，通知OptimizerActor
+            if optimization_enabled:
+                self._register_optimization(task_id, optimization_config)
+
             self.send(sender, {"status": "registered", "task_id": task_id})
-            
+
             # 发送循环任务注册事件
             event_bus.publish_task_event(
                 task_id=task_id,
@@ -202,12 +224,67 @@ class LoopSchedulerActor(Actor):
                 agent_id="loop_scheduler",
                 data={
                     "interval_sec": interval,
-                    "target_actor": str(sender)
+                    "target_actor": str(sender),
+                    "optimization_enabled": optimization_enabled
                 }
             )
         except Exception as e:
             self.log.error(f"Failed to register task: {e}")
             self.send(sender, {"status": "error", "reason": str(e)})
+
+    def _register_optimization(self, task_id: str, config: Dict[str, Any]):
+        """向OptimizerActor注册优化"""
+        try:
+            from capability_actors.optimizer_actor import OptimizerActor
+
+            # 创建或获取OptimizerActor
+            optimizer = self.createActor(OptimizerActor, globalName="optimizer_actor")
+
+            # 发送注册请求
+            self.send(optimizer, {
+                "type": "register_optimization",
+                "task_id": task_id,
+                "config": config
+            })
+
+            self.log.info(f"Registered optimization for task {task_id}")
+        except Exception as e:
+            self.log.error(f"Failed to register optimization for task {task_id}: {e}")
+
+    def _handle_apply_optimization(self, msg: Dict[str, Any], sender: ActorAddress):
+        """处理应用优化参数"""
+        task_id = msg.get("task_id")
+        optimized_parameters = msg.get("optimized_parameters", {})
+        optimization_stats = msg.get("optimization_stats", {})
+
+        if not task_id:
+            self.log.error("Missing task_id in apply_optimization")
+            return
+
+        try:
+            # 保存优化参数
+            self.optimized_parameters[task_id] = optimized_parameters
+
+            # 记录日志
+            self.log.info(f"Applied optimization for task {task_id}: {optimization_stats}")
+
+            # 发布优化应用事件
+            event_bus.publish_task_event(
+                task_id=task_id,
+                event_type=EventType.OPTIMIZATION_APPLIED.value,
+                source="LoopSchedulerActor",
+                agent_id="loop_scheduler",
+                data={
+                    "optimized_parameters": optimized_parameters,
+                    "stats": optimization_stats
+                }
+            )
+
+            # 可选：更新数据库中的任务配置
+            # self.task_repo.update_task(task_id, {"optimized_parameters": optimized_parameters})
+
+        except Exception as e:
+            self.log.error(f"Failed to apply optimization for task {task_id}: {e}")
 
     def _handle_trigger(self, trigger_msg: Dict[str, Any]):
         """处理来自 RabbitMQ 的触发消息"""

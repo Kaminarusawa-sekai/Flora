@@ -20,10 +20,11 @@ from capabilities.decision.interface import ITaskStrategyCapability, ITaskOperat
 from common.types.draft import TaskDraft
 from common.types.intent import IntentResult, IntentType
 from common.types.task import Task, TaskType, TaskStatus
+from common.types.task_operation import TaskOperationType, TaskOperationCategory
 
 # 导入新的能力接口
 from capabilities.cognition.intent_router import IIntentRouterCapability
-from capabilities.context.conversation_manager import IConversationManagerCapability
+from capabilities.context.interface import IConversationManagerCapability
 from capabilities.decision.task_planner import ITaskPlannerCapability
 
 # 导入循环调度器
@@ -60,35 +61,41 @@ TASK_INTENTS = {
 #     def archive_task(self, task_id: str): ...
 
 
+
+
+##后台
+
 class AgentActor(Actor):
     def __init__(self):
         super().__init__()
         self.agent_id: str = ""
         self.memory_cap: Optional[IMemoryCapability] = None
-        
+
         self._aggregation_state: Dict[str, Dict] = {}
         self.task_id_to_sender: Dict[str, ActorAddress] = {}
+        # 新增：保存task_id到ExecutionActor地址的映射（用于恢复暂停的任务）
+        self.task_id_to_execution_actor: Dict[str, ActorAddress] = {}
         self.log = logging.getLogger("AgentActor")  # 初始日志，后续按 agent_id 覆盖
-        
+
         # 添加澄清选项状态
         self.clarification_options: Optional[List[Dict[str, str]]] = None
-        
+
         # 添加当前用户ID（实际应从消息中获取）
         self.current_user_id: Optional[str] = None
-        
+
         # 初始化能力实例引用
         self.conversation_manager: Optional[IConversationManagerCapability] = None
         self.intent_router: Optional[IIntentRouterCapability] = None
         self.task_planner: Optional[ITaskPlannerCapability] = None
-        
+
         # 添加当前聚合器和原始客户端地址
         self.current_aggregator = None
         self.original_client_addr = None
-        
+
         # 初始化能力管理
         self.capability_manager = init_capabilities()
         self.capability_registry = get_capability_registry()
-        
+
         # 初始化能力实例
         self.task_router: Optional[ITaskRouter] = None
         self.task_planner: Optional[Any] = None
@@ -100,6 +107,8 @@ class AgentActor(Actor):
                 handlers = {
                     "init": self._handle_init,
                     "agent_task": self._handle_task,
+                    "resume_task": self._handle_resume_task,
+                    "task_paused": self._handle_task_paused_from_execution,
                     "subtask_result": self._handle_execution_result,
                     "subtask_error": self._handle_execution_error,
                 }
@@ -134,91 +143,223 @@ class AgentActor(Actor):
             return
 
     def _handle_task(self, task: Dict[str, Any], sender: ActorAddress):
-        """主任务处理入口：协调路由 → 规划 → 分发"""
+        """
+        主任务处理入口（后台）：专注于任务执行
+
+        流程说明:
+        0-是否是参数补完逻辑
+        ① 检查是否为叶子节点
+        ② 任务操作分类
+        ③ 根据操作类型分发
+        ④ 节点选择
+        ⑤ 任务规划
+        ⑥ 并行判断
+        ⑦ 构建TaskGroupRequest
+        ⑧ 等待结果聚合
+        """
         if not self._ensure_memory_ready():
             return
-        
-        # 获取用户输入和用户ID
+
+        # 获取任务信息
         user_input = task.get("content", task.get("description", ""))
         user_id = task.get("user_id", "default_user")
         parent_task_id = task.get("task_id")
-        
+        reply_to = task.get("reply_to", sender)  # 前台要求回复的地址
+
         if not parent_task_id:
             self.log.error("Missing task_id in agent_task")
             return
-            
-        self.task_id_to_sender[parent_task_id] = sender
+
+        self.task_id_to_sender[parent_task_id] = reply_to
         self.current_user_id = user_id
-        
-        # --- 流程 ①：草稿判断 ---
-        # 使用新的对话管理能力
-        draft_response = self.conversation_manager.process_user_input(user_input, user_id)
-        
-        # 检查是否需要继续处理（如果是恢复草稿，直接返回响应）
-        if "继续刚才的任务" in draft_response:
-            self.send(sender, {
-                "status": "draft_restored",
-                "message": draft_response
-            })
+
+        self.log.info(f"[AgentActor] Handling task {parent_task_id}: {user_input[:50]}...")
+
+        # --- 流程 0: 参数补完检查 ---
+        # 如果是参数补完消息，直接分发给对应的ExecutionActor
+        if task.get("is_parameter_completion", False):
+            self.log.info(f"[AgentActor] Detected parameter completion for task {parent_task_id}")
+            # 直接调用恢复逻辑
+            parameters = task.get("parameters", {})
+            self._resume_paused_task(parent_task_id, parameters, reply_to)
             return
-        
-        # --- 流程 ②：意图判断 ---
-        # 使用新的意图识别能力
-        intent_result = self.intent_router.classify_intent(user_input)
-        
-        if intent_result.intent == IntentType.AMBIGUOUS:
-            # 处理澄清逻辑
-            self.send(sender, {
-                "status": "need_clarification",
-                "message": "我不太确定你的意思，你能再详细说明一下吗？"
-            })
+
+        # --- 流程 ①: 叶子节点检查 ---
+        if self._is_leaf_node(self.agent_id):
+            self.log.info(f"[AgentActor] Agent {self.agent_id} is a leaf node, executing directly")
+            self._execute_as_leaf(task, reply_to)
             return
-        
-        # --- 流程 ③：任务操作判断 ---
-        operation = self._llm_classify_task_operation(user_input, intent)
-        
-        if operation == "LOOP_TASK":
-            # 转入流程 ④ 循环任务处理
-            self._handle_loop_task_setup(task, sender)
-        elif operation == "NEW_TASK":
-            # 转入流程 ⑤ 新任务执行
-            self._handle_new_task_execution(task, sender)
-        elif operation in ["comment_on_task", "revise_result", "re_run_task", "cancel_task"]:
-            # 处理其他任务操作
-            self._handle_task_operation(task, sender, user_input, parent_task_id)
+
+        # --- 流程 ②: 任务操作分类 ---
+        operation_result = self._classify_task_operation(user_input, {})
+
+        # --- 流程 ③: 根据操作类型分发 ---
+        self._dispatch_operation(operation_result, task, reply_to)
+
+    def _dispatch_operation(self, operation_result: Dict[str, Any], task: Dict[str, Any], sender: ActorAddress):
+        """
+        ③ 操作分发 - 根据操作类型执行不同的处理逻辑
+
+        Args:
+            operation_result: 操作分类结果
+            task: 任务信息
+            sender: 发送者地址
+        """
+        operation_type = operation_result["operation_type"]
+        category = operation_result["category"]
+        parent_task_id = task.get("task_id")
+        user_input = task.get("content", task.get("description", ""))
+
+        self.log.info(f"[AgentActor] Dispatching operation: {operation_type.value}, category: {category.value}")
+
+        if category == TaskOperationCategory.CREATION:
+            # 创建类 → 继续任务执行流程
+            self._handle_task_creation(task, sender)
+
+        elif category == TaskOperationCategory.EXECUTION:
+            # 执行控制类 → 执行对应操作
+            self._handle_execution_control(operation_type, operation_result, task, sender)
+
+        elif category == TaskOperationCategory.LOOP_MANAGEMENT:
+            # 循环管理类 → 转发到LoopScheduler
+            self._forward_to_loop_scheduler(operation_result, parent_task_id, sender)
+
+        elif category == TaskOperationCategory.MODIFICATION:
+            # 修改类 → 执行修改操作
+            self._handle_task_modification(operation_type, operation_result, task, sender)
+
+        elif category == TaskOperationCategory.QUERY:
+            # 查询类 → 查询并返回
+            self._handle_task_query(operation_type, operation_result, task, sender)
+
         else:
-            # 处理其他意图
+            # 未知类型
             self.send(sender, {
-                "status": "not_supported",
-                "message": f"当前不支持{operation}类型的请求"
+                "message_type": "task_error",
+                "task_id": parent_task_id,
+                "error": f"不支持的操作类型: {operation_type.value}"
             })
+
+    def _handle_task_creation(self, task: Dict[str, Any], sender: ActorAddress):
+        """
+        处理任务创建类操作
+
+        流程:
+        ④ 节点选择
+        ⑤ 任务规划
+        ⑥ 并行判断
+        ⑦ 构建TaskGroupRequest
+        ⑧ 发送并等待结果
+        """
+        parent_task_id = task.get("task_id")
+        user_input = task.get("content", task.get("description", ""))
+
+        self.log.info(f"[AgentActor] Handling task creation: {user_input[:50]}...")
+
+        # --- 流程 ④: 节点选择 ---
+        selected_node = self._select_execution_node(user_input)
+
+        if not selected_node:
+            # 没有找到合适节点，使用MCP Fallback
+            self.log.info(f"[AgentActor] No suitable node found, using MCP fallback")
+            self._execute_with_mcp_fallback(task, sender)
             return
-    
-    def _handle_task_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
-        """处理任务相关操作"""
-        # 使用LLM判断具体的任务操作
-        task_operation = self._llm_classify_task_operation(current_desc)
-        operation_type = task_operation.get("operation_type", "new_task")
-        
-        # 路由到对应处理器
-        if operation_type == "new_task":
-            self._handle_new_task(task, sender, current_desc, parent_task_id)
-        elif operation_type == "comment_on_task":
-            self._handle_add_comment(task, task_operation.get("comment_text", ""), sender)
-        elif operation_type == "revise_result":
-            self._handle_revise_result(task, task_operation.get("revision_content", ""), sender)
-        elif operation_type == "re_run_task":
-            self._handle_re_run_task(task, sender)
-        elif operation_type == "cancel_task":
+
+        self.log.info(f"[AgentActor] Selected node: {selected_node}")
+
+        # --- 流程 ⑤: 任务规划 ---
+        plan = self._plan_task_execution(user_input)
+
+        if not plan or not plan.get("subtasks"):
+            # 如果没有子任务计划，创建简单的单任务计划
+            plan = {
+                "subtasks": [{"description": user_input, "node_id": selected_node}],
+                "dependencies": [],
+                "parallel_groups": []
+            }
+
+        # --- 流程 ⑥: 并行判断 ---
+        should_parallel = self._should_execute_in_parallel(plan.get("subtasks", []))
+
+        # --- 流程 ⑦: 构建TaskGroupRequest ---
+        task_group_request = self._build_task_group_request(plan, parent_task_id, should_parallel)
+
+        # --- 流程 ⑧: 发送给TaskGroupAggregatorActor ---
+        self._send_to_task_group_aggregator(task_group_request, sender)
+
+    def _handle_execution_control(self, operation_type, operation_result: Dict[str, Any],
+                                  task: Dict[str, Any], sender: ActorAddress):
+        """处理执行控制类操作"""
+        task_id = task.get("task_id")
+
+        if operation_type == TaskOperationType.EXECUTE_TASK:
+            # 立即执行任务
+            self._handle_task_creation(task, sender)
+
+        elif operation_type == TaskOperationType.PAUSE_TASK:
+            # 暂停任务 - 这里需要实现任务暂停逻辑
+            self.log.info(f"Pausing task {task_id}")
+            self.send(sender, {
+                "message_type": "task_paused",
+                "task_id": task_id,
+                "status": "paused"
+            })
+
+        elif operation_type == TaskOperationType.RESUME_TASK:
+            # 恢复任务
+            self._resume_paused_task(task_id, operation_result.get("parameters", {}), sender)
+
+        elif operation_type == TaskOperationType.CANCEL_TASK:
+            # 取消任务
             self._handle_cancel_any_task(task, sender)
-        elif operation_type in ["trigger_existing", "modify_loop_interval", "pause_loop", "resume_loop"]:
-            # 转发给循环调度器
-            self._forward_to_loop_scheduler(task_operation, task.get("task_id"), sender)
+
+        elif operation_type == TaskOperationType.RETRY_TASK:
+            # 重试任务
+            self._handle_re_run_task(task, sender)
+
         else:
             self.send(sender, {
-                "error": "不支持的操作类型",
-                "operation_type": operation_type
+                "message_type": "task_error",
+                "task_id": task_id,
+                "error": f"Unsupported execution control operation: {operation_type.value}"
             })
+
+    def _handle_task_modification(self, operation_type, operation_result: Dict[str, Any],
+                                  task: Dict[str, Any], sender: ActorAddress):
+        """处理任务修改类操作"""
+        task_id = task.get("task_id")
+
+        if operation_type == TaskOperationType.COMMENT_ON_TASK:
+            comment = operation_result.get("parameters", {}).get("comment", "")
+            self._handle_add_comment(task, comment, sender)
+
+        elif operation_type == TaskOperationType.REVISE_RESULT:
+            revision = operation_result.get("parameters", {}).get("revision", "")
+            self._handle_revise_result(task, revision, sender)
+
+        else:
+            self.send(sender, {
+                "message_type": "task_error",
+                "task_id": task_id,
+                "error": f"Unsupported modification operation: {operation_type.value}"
+            })
+
+    def _handle_task_query(self, operation_type, operation_result: Dict[str, Any],
+                          task: Dict[str, Any], sender: ActorAddress):
+        """处理任务查询类操作"""
+        task_id = task.get("task_id")
+
+        # TODO: 实现查询逻辑
+        self.send(sender, {
+            "message_type": "query_result",
+            "task_id": task_id,
+            "result": f"Query operation {operation_type.value} not fully implemented yet"
+        })
+
+    def _handle_task_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
+        """处理任务相关操作 (已废弃 - 逻辑已合并到 _handle_task)"""
+        # 此方法已不再使用，保留用于向后兼容
+        pass
     
     def _handle_new_task(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
         """处理新增任务"""
@@ -241,18 +382,153 @@ class AgentActor(Actor):
             "message": f"闲聊回复：{current_desc}"
         })
     
-    def _llm_classify_task_operation(self, user_input: str, intent: Any = None) -> str:
+    def _classify_task_operation(self, user_input: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        使用LLM判断具体的任务操作
+        ② 任务操作分类 - 使用TaskOperationCapability分类任务操作
+
+        Args:
+            user_input: 用户输入
+            context: 上下文信息
+
+        Returns:
+            Dict containing:
+            - operation_type: TaskOperationType (操作类型)
+            - category: TaskOperationCategory (操作类别)
+            - target_task_id: Optional[str] (目标任务ID)
+            - parameters: Dict[str, Any] (提取的参数)
+            - confidence: float (置信度)
         """
         try:
-            # 使用新的任务操作分类能力
-            task_operation_capability = get_capability("task_operation", expected_type=ITaskOperationCapability)
-            return task_operation_capability.classify_task_operation(user_input, intent)
+            # 使用TaskOperationCapability进行分类
+            task_op_cap = get_capability("task_operation", expected_type=ITaskOperationCapability)
+
+            if task_op_cap:
+                return task_op_cap.classify_operation(user_input, context)
+            else:
+                # Fallback: 默认为新任务
+                return {
+                    "operation_type": TaskOperationType.NEW_TASK,
+                    "category": TaskOperationCategory.CREATION,
+                    "target_task_id": None,
+                    "parameters": {},
+                    "confidence": 0.5
+                }
         except Exception as e:
-            self.log.warning(f"Task operation classification failed: {e}. Falling back to new_task.")
-            return "NEW_TASK"
+            self.log.warning(f"Task operation classification failed: {e}. Falling back to NEW_TASK.")
+            return {
+                "operation_type": TaskOperationType.NEW_TASK,
+                "category": TaskOperationCategory.CREATION,
+                "target_task_id": None,
+                "parameters": {},
+                "confidence": 0.0,
+                "error": str(e)
+            }
     
+    def _resume_paused_task(self, task_id: str, parameters: Dict[str, Any], sender: ActorAddress):
+        """
+        恢复暂停的任务链并继续执行
+
+        Args:
+            task_id: 任务ID
+            parameters: 补充完成的参数
+            sender: 发送者（前台InteractionActor）
+        """
+        self.log.info(f"Resuming paused task {task_id} with parameters: {list(parameters.keys())}")
+
+        # 发布任务恢复事件
+        event_bus.publish_task_event(
+            task_id=task_id,
+            event_type=EventType.TASK_RESUMED.value,
+            source="AgentActor",
+            agent_id=self.agent_id,
+            data={"parameters": list(parameters.keys())}
+        )
+
+        # 关键：从映射中获取原来的ExecutionActor地址
+        exec_actor = self.task_id_to_execution_actor.get(task_id)
+
+        if not exec_actor:
+            self.log.error(f"Cannot find ExecutionActor for task {task_id}, task cannot be resumed")
+            # 通知前台恢复失败
+            self.send(sender, {
+                "message_type": "task_error",
+                "task_id": task_id,
+                "error": "Cannot find the ExecutionActor for this task"
+            })
+            return
+
+        # 构建恢复消息，发送到原来的ExecutionActor
+        exec_request = {
+            "type": "resume_execution",
+            "task_id": task_id,
+            "parameters": parameters,
+            "reply_to": self.myAddress
+        }
+
+        self.log.info(f"Sending resume request to original ExecutionActor for task {task_id}")
+        self.send(exec_actor, exec_request)
+
+        # 记录sender以便接收结果（更新，因为可能是新的前台请求）
+        self.task_id_to_sender[task_id] = sender
+
+    def _handle_resume_task(self, message: Dict[str, Any], sender: ActorAddress):
+        """
+        处理来自前台的resume_task消息
+
+        Args:
+            message: 包含task_id, parameters, user_id, reply_to
+            sender: 发送者
+        """
+        task_id = message.get("task_id")
+        parameters = message.get("parameters", {})
+        user_id = message.get("user_id", "default_user")
+        reply_to = message.get("reply_to", sender)
+
+        self.log.info(f"Received resume task request for {task_id} from InteractionActor")
+
+        # 记录reply_to以便回复前台
+        self.task_id_to_sender[task_id] = reply_to
+
+        # 调用恢复逻辑
+        self._resume_paused_task(task_id, parameters, reply_to)
+
+    def _handle_task_paused_from_execution(self, message: Dict[str, Any], sender: ActorAddress):
+        """
+        处理来自ExecutionActor的task_paused消息，转发给前台InteractionActor
+
+        Args:
+            message: 包含task_id, missing_params, question, execution_actor_address
+            sender: ExecutionActor的地址
+        """
+        task_id = message.get("task_id")
+        missing_params = message.get("missing_params", [])
+        question = message.get("question", "")
+        execution_actor_address = message.get("execution_actor_address")
+
+        self.log.info(f"Task {task_id} paused by ExecutionActor, forwarding to InteractionActor")
+
+        # 重要：保存ExecutionActor地址到映射，以便恢复时能找到
+        if execution_actor_address:
+            self.task_id_to_execution_actor[task_id] = execution_actor_address
+            self.log.info(f"Saved ExecutionActor address for task {task_id}")
+        else:
+            self.log.warning(f"No execution_actor_address in pause message for task {task_id}")
+
+        # 找到对应的前台地址
+        reply_to = self.task_id_to_sender.get(task_id)
+
+        if reply_to:
+            # 转发暂停消息给前台（不需要包含execution_actor_address）
+            frontend_message = {
+                "message_type": "task_paused",
+                "task_id": task_id,
+                "missing_params": missing_params,
+                "question": question
+            }
+            self.send(reply_to, frontend_message)
+        else:
+            self.log.warning(f"No reply_to address found for task {task_id}, cannot forward pause message")
+
     def _handle_loop_task_setup(self, task: Dict[str, Any], sender: ActorAddress):
         """处理循环任务设置"""
         # 调用现有的add_loop_task方法
@@ -360,6 +636,176 @@ class AgentActor(Actor):
         tree_manager = TreeManager()
         children = tree_manager.get_children(agent_id)
         return len(children) == 0
+
+    def _select_execution_node(self, task_description: str) -> Optional[str]:
+        """
+        ④ 节点选择 - 使用TaskRouter选择最佳执行节点
+
+        Args:
+            task_description: 任务描述
+
+        Returns:
+            节点ID或None（表示需要MCP Fallback）
+        """
+        try:
+            # 使用TaskRouter选择最佳节点
+            if self.task_router:
+                routing_result = self.task_router.select_best_actor(task_description, context={})
+                if routing_result:
+                    return routing_result.get("actor_id") or routing_result
+            return None
+        except Exception as e:
+            self.log.warning(f"Node selection failed: {e}")
+            return None
+
+    def _plan_task_execution(self, task_description: str) -> Dict[str, Any]:
+        """
+        ⑤ 任务规划 - 使用TaskPlanner生成执行计划
+
+        Args:
+            task_description: 任务描述
+
+        Returns:
+            执行计划，包含subtasks, dependencies, parallel_groups
+        """
+        try:
+            if self.task_planner:
+                # 使用TaskPlanner生成计划
+                subtasks = self.task_planner.generate_plan(task_description)
+                if subtasks:
+                    return {
+                        "subtasks": subtasks,
+                        "dependencies": [],
+                        "parallel_groups": []
+                    }
+        except Exception as e:
+            self.log.warning(f"Task planning failed: {e}")
+
+        # Fallback: 返回None，让调用者创建简单计划
+        return None
+
+    def _should_execute_in_parallel(self, subtasks: List[Dict[str, Any]]) -> bool:
+        """
+        ⑥ 并行判断 - 判断子任务是否值得并行执行
+
+        判断标准:
+        - 由LLM判断，通过能力来引用
+        - 如果子任务之间没有依赖关系且数量较多，考虑并行
+
+        Args:
+            subtasks: 子任务列表
+
+        Returns:
+            是否应该并行执行
+        """
+        # 简单策略：如果子任务数量大于1且小于等于5，可以考虑并行
+        if len(subtasks) <= 1:
+            return False
+
+        # TODO: 这里应该使用LLM来判断，暂时使用简单策略
+        # 如果子任务数量在2-5之间，默认不并行（除非明确标记）
+        return False
+
+    def _build_task_group_request(self, plan: Dict[str, Any], parent_task_id: str,
+                                  should_parallel: bool) -> Dict[str, Any]:
+        """
+        ⑦ 构建TaskGroupRequest
+
+        Args:
+            plan: 任务计划
+            parent_task_id: 父任务ID
+            should_parallel: 是否并行执行
+
+        Returns:
+            TaskGroupRequest消息
+        """
+        from common.messages.task_messages import TaskSpec
+
+        subtasks = plan.get("subtasks", [])
+
+        # 构建TaskSpec列表
+        task_specs = []
+        for i, subtask in enumerate(subtasks):
+            task_spec = TaskSpec(
+                task_id=f"{parent_task_id}.subtask_{i}",
+                type=subtask.get("node_id", "mcp"),  # 能力类型
+                parameters={
+                    "description": subtask.get("description", ""),
+                    "context": subtask.get("context", {})
+                },
+                repeat_count=1,
+                aggregation_strategy="single"
+            )
+            task_specs.append(task_spec)
+
+        # 构建请求
+        return {
+            "message_type": "execute_task_group",
+            "parent_task_id": parent_task_id,
+            "subtasks": task_specs,
+            "execution_mode": "parallel" if should_parallel else "sequential",
+            "aggregation_strategy": "map_reduce",
+            "reply_to": self.myAddress
+        }
+
+    def _send_to_task_group_aggregator(self, task_group_request: Dict[str, Any], sender: ActorAddress):
+        """
+        ⑧ 发送到TaskGroupAggregatorActor
+
+        Args:
+            task_group_request: 任务组请求
+            sender: 原始发送者（用于回复）
+        """
+        from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+        from common.messages.task_messages import TaskGroupRequest
+
+        # 创建TaskGroupAggregatorActor
+        aggregator = self.createActor(TaskGroupAggregatorActor)
+
+        # 构建标准的TaskGroupRequest
+        group_request = TaskGroupRequest(
+            source=self.myAddress,
+            destination=aggregator,
+            group_id=task_group_request["parent_task_id"],
+            tasks=task_group_request["subtasks"],
+            reply_to=sender  # 回复给原始发送者
+        )
+
+        self.log.info(f"Sending task group to aggregator: {task_group_request['parent_task_id']}")
+        self.send(aggregator, group_request)
+
+    def _execute_with_mcp_fallback(self, task: Dict[str, Any], sender: ActorAddress):
+        """
+        使用MCP Fallback执行任务
+
+        Args:
+            task: 任务信息
+            sender: 发送者
+        """
+        task_id = task.get("task_id")
+        task_description = task.get("content", task.get("description", ""))
+
+        self.log.info(f"Using MCP fallback for task {task_id}")
+
+        # 调用MCP执行
+        from capability_actors.mcp_actor import MCPCapabilityActor
+        mcp_actor = self.createActor(MCPCapabilityActor)
+
+        mcp_request = {
+            "type": "execute_task",
+            "task_id": task_id,
+            "task_type": "leaf_task",
+            "context": {
+                "original_task": task_description,
+                "capability": "mcp"
+            },
+            "capabilities": {
+                "name": "mcp"
+            },
+            "reply_to": sender
+        }
+
+        self.send(mcp_actor, mcp_request)
     
     def _execute_leaf_logic(self, task: Dict[str, Any], sender: ActorAddress):
         """处理叶子节点执行逻辑"""
@@ -743,24 +1189,34 @@ class AgentActor(Actor):
         task_id = result_msg.get("task_id")
         result_data = result_msg.get("result", {})
         status = result_data.get("status", "SUCCESS")
-        
+
         if status == "SUCCESS":
             # 1. 写入记忆
             if self.memory_cap:
                 self.memory_cap.add_memory_intelligently(f"Task completed: {task_id}")
-            
-            # 2. 如果这是父任务的子任务，检查是否聚合完成
+
+            # 2. 检查是否需要发送优化反馈
+            self._send_optimization_feedback(task_id, result_msg, success=True)
+
+            # 3. 如果这是父任务的子任务，检查是否聚合完成
             if self.current_aggregator:
                 # 通知聚合器
                 self.send(self.current_aggregator, result_msg)
             else:
-                # 3. 如果是根任务，直接返回给用户 (Step ⑫)
-                final_response = self._format_response(result_data)
-                # 假设 original_sender 在上下文中保存了
+                # 4. 如果是根任务，直接返回给前台InteractionActor
                 original_sender = self.task_id_to_sender.get(task_id, sender)
-                self.send(original_sender, final_response)
-                
-                # 4. 发布事件
+
+                # 构建给前台的消息
+                response_to_frontend = {
+                    "message_type": "task_completed",
+                    "task_id": task_id,
+                    "result": result_data,
+                    "message": "任务执行完成"
+                }
+
+                self.send(original_sender, response_to_frontend)
+
+                # 5. 发布事件
                 from events.event_bus import event_bus
                 from events.event_types import EventType
                 event_bus.publish_task_event(
@@ -770,9 +1226,96 @@ class AgentActor(Actor):
                     agent_id=self.agent_id,
                     data={"result": result_data}
                 )
+
+                # 清理映射
+                if task_id in self.task_id_to_sender:
+                    del self.task_id_to_sender[task_id]
+                # 清理ExecutionActor地址映射
+                if task_id in self.task_id_to_execution_actor:
+                    del self.task_id_to_execution_actor[task_id]
+
         elif status == "FAILED":
+            # 发送优化反馈（失败情况）
+            self._send_optimization_feedback(task_id, result_msg, success=False)
+
             # 触发 MCP Fallback 机制 (Step ⑤ 的 fallback)
             self._trigger_fallback(task_id, result_data.get("error_msg", "执行失败"))
+
+    def _send_optimization_feedback(self, task_id: str, result_msg: Dict[str, Any], success: bool):
+        """
+        发送优化反馈给OptimizerActor
+
+        仅当任务是循环任务且启用优化时发送
+        """
+        try:
+            # 检查是否是循环任务（可以从task_id或任务注册表查询）
+            # 这里简化处理：假设所有loop相关的任务都发送反馈
+            # 实际实现中应该查询任务类型
+
+            # 构建执行记录
+            import time
+            from datetime import datetime
+
+            result_data = result_msg.get("result", {})
+
+            execution_record = {
+                "execution_time": datetime.now().isoformat(),
+                "parameters": result_msg.get("parameters", {}),
+                "result": result_data,
+                "success": success,
+                "duration": result_data.get("duration", 0.0),
+                "score": self._calculate_execution_score(result_data, success),
+                "error": result_data.get("error") if not success else None
+            }
+
+            # 发送给OptimizerActor
+            from capability_actors.optimizer_actor import OptimizerActor
+
+            optimizer = self.createActor(OptimizerActor, globalName="optimizer_actor")
+
+            self.send(optimizer, {
+                "type": "execution_feedback",
+                "task_id": task_id,
+                "execution_record": execution_record
+            })
+
+            self.log.debug(f"Sent optimization feedback for task {task_id}")
+
+        except Exception as e:
+            # 优化反馈失败不应该影响主流程
+            self.log.warning(f"Failed to send optimization feedback for task {task_id}: {e}")
+
+    def _calculate_execution_score(self, result_data: Dict[str, Any], success: bool) -> float:
+        """
+        计算执行分数
+
+        Args:
+            result_data: 执行结果数据
+            success: 是否成功
+
+        Returns:
+            0.0-1.0之间的分数
+        """
+        if not success:
+            return 0.0
+
+        # 基础分数
+        base_score = 0.7
+
+        # 根据执行时间调整
+        duration = result_data.get("duration", 0.0)
+        if duration < 1.0:
+            base_score += 0.2
+        elif duration > 10.0:
+            base_score -= 0.2
+
+        # 根据结果质量调整（如果有）
+        quality_score = result_data.get("quality_score")
+        if quality_score is not None:
+            base_score = (base_score + quality_score) / 2
+
+        # 确保在0-1范围内
+        return max(0.0, min(1.0, base_score))
     
     def _format_response(self, result_data: Dict[str, Any]) -> Dict[str, Any]:
         """格式化响应"""
@@ -865,12 +1408,19 @@ class AgentActor(Actor):
         original_desc: str,
         needs_vault: bool
     ) -> Set[str]:
+        """
+        ⑦ 任务分发 - 直接发给 TaskGroupAggregatorActor 进行批量管理
+        """
         pending = set()
-        
-        # 获取任务执行服务Actor
-        from capability_actors.task_execution_service import TaskExecutionService
-        task_execution_addr = self.createActor(TaskExecutionService)
-        
+
+        # 创建 TaskGroupAggregatorActor
+        from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+        from common.messages.task_messages import TaskGroupRequest, TaskSpec
+
+        task_group_addr = self.createActor(TaskGroupAggregatorActor)
+
+        # 构建任务规范列表
+        task_specs = []
         for i, step in enumerate(plan):
             child_cap = step["node_id"]
             child_task_id = f"{parent_task_id}.child_{i}"
@@ -888,26 +1438,34 @@ class AgentActor(Actor):
                 "capability": child_cap
             }
 
-            # 构造任务执行请求
-            task_request = {
-                "type": "execute_task",
-                "task_id": child_task_id,
-                "task_type": "leaf_task",
-                "context": final_child_context,
-                "capabilities": {
-                    "name": child_cap
-                }
-            }
-
-            # 发送任务到执行服务
-            self.send(task_execution_addr, task_request)
+            # 创建任务规范
+            task_spec = TaskSpec(
+                task_id=child_task_id,
+                type=child_cap,  # 能力类型
+                parameters=final_child_context,
+                repeat_count=1,
+                aggregation_strategy="single"
+            )
+            task_specs.append(task_spec)
             pending.add(child_task_id)
 
             self._report_event("subtask_spawned", child_task_id, {
                 "parent_task_id": parent_task_id,
-                "capability": child_cap,
-                "child_address": str(task_execution_addr)
+                "capability": child_cap
             })
+
+        # 创建任务组请求
+        group_request = TaskGroupRequest(
+            source=self.myAddress,
+            destination=task_group_addr,
+            group_id=parent_task_id,
+            tasks=task_specs,
+            reply_to=self.myAddress
+        )
+
+        # 发送任务组到 TaskGroupAggregatorActor
+        self.send(task_group_addr, group_request)
+
         return pending
 
     def _create_child_actor(self, capability: str) -> Optional[ActorAddress]:

@@ -7,6 +7,10 @@ from common.messages.task_messages import (
 )
 import logging
 
+# 导入事件总线
+from events.event_bus import event_bus
+from events.event_types import EventType
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,36 +66,133 @@ class TaskGroupAggregatorActor(Actor):
 
     def _handle_task_group_request(self, msg: TaskGroupRequest, sender: Actor) -> None:
         """
-        处理任务组请求
-        
+        ⑧ 组任务管理 - 判断是否需要并行执行
+
         Args:
             msg: 任务组请求消息
             sender: 消息发送者
         """
         logger.info(f"Received TaskGroupRequest: {msg.group_id}")
-        
+
         self.reply_to = msg.reply_to
         self.group_id = msg.group_id
-        
-        # 为每个任务启动执行器Actor
+
+        # ⑨ 判断是否需要并行执行
+        needs_parallel = self._should_use_parallel_execution(msg.tasks)
+
+        if needs_parallel:
+            # 使用并行执行
+            logger.info(f"⑨ 并行执行判断: 任务组 {msg.group_id} 需要并行优化")
+            self._dispatch_to_parallel_aggregator(msg)
+        else:
+            # 使用普通结果聚合
+            logger.info(f"⑨ 并行执行判断: 任务组 {msg.group_id} 使用标准执行")
+            self._dispatch_to_result_aggregator(msg)
+
+    def _should_use_parallel_execution(self, tasks: List[TaskSpec]) -> bool:
+        """
+        ⑨ 判断是否需要并行执行
+
+        判断逻辑：
+        1. 如果任务需要多次执行（repeat_count > 1）
+        2. 如果参数中明确指定需要优化
+        3. 如果聚合策略需要多次执行（mean、majority等）
+
+        Args:
+            tasks: 任务列表
+
+        Returns:
+            是否需要并行执行
+        """
+        for task in tasks:
+            # 检查是否需要重复执行
+            if task.repeat_count and task.repeat_count > 1:
+                return True
+
+            # 检查聚合策略
+            if task.aggregation_strategy in ["mean", "majority", "sum", "min", "max"]:
+                return True
+
+            # 检查参数中的优化标志
+            if isinstance(task.parameters, dict):
+                if task.parameters.get("needs_optimization", False):
+                    return True
+                if "optimization_params" in task.parameters:
+                    return True
+
+        return False
+
+    def _dispatch_to_parallel_aggregator(self, msg: TaskGroupRequest) -> None:
+        """
+        分发给并行任务聚合器
+
+        Args:
+            msg: 任务组请求消息
+        """
+        from capability_actors.parallel_task_aggregator_actor import ParallelTaskAggregatorActor
+        from common.messages.task_messages import RepeatTaskRequest
+
+        # 为每个任务创建并行聚合器
         for task_spec in msg.tasks:
-            executor_type = self._map_type_to_actor(task_spec.type)
-            if executor_type:
-                addr = self.createActor(executor_type)
-                self.pending_tasks[addr] = task_spec.task_id
-                
-                # 发送执行任务消息
-                execute_msg = ExecuteTaskMessage(
-                    source=self.myAddress,
-                    destination=addr,
-                    spec=task_spec,
-                    reply_to=self.myAddress
-                )
-                self.send(addr, execute_msg)
-            else:
-                # 不支持的任务类型
-                logger.error(f"Unsupported task type: {task_spec.type}")
-                self.failures[task_spec.task_id] = f"Unsupported task type: {task_spec.type}"
+            parallel_aggregator = self.createActor(ParallelTaskAggregatorActor)
+            self.pending_tasks[parallel_aggregator] = task_spec.task_id
+
+            # 发送重复任务请求
+            repeat_request = RepeatTaskRequest(
+                source=self.myAddress,
+                destination=parallel_aggregator,
+                spec=task_spec
+            )
+            self.send(parallel_aggregator, repeat_request)
+
+            # 发布事件
+            event_bus.publish_task_event(
+                task_id=task_spec.task_id,
+                event_type=EventType.PARALLEL_EXECUTION_STARTED.value,
+                source="TaskGroupAggregatorActor",
+                agent_id="system",
+                data={
+                    "repeat_count": task_spec.repeat_count,
+                    "aggregation_strategy": task_spec.aggregation_strategy
+                }
+            )
+
+    def _dispatch_to_result_aggregator(self, msg: TaskGroupRequest) -> None:
+        """
+        ⑩ 分发给结果聚合器进行单任务执行
+
+        Args:
+            msg: 任务组请求消息
+        """
+        from capability_actors.result_aggregator_actor import ResultAggregatorActor
+
+        # 创建结果聚合器
+        result_aggregator = self.createActor(ResultAggregatorActor)
+
+        # 初始化聚合器
+        init_msg = {
+            "type": "initialize",
+            "trace_id": msg.group_id,
+            "max_retries": 3,
+            "timeout": 300,
+            "aggregation_strategy": "map_reduce",
+            "pending_tasks": [task.task_id for task in msg.tasks]
+        }
+        self.send(result_aggregator, init_msg)
+
+        # 记录聚合器
+        self.pending_tasks[result_aggregator] = msg.group_id
+
+        # 为每个任务发送执行请求到结果聚合器
+        for task_spec in msg.tasks:
+            execute_msg = {
+                "type": "execute_subtask",
+                "task_id": task_spec.task_id,
+                "task_spec": task_spec,
+                "capability": task_spec.type,
+                "parameters": task_spec.parameters
+            }
+            self.send(result_aggregator, execute_msg)
 
     def _handle_task_completed(self, msg: TaskCompleted, sender: Actor) -> None:
         """
@@ -220,21 +321,48 @@ class TaskGroupAggregatorActor(Actor):
         """
         total_tasks = len(self.pending_tasks) + len(self.results) + len(self.failures)
         completed_tasks = len(self.results) + len(self.failures)
-        
+
         logger.info(f"TaskGroup {self.group_id}: {completed_tasks}/{total_tasks} tasks completed")
-        
+
         if completed_tasks >= total_tasks and self.reply_to and self.group_id:
             logger.info(f"All tasks for group {self.group_id} completed")
-            
-            # 创建并发送任务组结果
-            result_msg = TaskGroupResult(
-                source=self.myAddress,
-                destination=self.reply_to,
-                group_id=self.group_id,
-                results=self.results,
-                failures=self.failures
-            )
+
+            # 发布任务组完成事件
+            if self.failures:
+                event_bus.publish_task_event(
+                    task_id=self.group_id,
+                    event_type=EventType.TASK_FAILED.value,
+                    source="TaskGroupAggregatorActor",
+                    agent_id="system",
+                    data={
+                        "total_tasks": total_tasks,
+                        "completed_tasks": completed_tasks,
+                        "failures": self.failures
+                    }
+                )
+            else:
+                event_bus.publish_task_event(
+                    task_id=self.group_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    source="TaskGroupAggregatorActor",
+                    agent_id="system",
+                    data={
+                        "total_tasks": total_tasks,
+                        "completed_tasks": completed_tasks,
+                        "results": self.results
+                    }
+                )
+
+            # 发送任务组结果 - 以字典格式发送以匹配ExecutionActor的期望
+            result_msg = {
+                "type": "task_group_result",
+                "group_id": self.group_id,
+                "results": self.results,
+                "failures": self.failures,
+                "total_tasks": total_tasks,
+                "completed_tasks": completed_tasks
+            }
             self.send(self.reply_to, result_msg)
-            
+
             # 发送退出请求
             self.send(self.myAddress, ActorExitRequest())
