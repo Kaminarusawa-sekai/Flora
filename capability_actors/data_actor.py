@@ -17,7 +17,9 @@ class DataActor(actors.Actor):
     def __init__(self):
         super().__init__()
         # 实例化能力对象（工人）
-        self.analyst = capability_registry.get_capability("text_to_sql")
+        from capabilities.registry import capability_registry
+        from capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
+        self.analyst = capability_registry.get_capability("text_to_sql",expected_type=ITextToSQLCapability)
         
         # Actor 自身的状态
         self.agent_id = None

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from capabilities import init_capabilities
 from capabilities.llm.interface import ILLMCapability
 from capabilities.llm_memory.interface import IMemoryCapability
-from capabilities.text_to_sql.text_to_sql import ITextToSQL
+from capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
 
 # 导入API服务器
 from entry_layer.api_server import APIServer
@@ -269,7 +269,8 @@ def init_actor_system(context: SystemContext, system_base: str) -> ActorSystem:
     # 初始化AgentActor
     init_msg = {
         "message_type": "init",
-        "agent_id": "default_agent"
+        "agent_id": "private_domain"
+        # "agent_id": "goal_setting",
     }
     system.tell(agent_actor, init_msg)
 
@@ -303,13 +304,38 @@ def send_test_message(system: ActorSystem, target_actor: ActorAddress):
     time.sleep(2)  
     test_msg = {
         "message_type": "user_input",
-        "user_id": "test_admin_001",
-        "content": "帮我查询一下上个月的销售数据",
+        "user_id": "user_id:test_admin_001,tenant_id:test_tenant_001",
+        "content": "帮设定一下裂变目标，我是做投影仪的",
+        # "content": "设计用户激励体系",
         "msg_id": "msg_test_1"
+
     }
     logger.info(f"发送模拟用户消息: {test_msg['content']}")
     try:
-        response = system.ask(target_actor, test_msg, timeout=30)
+        # response = system.ask(target_actor, test_msg, timeout=30)
+        system.tell(target_actor, test_msg) # 改用 tell 发送，不要阻塞在 ask
+
+        start_time = time.time()
+        while time.time() - start_time < 300:
+            response = system.receive(timeout=1) # 轮询接收
+            if not response:
+                continue
+                
+            logging.info(f"收到消息: {response}")
+            
+            # 过滤掉噪音
+            if isinstance(response, dict) and response.get('status') == 'initialized':
+                logging.info("-> 忽略系统初始化消息，继续等待...")
+                continue
+                
+            # 找到真正的结果
+            if isinstance(response, dict) and (
+                "action" in response or 
+                "result" in response or 
+                "message" in response
+            ):
+                logging.info("✅ 拿到最终结果！")
+                break
         logger.info(f"收到系统回复: {response}")
     except Exception as e:
         logger.error(f"测试消息超时或出错: {e}")

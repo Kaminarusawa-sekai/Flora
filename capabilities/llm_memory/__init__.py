@@ -1,10 +1,10 @@
 """LLM记忆系统能力模块"""
 
-from .memory_capability import MemoryCapability
-from .manager import UnifiedMemoryManager
-from .short_term import ShortTermMemory
+from .unified_memory import UnifiedMemory
+from .unified_manageer.manager import UnifiedMemoryManager
+from .unified_manageer.short_term import ShortTermMemory
 
 
 
-__all__ = ['MemoryCapability', 'UnifiedMemoryManager', 'ShortTermMemory']
+__all__ = ['UnifiedMemory', 'UnifiedMemoryManager', 'ShortTermMemory']
 

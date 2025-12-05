@@ -4,7 +4,7 @@ import shutil
 import os
 from typing import Dict, Any, Optional, List
 import uuid
-from capabilities.llm_memory.memory_interfaces import IResourceRepository
+from capabilities.llm_memory.unified_manageer.memory_interfaces import IResourceRepository
 
 class ResourceRepository(IResourceRepository):
     def __init__(self, dao: SQLiteResourceDAO, use_minio: bool, minio_client=None, local_dir: str = None):

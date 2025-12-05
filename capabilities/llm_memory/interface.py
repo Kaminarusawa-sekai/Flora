@@ -7,7 +7,7 @@ class IMemoryCapability(CapabilityBase):
     """记忆能力的外部调用接口"""
 
     @abstractmethod
-    def add_memory_intelligently(self, content: Any, metadata: Dict = None) -> None:
+    def add_memory_intelligently(self, user_id: str, content: Any, metadata: Dict = None) -> None:
         """智能路由并存储记忆"""
         pass
 
@@ -17,9 +17,9 @@ class IMemoryCapability(CapabilityBase):
         pass
     
     @abstractmethod
-    def retrieve_relevant_memory(self, query: str) -> str:
+    def retrieve_relevant_memory(self, user_id: str, query: str) -> str:
         """检索相关记忆（语义+情景等）"""
         pass
 
     def get_capability_type(self) -> str:
-        return "memory"
+        return "llm_memory"

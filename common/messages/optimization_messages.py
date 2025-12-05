@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from .base_message import BaseMessage
-from .task_messages import TaskMessage
+from .base_message import TaskMessage
 
 
 class OptimizationMessage(TaskMessage):

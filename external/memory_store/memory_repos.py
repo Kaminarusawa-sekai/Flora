@@ -1,5 +1,5 @@
 # external/memory_repos.py
-from capabilities.llm_memory.memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
+from capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
 
 from external.memory_store.filebased_procedural_repository import FileBasedProceduralRepository
 from external.memory_store.sqLite_vault_dao import SQLiteVaultDAO

@@ -11,8 +11,15 @@ import logging
 from typing import Any, Dict, Optional
 from thespian.actors import Actor, ActorAddress
 
-from capabilities.context.conversation_manager import IConversationManagerCapability
+from capabilities.conversation.interface import IConversationManagerCapability
 from capabilities import get_capability
+
+from common.messages.interact_messages import (
+    UserRequestMessage,
+    InitConfigMessage,
+    TaskPausedMessage,
+    TaskResultMessage
+)
 
 
 logger = logging.getLogger("InteractionActor")
@@ -51,37 +58,15 @@ class InteractionActor(Actor):
     def receiveMessage(self, message: Any, sender: ActorAddress):
         """接收并处理消息"""
         try:
-            if isinstance(message, dict):
-                msg_type = message.get("message_type") or message.get("type")
-
-                # 处理初始化配置
-                if msg_type == "init_config" or msg_type == "configure":
-                    self._handle_init_config(message, sender)
-                    return
-
-                # 处理用户输入
-                elif msg_type == "user_input":
-                    self._handle_user_input(message, sender)
-                    return
-
-                # 处理后台返回的任务暂停通知
-                elif msg_type == "task_paused":
-                    self._handle_task_paused(message, sender)
-                    return
-
-                # 处理后台返回的任务完成通知
-                elif msg_type == "task_completed":
-                    self._handle_task_completed(message, sender)
-                    return
-
-                # 处理后台返回的错误
-                elif msg_type == "task_error":
-                    self._handle_task_error(message, sender)
-                    return
-
-                # 处理其他类型
-                else:
-                    self.logger.warning(f"Unknown message type: {msg_type}")
+            # 只处理对象类型消息
+            if isinstance(message, InitConfigMessage):
+                self._handle_init_config(message, sender)
+            elif isinstance(message, UserRequestMessage):
+                self._handle_user_input(message, sender)
+            elif isinstance(message, TaskPausedMessage):
+                self._handle_task_paused(message, sender)
+            elif isinstance(message, TaskResultMessage):
+                self._handle_task_result(message, sender)
             else:
                 self.logger.warning(f"Unknown message format: {type(message)}")
 
@@ -90,14 +75,14 @@ class InteractionActor(Actor):
             # 向发送者返回错误
             self._send_error_to_user(sender, f"处理消息时发生错误: {str(e)}")
 
-    def _handle_init_config(self, message: Dict[str, Any], sender: ActorAddress):
+    def _handle_init_config(self, message: InitConfigMessage, sender: ActorAddress):
         """处理初始化配置"""
-        self.backend_addr = message.get("backend_addr")
+        self.backend_addr = message.backend_addr
 
         # 获取ConversationManager
         try:
             self.conversation_manager = get_capability(
-                "conversation_manager",
+                "conversation",
                 expected_type=IConversationManagerCapability
             )
             if self.conversation_manager:
@@ -110,7 +95,7 @@ class InteractionActor(Actor):
 
         self.logger.info(f"✓ InteractionActor initialized with backend: {self.backend_addr}")
 
-    def _handle_user_input(self, message: Dict[str, Any], sender: ActorAddress):
+    def _handle_user_input(self, message: UserRequestMessage, sender: ActorAddress):
         """
         处理用户输入
 
@@ -119,9 +104,8 @@ class InteractionActor(Actor):
         2. 调用ConversationManager.handle_user_input()
         3. 根据返回的action决定下一步操作
         """
-        user_input = message.get("content") or message.get("user_input", "")
-        user_id = message.get("user_id", "default_user")
-        msg_id = message.get("msg_id", "")
+        user_input = message.content
+        user_id = message.user_id
 
         self.logger.info(f"[User {user_id}] Input: {user_input[:50]}...")
 
@@ -162,15 +146,15 @@ class InteractionActor(Actor):
             # 其他需要后台处理的action
             self._forward_to_backend(user_input, user_id, task_id)
 
-    def _handle_task_paused(self, message: Dict[str, Any], sender: ActorAddress):
+    def _handle_task_paused(self, message: TaskPausedMessage, sender: ActorAddress):
         """
         处理后台返回的任务暂停通知
 
         当后台ExecutionActor发现缺少参数时，会暂停任务并发送此消息
         """
-        task_id = message.get("task_id")
-        missing_params = message.get("missing_params", [])
-        question = message.get("question", "")
+        task_id = message.task_id
+        missing_params = message.missing_params
+        question = message.question
 
         self.logger.info(f"Task {task_id} paused, missing params: {missing_params}")
 
@@ -180,37 +164,25 @@ class InteractionActor(Actor):
         # 向用户询问参数
         self._send_to_user(user_id, question)
 
-    def _handle_task_completed(self, message: Dict[str, Any], sender: ActorAddress):
-        """处理后台返回的任务完成通知"""
-        task_id = message.get("task_id")
-        result = message.get("result", {})
-        result_message = message.get("message", "任务已完成")
-
-        self.logger.info(f"Task {task_id} completed")
-
-        # 找到对应的用户
-        user_id = self.task_to_user.get(task_id, "default_user")
-
-        # 格式化结果返回给用户
-        formatted_result = self._format_task_result(result, result_message)
-        self._send_to_user(user_id, formatted_result)
-
-        # 清理映射
-        if task_id in self.task_to_user:
-            del self.task_to_user[task_id]
-
-    def _handle_task_error(self, message: Dict[str, Any], sender: ActorAddress):
-        """处理后台返回的错误"""
-        task_id = message.get("task_id")
-        error = message.get("error", "Unknown error")
-
-        self.logger.error(f"Task {task_id} failed: {error}")
+    def _handle_task_result(self, message: TaskResultMessage, sender: ActorAddress):
+        """处理后台返回的任务结果（合并完成和错误消息）"""
+        task_id = message.task_id
+        result = message.result
+        error = message.error
+        result_message = message.message or "任务已完成"
 
         # 找到对应的用户
         user_id = self.task_to_user.get(task_id, "default_user")
 
-        # 返回错误给用户
-        self._send_to_user(user_id, f"任务执行失败: {error}")
+        if error:
+            self.logger.error(f"Task {task_id} failed: {error}")
+            # 返回错误给用户
+            self._send_to_user(user_id, f"任务执行失败: {error}")
+        else:
+            self.logger.info(f"Task {task_id} completed")
+            # 格式化结果返回给用户
+            formatted_result = self._format_task_result(result, result_message)
+            self._send_to_user(user_id, formatted_result)
 
         # 清理映射
         if task_id in self.task_to_user:
@@ -230,6 +202,7 @@ class InteractionActor(Actor):
 
         # 记录任务到用户的映射
         self.task_to_user[task_id] = user_id
+
 
         # 构建转发消息
         backend_message = {

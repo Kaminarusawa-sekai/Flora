@@ -4,9 +4,10 @@ import os
 from typing import Dict, Any, List, Optional
 from openai import OpenAI
 from ..capability_base import CapabilityBase
+from .interface import IDimensionParserCapability
 
 
-class DimensionParserCapability(CapabilityBase):
+class DimensionParserCapability(IDimensionParserCapability):
     """
     LLM维度解析能力，负责:
     1. 自动发现优化维度

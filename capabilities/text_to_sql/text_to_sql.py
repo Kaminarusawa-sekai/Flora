@@ -3,7 +3,7 @@ from abc import abstractmethod
 from typing import Optional, List, Dict, Any
 from ..capability_base import CapabilityBase
 
-class ITextToSQL(CapabilityBase):
+class ITextToSQLCapability(CapabilityBase):
     """文本到SQL转换接口定义"""
     
     @abstractmethod

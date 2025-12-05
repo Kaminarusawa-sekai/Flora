@@ -61,18 +61,32 @@ class AgentStructureRepository:
         Returns:
             Agent节点信息列表
         """
+        # 修改查询：排除 id 属性，将其他所有属性打包叫 meta
         query = """
         MATCH (a:Agent)
-        RETURN a.id as agent_id, a.meta as meta
+        RETURN a.id as agent_id, 
+               {name: a.name, businessId: a.businessId, dify: a.dify, strength: a.strength, capability: a.capability} as meta
+        """
+        # 或者更偷懒的写法（返回除 id 外的所有属性）：
+        # RETURN a.id as agent_id, [k in keys(a) WHERE k <> 'id' | [k, a[k]]] AS meta_pairs
+        
+        # 建议使用上面的显式列出，或者使用 properties(a) 然后在 Python 里剔除 id
+        # 下面是通用的写法：
+        query = """
+        MATCH (a:Agent)
+        RETURN a.id as agent_id, properties(a) as all_props
         """
         results = self.neo4j_client.execute_query(query)
         
-        # 转换格式，将meta中的字段展开到顶层
         agents = []
         for record in results:
+            props = record['all_props']
+            # 从属性中移除 id，剩下的就是 meta
+            if 'id' in props:
+                del props['id']
+            
             agent = {'agent_id': record['agent_id']}
-            if record['meta']:
-                agent.update(record['meta'])
+            agent.update(props)
             agents.append(agent)
         return agents
     
@@ -174,8 +188,10 @@ class AgentStructureRepository:
             # 提取meta数据（除了agent_id之外的所有字段）
             meta_data = {k: v for k, v in node_data.items() if k != 'agent_id'}
             
+            # 修改查询：直接设置属性
             query = """
-            CREATE (a:Agent {id: $agent_id, meta: $meta_data})
+            CREATE (a:Agent {id: $agent_id})
+            SET a += $meta_data
             RETURN a
             """
             self.neo4j_client.execute_write(query, {
@@ -208,14 +224,15 @@ class AgentStructureRepository:
             # 更新meta数据
             current_meta.update(updates)
             
+            # 修改查询：使用 += 操作符来更新平铺的属性
             query = """
             MATCH (a:Agent {id: $node_id})
-            SET a.meta = $meta_data
+            SET a += $meta_data
             RETURN a
             """
             self.neo4j_client.execute_write(query, {
                 'node_id': node_id,
-                'meta_data': current_meta
+                'meta_data': current_meta # 这里的字典会被展开成属性
             })
             return True
         except Exception:

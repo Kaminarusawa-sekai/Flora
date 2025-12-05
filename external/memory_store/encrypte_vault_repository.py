@@ -1,5 +1,5 @@
 from typing import List, Optional
-from capabilities.llm_memory.memory_interfaces import IVaultRepository
+from capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository
 from external.memory_store.sqLite_vault_dao import SQLiteVaultDAO
 from external.memory_store.security import Encryptor
 

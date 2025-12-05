@@ -1,6 +1,6 @@
 # belief_revision.py
-from logic import HornClause
-from categories import TheoryCategory
+from .logic import HornClause
+from .categories import TheoryCategory
 import time
 from typing import List, Optional, Callable
 

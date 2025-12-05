@@ -428,7 +428,7 @@ class RelationshipService:
             while True:
                 time.sleep(60)  # 每隔60秒刷新一次缓存
                 self.refresh_cache()
-                self.logger.info("关系缓存已自动刷新")
+                # self.logger.info("关系缓存已自动刷新")
         
         # 使用守护线程运行，避免影响主程序退出
         thread = threading.Thread(target=refresh_cache, daemon=True)
@@ -439,7 +439,7 @@ class RelationshipService:
         刷新关系缓存
         """
         self.relationship_cache.clear()
-        self.logger.info("关系缓存已刷新")
+        # self.logger.info("关系缓存已刷新")
     
     def close(self):
         """

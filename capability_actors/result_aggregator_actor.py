@@ -1,371 +1,354 @@
-# new/agents/execution/result_aggregator.py
-from typing import Dict, Any, List, Optional, Set
-from thespian.actors import Actor
-import logging
+# capability_actors/result_aggregator_actor.py
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from capabilities.result_aggregation.result_aggregation import ResultAggregator
+from thespian.actors import Actor, ActorExitRequest
+from common.messages.task_messages import (
+    TaskCompleted, TaskFailed, ExecuteTaskMessage, TaskSpec, TaskMessage
+)
+# 假设 InitMessage 在 lifecycle_messages 中，如果位置不同请调整引用
+from common.messages import InitMessage 
+# 引入 AgentActor
 
-# Configure logging
+
+import logging
+
+# 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-
 class ResultAggregatorActor(Actor):
     """
-    Result Aggregator Actor - 用于聚合子任务结果的临时Actor
+    Result Aggregator Actor - 任务执行与结果聚合器
     
-    核心职责：
-    1. 接收并跟踪子任务结果
-    2. 聚合结果并返回给发起者
-    3. 支持重试逻辑
-    4. 维护任务上下文和跟踪信息
-    
-    设计原则：
-    - 仅对直接子任务负责
-    - 结果由发起者收集
-    - 重试逻辑靠近失败点
-    - 避免全局上下文
+    修改后逻辑：
+    1. 接收来自 TaskGroupAggregator 的任务请求
+    2. 根据 executor ID 获取或创建对应的 AgentActor
+    3. 发送 TaskMessage 给 AgentActor 执行
+    4. 负责执行过程中的 重试 (Retry) 和 超时 (Timeout) 管理
+    5. 将最终结果返回给 TaskGroupAggregator
     """
     
     def __init__(self):
+        super().__init__()
         self._pending_tasks: Dict[str, Any] = {}  # task_id -> task_info
         self._completed_tasks: Dict[str, Any] = {}  # task_id -> result
         self._failed_tasks: Dict[str, Any] = {}  # task_id -> error_info
         self._retries: Dict[str, int] = {}  # task_id -> retry_count
-        self._max_retries = 3  # 默认最大重试次数
-        self._timeout = 300  # 默认超时时间（秒）
-        self._creator: Any = None  # 发起者Actor地址
-        self._aggregation_strategy: str = "map_reduce"  # 默认聚合策略
-        self._trace_id: str = None  # 用于跟踪的trace_id
+        
+        # 新增：Actor 引用缓存
+        self._actor_ref_cache: Dict[str, Any] = {}
+        # 新增：Registry 对象 (需从 initialize 消息中获取)
+        self.registry = None
+        self.current_user_id = None
+        self._max_retries = 3 
+        self._timeout = 300 
+        self._creator: Any = None 
+        self._aggregation_strategy: str = "map_reduce" 
+        self._trace_id: str = None 
     
     def receiveMessage(self, message: Any, sender: Any) -> None:
         """处理接收到的消息"""
         try:
+            # 1. 处理字典类型的控制消息
             if isinstance(message, dict):
                 msg_type = message.get("type")
 
                 if msg_type == "initialize":
                     self._handle_initialize(message, sender)
+                
                 elif msg_type == "execute_subtask":
-                    # ⑩ 接收执行子任务请求，转发给 ExecutionActor
+                    # 接收来自 TaskGroupAggregator 的 Agent 任务执行请求
                     self._handle_execute_subtask(message, sender)
-                elif msg_type == "add_subtask":
-                    self._handle_add_subtask(message, sender)
+                
+                elif msg_type == "get_final_result":
+                    self._handle_get_final_result(message, sender)
+                
+                # 兼容旧的字典返回格式
                 elif msg_type == "subtask_result":
                     self._handle_subtask_result(message, sender)
                 elif msg_type == "subtask_error":
                     self._handle_subtask_error(message, sender)
-                elif msg_type == "aggregator_result":
-                    self._handle_aggregator_result(message, sender)
-                elif msg_type == "aggregator_error":
-                    self._handle_aggregator_error(message, sender)
-                elif msg_type == "get_final_result":
-                    self._handle_get_final_result(message, sender)
-                else:
-                    logger.warning(f"Unknown message type: {msg_type}")
+                    
+            # 2. 处理标准对象类型的返回消息
+            elif isinstance(message, TaskCompleted):
+                self._handle_task_completed_obj(message, sender)
+                
+            elif isinstance(message, TaskFailed):
+                self._handle_task_failed_obj(message, sender)
+                
+            # 3. 兼容旧的类消息
             elif isinstance(message, (SubtaskResultMessage, SubtaskErrorMessage)):
-                # 向后兼容：直接处理结果/错误消息
-                if hasattr(message, "task_id") and hasattr(message, "result"):
-                    self._handle_subtask_result(message.__dict__, sender)
-                elif hasattr(message, "task_id") and hasattr(message, "error"):
-                    self._handle_subtask_error(message.__dict__, sender)
-                else:
-                    logger.warning(f"Unknown message format: {type(message)}")
+                self._handle_legacy_message(message, sender)
+                
             else:
                 logger.warning(f"Unknown message type: {type(message)}")
+                
         except Exception as e:
-            logger.error(f"ResultAggregatorActor execution failed: {e}")
+            logger.error(f"ResultAggregatorActor execution failed: {e}", exc_info=True)
             self._send_error_to_creator(str(e))
 
-    def _handle_execute_subtask(self, msg: Dict[str, Any], sender: Any) -> None:
-        """
-        ⑩ 单任务执行 - 将任务发送给 ExecutionActor 进行具体执行
-
-        Args:
-            msg: 包含 task_id, task_spec, capability, parameters
-            sender: 发送者
-        """
-        from capability_actors.execution_actor import ExecutionActor
-
-        task_id = msg.get("task_id")
-        task_spec = msg.get("task_spec")
-        capability = msg.get("capability")
-        parameters = msg.get("parameters")
-
-        logger.info(f"⑩ 单任务执行: 转发任务 {task_id} 到 ExecutionActor")
-
-        # 创建 ExecutionActor
-        execution_actor = self.createActor(ExecutionActor)
-
-        # 构建执行请求
-        execute_request = {
-            "type": "execute",
-            "task_id": task_id,
-            "capability": capability,
-            "parameters": parameters,
-            "reply_to": self.myAddress
-        }
-
-        # 发送到 ExecutionActor
-        self.send(execution_actor, execute_request)
-
-        # 添加到待处理任务
-        if task_id not in self._pending_tasks:
-            self._pending_tasks[task_id] = {
-                "capability": capability,
-                "parameters": parameters,
-                "execution_actor": execution_actor
-            }
-            self._retries[task_id] = 0
-    
     def _handle_initialize(self, msg: Dict[str, Any], sender: Any) -> None:
         """初始化聚合器"""
         self._creator = sender
-        self._trace_id = msg.get("trace_id", f"trace_{datetime.now().strftime('%Y%m%d%H%M%S%f')[:-3]}")
+        self._trace_id = msg.get("trace_id", f"trace_{datetime.now().strftime('%Y%m%d%H%M%S')}")
         self._max_retries = msg.get("max_retries", self._max_retries)
         self._timeout = msg.get("timeout", self._timeout)
-        self._aggregation_strategy = msg.get("aggregation_strategy", self._aggregation_strategy)
-        self._reduce_func = msg.get("reduce_func")
+        self._aggregation_strategy = msg.get("aggregation_strategy", "sequential")
         
-        # 处理初始的待处理任务
+
+        from agents.tree.tree_manager import treeManager
+        # 获取 Registry，用于后续创建 AgentActor
+        self.registry = treeManager
+        
+        # 如果初始化时带了 pending_tasks
         pending_tasks = msg.get("pending_tasks", [])
-        if pending_tasks:
-            for task_id in pending_tasks:
-                self._pending_tasks[task_id] = {}
-                self._retries[task_id] = 0
-            logger.info(f"Added {len(pending_tasks)} initial pending tasks to aggregator")
-        
-        logger.info(f"ResultAggregatorActor initialized with trace_id: {self._trace_id}")
-    
-    def _handle_add_subtask(self, msg: Dict[str, Any], sender: Any) -> None:
-        """添加子任务"""
+        for task_id in pending_tasks:
+            self._pending_tasks[task_id] = {}
+            self._retries[task_id] = 0
+            
+        logger.info(f"ResultAggregator initialized. Trace: {self._trace_id}, Pending: {len(pending_tasks)}")
+
+    def _get_or_create_actor_ref(self, agent_id: str):
+        """
+        获取或创建 AgentActor 引用，并在创建时发送初始化消息
+        """
+        if agent_id not in self._actor_ref_cache:
+            if not self.registry:
+                raise ValueError("Registry not initialized in ResultAggregator")
+            from agents.agent_actor import AgentActor
+            # 创建 Actor
+            ref = self.createActor(AgentActor)
+            
+            # 从 registry 获取完整配置
+            agent_info = self.registry.get_agent_meta(agent_id)
+            if not agent_info:
+                # 如果 Registry 里没找到，尝试只用 agent_id 初始化，或者报错
+                # 这里假设必须存在于 Registry
+                logger.warning(f"Agent {agent_id} not found in registry, using defaults.")
+                capabilities = ["default"]
+            else:
+                capabilities = agent_info.get("capability", [])
+
+            # 构造 InitMessage
+            # init_msg = InitMessage(
+            #     agent_id=agent_id,
+            #     capabilities=capabilities,
+            #     memory_key=agent_id, # 默认 = agent_id
+            #     registry=self.registry,
+            # )
+            init_msg = {
+                "message_type": "init",
+                "agent_id": agent_id
+            }
+            
+            # 发送初始化消息
+            self.send(ref, init_msg)
+            
+            # 缓存引用
+            self._actor_ref_cache[agent_id] = ref
+            logger.info(f"Created new AgentActor for {agent_id}")
+
+        return self._actor_ref_cache[agent_id]
+
+    def _handle_execute_subtask(self, msg: Dict[str, Any], sender: Any) -> None:
+        """
+        ⑩ 执行子任务 - 修改为直接分发给 AgentActor
+        """
+        # 提取参数
         task_id = msg.get("task_id")
-        task_info = msg.get("task_info", {})
+        task_spec: TaskSpec = msg.get("task_spec") 
+        parameters = msg.get("parameters", {})
+        description = task_spec.description
+        self.current_user_id = msg.get("user_id", None)
         
-        if not task_id:
-            logger.warning("Subtask without task_id received")
-            return
+        # executor 在这里对应具体的 agent_id (例如 "poster_designer_v2")
+        agent_id = msg.get("executor") 
         
-        self._pending_tasks[task_id] = task_info
-        self._retries[task_id] = 0
-        logger.info(f"Added subtask {task_id} to aggregator")
-    
+        if not agent_id:
+            # 如果没有指定 executor，尝试从 node_id 获取，或者报错
+            agent_id = msg.get("node_id")
+            if not agent_id:
+                self._process_failure(task_id, "Missing 'executor' or 'node_id' in execute request", sender)
+                return
+
+        logger.info(f"⑩ ResultAggregator: Delegating Task {task_id} to AgentActor: {agent_id}")
+
+        # 1. 注册任务状态
+        if task_id not in self._pending_tasks:
+            self._pending_tasks[task_id] = {
+                "spec": task_spec,
+                "executor": agent_id,
+                "parameters": parameters
+            }
+            self._retries[task_id] = 0
+
+        try:
+            # 2. 获取或创建 AgentActor 引用
+            agent_ref = self._get_or_create_actor_ref(agent_id)
+            
+            # 3. 构造 TaskMessage (child_ctx)
+            # parameters 作为上下文传递给 Agent
+            # 注意：这里根据您的需求使用 TaskMessage(task_id, context)
+            task_msg = {
+                "message_type": "agent_task",
+                "task_id": task_id,
+                "content": task_spec.params,
+                "description": description,
+                "user_id": self.current_user_id,
+                "reply_to": self.myAddress  # 让后台回复给InteractionActor
+            }
+            
+            # 4. 发送给 AgentActor
+            self.send(agent_ref, task_msg)
+            
+        except Exception as e:
+            logger.error(f"Failed to spawn agent task {task_id}: {e}", exc_info=True)
+            self._process_failure(task_id, str(e), sender)
+
+    # ----------------------------------------------------------------
+    # 结果处理逻辑 (处理来自 AgentActor 的返回)
+    # ----------------------------------------------------------------
+
+    def _handle_task_completed_obj(self, msg: TaskCompleted, sender: Any) -> None:
+        """处理标准的 TaskCompleted 对象"""
+        logger.info(f"Received TaskCompleted for {msg.task_id}")
+        self._process_success(msg.task_id, msg.result)
+
+    def _handle_task_failed_obj(self, msg: TaskFailed, sender: Any) -> None:
+        """处理标准的 TaskFailed 对象"""
+        logger.info(f"Received TaskFailed for {msg.task_id}: {msg.error}")
+        self._process_failure(msg.task_id, msg.error, sender)
+
     def _handle_subtask_result(self, msg: Dict[str, Any], sender: Any) -> None:
-        """处理子任务成功结果"""
-        task_id = msg.get("task_id")
-        result = msg.get("result", {})
-        
-        if not task_id:
-            logger.warning("Result without task_id received")
+        """处理字典格式的成功消息"""
+        self._process_success(msg.get("task_id"), msg.get("result"))
+
+    def _handle_subtask_error(self, msg: Dict[str, Any], sender: Any) -> None:
+        """处理字典格式的失败消息"""
+        self._process_failure(msg.get("task_id"), msg.get("error"), sender)
+
+    def _handle_legacy_message(self, msg: Any, sender: Any) -> None:
+        """处理旧的消息类"""
+        if hasattr(msg, "result"):
+            self._process_success(msg.task_id, msg.result)
+        elif hasattr(msg, "error"):
+            self._process_failure(msg.task_id, msg.error, sender)
+    
+    def _handle_get_final_result(self, msg: Dict[str, Any], sender: Any) -> None:
+        """手动触发结果检查"""
+        self._check_completion()
+
+    # ----------------------------------------------------------------
+    # 核心逻辑：成功与失败(重试)
+    # ----------------------------------------------------------------
+
+    def _process_success(self, task_id: str, result: Any) -> None:
+        """统一的成功处理逻辑"""
+        if not task_id: 
             return
-        
+
+        # 移除 pending
         if task_id in self._pending_tasks:
             del self._pending_tasks[task_id]
-            
         if task_id in self._failed_tasks:
             del self._failed_tasks[task_id]
             
         self._completed_tasks[task_id] = result
-        logger.info(f"Received successful result for subtask {task_id}")
         
-        # 检查是否所有任务都已完成
+        # 检查是否全部完成
         self._check_completion()
-    
-    def _handle_subtask_error(self, msg: Dict[str, Any], sender: Any) -> None:
-        """处理子任务失败"""
-        task_id = msg.get("task_id")
-        error = msg.get("error", "Unknown error")
-        
+
+    def _process_failure(self, task_id: str, error: str, worker_sender: Any) -> None:
+        """统一的失败处理逻辑 (包含重试)"""
         if not task_id:
-            logger.warning("Error without task_id received")
             return
+
+        current_retry = self._retries.get(task_id, 0)
         
-        retry_count = self._retries.get(task_id, 0)
-        
-        if retry_count < self._max_retries:
-            # 重试任务
-            self._retries[task_id] = retry_count + 1
-            logger.info(f"Retrying task {task_id} (attempt {retry_count + 1}/{self._max_retries})")
+        if current_retry < self._max_retries:
+            # === 执行重试 ===
+            self._retries[task_id] = current_retry + 1
+            logger.warning(f"Task {task_id} failed. Retrying ({self._retries[task_id]}/{self._max_retries}). Error: {error}")
             
-            # 向子任务执行器发送重试请求
-            retry_msg = {
-                "type": "retry_subtask",
-                "task_id": task_id,
-                "trace_id": self._trace_id,
-                "retry_count": retry_count + 1
-            }
-            # 发送给任务执行器（假设sender是执行器）
-            self.send(sender, retry_msg)
+            task_info = self._pending_tasks.get(task_id)
+            if task_info:
+                # 获取原任务信息
+                agent_id = task_info.get("executor")
+                parameters = task_info.get("parameters")
+                
+                try:
+                    # 重新获取 Agent 并发送消息
+                    # 注意：如果 Agent 挂了，_get_or_create_actor_ref 会重新创建
+                    agent_ref = self._get_or_create_actor_ref(agent_id)
+                    
+                    retry_msg = TaskMessage(
+                        task_id=task_id,
+                        context=parameters
+                    )
+                    self.send(agent_ref, retry_msg)
+                except Exception as retry_e:
+                     self._mark_final_failure(task_id, f"Retry failed during delegation: {retry_e}")
+            else:
+                self._mark_final_failure(task_id, f"Retry failed: original task info lost. Error: {error}")
+
         else:
-            # 超过最大重试次数
-            logger.error(f"Task {task_id} failed after {self._max_retries} attempts: {error}")
-            self._failed_tasks[task_id] = error
-            
-            if task_id in self._pending_tasks:
-                del self._pending_tasks[task_id]
-            
-            # 检查是否所有任务都已完成
-            self._check_completion()
-    
-    def _handle_aggregator_result(self, msg: Dict[str, Any], sender: Any) -> None:
-        """处理子聚合器的结果（用于嵌套聚合）"""
-        aggregator_id = msg.get("aggregator_id")
-        result = msg.get("result", {})
-        
-        # 将子聚合器的结果视为一个普通子任务结果处理
-        self._handle_subtask_result({"task_id": aggregator_id, "result": result}, sender)
-    
-    def _handle_aggregator_error(self, msg: Dict[str, Any], sender: Any) -> None:
-        """处理子聚合器的错误（用于嵌套聚合）"""
-        aggregator_id = msg.get("aggregator_id")
-        error = msg.get("error", "Unknown error")
-        
-        # 将子聚合器的错误视为一个普通子任务错误处理
-        self._handle_subtask_error({"task_id": aggregator_id, "error": error}, sender)
-    
-    def _handle_get_final_result(self, msg: Dict[str, Any], sender: Any) -> None:
-        """处理获取最终结果的请求"""
-        logger.info(f"Received get_final_result request with trace_id: {msg.get('trace_id')}")
-        
-        # 检查是否有未完成的任务
-        if self._pending_tasks:
-            # 如果有未完成的任务，返回当前状态
-            logger.info(f"There are still pending tasks: {list(self._pending_tasks.keys())}")
-            self.send(sender, {
-                "type": "aggregation_in_progress",
-                "trace_id": self._trace_id,
-                "pending_tasks": list(self._pending_tasks.keys()),
-                "completed_tasks": len(self._completed_tasks),
-                "failed_tasks": len(self._failed_tasks),
-                "total_tasks": len(self._pending_tasks) + len(self._completed_tasks) + len(self._failed_tasks)
-            })
-        else:
-            # 如果所有任务都已完成，执行聚合并返回结果
-            logger.info(f"All tasks completed. Calculating final result")
-            aggregated_result = self._aggregate_results()
-            
-            self.send(sender, {
-                "type": "aggregation_complete",
-                "trace_id": self._trace_id,
-                "success": len(self._failed_tasks) == 0,
-                "aggregated_result": aggregated_result,
-                "completed_tasks": self._completed_tasks,
-                "failed_tasks": self._failed_tasks,
-                "total_tasks": len(self._completed_tasks) + len(self._failed_tasks),
-                "strategy": self._aggregation_strategy
-            })
-    
+            # === 超过重试次数 ===
+            self._mark_final_failure(task_id, f"Max retries reached. Last error: {error}")
+
+    def _mark_final_failure(self, task_id: str, error: str) -> None:
+        """标记最终失败"""
+        logger.error(f"Task {task_id} finally failed: {error}")
+        self._failed_tasks[task_id] = error
+        if task_id in self._pending_tasks:
+            del self._pending_tasks[task_id]
+        self._check_completion()
+
     def _check_completion(self) -> None:
-        """检查是否所有任务都已完成"""
-        if not self._pending_tasks and (self._completed_tasks or self._failed_tasks):
-            logger.info(f"All tasks completed. Completed: {len(self._completed_tasks)}, Failed: {len(self._failed_tasks)}")
-            
-            # 执行聚合
-            aggregated_result = self._aggregate_results()
-            
-            # 将结果返回给发起者
-            result_msg = {
-                "type": "aggregation_complete",
-                "trace_id": self._trace_id,
-                "success": len(self._failed_tasks) == 0,
-                "aggregated_result": aggregated_result,
-                "completed_tasks": self._completed_tasks,
-                "failed_tasks": self._failed_tasks,
-                "total_tasks": len(self._completed_tasks) + len(self._failed_tasks),
-                "strategy": self._aggregation_strategy
-            }
-            
-            self.send(self._creator, result_msg)
-            logger.info(f"Aggregation completed. Sending result to creator")
-    
-    def _aggregate_results(self) -> Dict[str, Any]:
-        """聚合所有结果"""
-        if not self._completed_tasks:
-            return {
-                "success": False,
-                "error": "No successful tasks",
-                "failed_tasks": len(self._failed_tasks),
-                "total_tasks": len(self._failed_tasks)
-            }
-        
-        # 获取所有成功结果
-        results = list(self._completed_tasks.values())
-        
-        # 使用ResultAggregator的聚合逻辑
-        if self._aggregation_strategy == "map_reduce":
-            if self._reduce_func:
-                return self._reduce_func(results)
+        """检查是否所有任务都结束了"""
+        if not self._pending_tasks:
+            # 构造标准的 TaskCompleted 消息给 TaskGroupAggregator
+            if len(self._completed_tasks) == 1:
+                first_key = next(iter(self._completed_tasks))
+                final_output = self._completed_tasks[first_key]
+                
+                self.send(self._creator, TaskCompleted(
+                    source=self.myAddress,
+                    destination=self._creator,
+                    task_id=self._trace_id, # 这里用 trace_id 对应 parent_task_id
+                    result=final_output,
+                    original_spec=None
+                ))
+            elif self._failed_tasks:
+                 first_key = next(iter(self._failed_tasks))
+                 self.send(self._creator, TaskFailed(
+                     source=self.myAddress,
+                     destination=self._creator,
+                     task_id=self._trace_id,
+                     error=self._failed_tasks[first_key]
+                 ))
             else:
-                return ResultAggregator._default_reduce(results)
-        elif self._aggregation_strategy == "sequential":
-            return self._aggregate_sequential(results)
-        elif self._aggregation_strategy == "vote":
-            return self._aggregate_vote(results)
-        else:
-            # 默认使用map_reduce
-            if self._reduce_func:
-                return self._reduce_func(results)
-            else:
-                return ResultAggregator._default_reduce(results)
-    
-    def _aggregate_sequential(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """顺序聚合结果（取最后一个结果）"""
-        if not results:
-            return {"success": False, "error": "No results to aggregate"}
-        
-        return results[-1]
-    
-    def _aggregate_vote(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """投票聚合结果（简单多数）"""
-        if not results:
-            return {"success": False, "error": "No results to aggregate"}
-        
-        # 简单实现：计算每个结果的出现次数
-        from collections import Counter
-        
-        # 假设结果包含一个"output"字段
-        outputs = [r.get("output", "unknown") for r in results]
-        counts = Counter(outputs)
-        
-        # 找出出现次数最多的结果
-        most_common = counts.most_common(1)
-        if most_common:
-            return {
-                "success": True,
-                "output": most_common[0][0],
-                "vote_counts": dict(counts),
-                "total_votes": len(results)
-            }
-        else:
-            return {"success": False, "error": "Vote aggregation failed"}
-    
+                # 多个结果（如果用了 batch），返回字典
+                self.send(self._creator, TaskCompleted(
+                    source=self.myAddress,
+                    destination=self._creator,
+                    task_id=self._trace_id,
+                    result=self._completed_tasks,
+                    original_spec=None
+                ))
+
+            self.send(self.myAddress, ActorExitRequest())
+
     def _send_error_to_creator(self, error: str) -> None:
-        """向发起者发送错误消息"""
         if self._creator:
-            error_msg = {
-                "type": "aggregation_error",
-                "trace_id": self._trace_id,
-                "error": error,
-                "completed_tasks": self._completed_tasks,
-                "failed_tasks": self._failed_tasks
-            }
-            self.send(self._creator, error_msg)
-    
-    def _should_retry(self, task_id: str) -> bool:
-        """检查是否应该重试任务"""
-        return task_id in self._retries and self._retries[task_id] < self._max_retries
+            self.send(self._creator, TaskFailed(source=self.myAddress, destination=self._creator, task_id=self._trace_id, error=error))
 
-
-# 为了向后兼容，导入常见的消息类型
+# 兼容旧类定义
 class SubtaskResultMessage:
-    """子任务成功结果消息"""
-    def __init__(self, task_id: str, result: Dict[str, Any]):
+    def __init__(self, task_id: str, result: Any):
         self.task_id = task_id
         self.result = result
 
 class SubtaskErrorMessage:
-    """子任务失败错误消息"""
     def __init__(self, task_id: str, error: str):
         self.task_id = task_id
         self.error = error

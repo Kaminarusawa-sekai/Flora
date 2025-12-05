@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 
 
-from .text_to_sql import ITextToSQL
+from .text_to_sql import ITextToSQLCapability
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ from config import VANNA_TYPE
 
 
 # 修改后的 VannaTextToSQL 类，支持多种数据库类型
-class VannaTextToSQL(ITextToSQL):
+class VannaTextToSQL(ITextToSQLCapability):
     """
     负责 Text-to-SQL 的核心逻辑，使用 Repository 模式解耦数据库访问
     """

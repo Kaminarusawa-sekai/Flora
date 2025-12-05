@@ -1,8 +1,7 @@
 """消息模块"""
-from .event_messages import EventMessage, EventType, EventBatch
-from .base_message import BaseMessage, SimpleMessage
+from .event_message import EventMessage, EventType, EventBatch
+from .base_message import BaseMessage, SimpleMessage, TaskMessage
 from .task_messages import (
-    TaskMessage,
     TaskCreatedMessage,
     TaskStartedMessage,
     TaskCompletedMessage,
@@ -10,6 +9,12 @@ from .task_messages import (
     TaskProgressMessage,
     TaskCancelledMessage,
     SubtaskSpawnedMessage
+)
+from .front_messages import (
+    UserRequestMessage,
+    InitConfigMessage,
+    TaskPausedMessage,
+    TaskResultMessage
 )
 from .optimization_messages import (
     OptimizationMessage,
@@ -23,17 +28,10 @@ from .optimization_messages import (
 from .agent_messages import (
     InitMessage,
     AgentTaskMessage,
-    SubtaskResultMessage,
-    SubtaskErrorMessage,
-    MemoryResponseMessage,
-    DifySchemaRequest,
-    DifySchemaResponse,
-    DifyExecuteRequest,
-    DifyExecuteResponse,
-    DataQueryRequest,
-    DataQueryResponse,
-    McpFallbackRequest,
-    InitDataQueryActor
+    ResumeTaskMessage,
+    TaskPausedMessage,
+    TaskResultMessage,
+    McpFallbackRequest
 )
 from .connector_messages import (
     ExecuteConnectorRequest,
@@ -63,6 +61,10 @@ __all__ = [
     "TaskProgressMessage",
     "TaskCancelledMessage",
     "SubtaskSpawnedMessage",
+    "UserRequestMessage",
+    "InitConfigMessage",
+    "TaskPausedMessage",
+    "TaskResultMessage",
     "OptimizationMessage",
     "OptimizationStartedMessage",
     "OptimizationCompletedMessage",
@@ -72,15 +74,7 @@ __all__ = [
     "OptimizationConvergedMessage",
     "InitMessage",
     "AgentTaskMessage",
-    "SubtaskResultMessage",
-    "SubtaskErrorMessage",
-    "MemoryResponseMessage",
-    "DifySchemaRequest",
-    "DifySchemaResponse",
-    "DifyExecuteRequest",
-    "DifyExecuteResponse",
-    "DataQueryRequest",
-    "DataQueryResponse",
+    "ResumeTaskMessage",
     "McpFallbackRequest",
     "ExecuteConnectorRequest",
     "PrepareConnectorRequest",
@@ -90,6 +84,5 @@ __all__ = [
     "ConnectorResult",
     "ConnectorError",
     "PrepareConnectorResponse",
-    "ConnectorStatusResponse",
-    "InitDataQueryActor"
+    "ConnectorStatusResponse"
 ]

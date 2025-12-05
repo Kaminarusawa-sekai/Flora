@@ -152,7 +152,8 @@ class NodeService:
                 "capability": node.get("capability", []),
                 "is_leaf": node.get("is_leaf", False),
                 "code": node.get("code", ""),
-                "config": node.get("config", {})
+                "config": node.get("config", {}),
+                "dify": node.get("dify", {})
             }
             return meta
         return None
@@ -326,7 +327,7 @@ class NodeService:
             while True:
                 time.sleep(60)  # 每隔60秒刷新一次缓存
                 self.refresh_cache()
-                self.logger.info("节点缓存已自动刷新")
+                # self.logger.info("节点缓存已自动刷新")
         
         # 使用守护线程运行，避免影响主程序退出
         thread = threading.Thread(target=refresh_cache, daemon=True)
@@ -338,7 +339,7 @@ class NodeService:
         """
         self.node_cache.clear()
         self.all_nodes_cache = None
-        self.logger.info("节点缓存已刷新")
+        # self.logger.info("节点缓存已刷新")
     
     def close(self):
         """

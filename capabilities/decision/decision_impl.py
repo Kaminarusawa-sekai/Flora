@@ -1,7 +1,7 @@
 from typing import Dict, Any
 from .interface import ITaskStrategyCapability, ITaskOperationCapability
 from ..llm.interface import ILLMCapability
-from ..registry import capability_registry
+
 
 
 class TaskStrategyCapability(ITaskStrategyCapability):
@@ -17,8 +17,10 @@ class TaskStrategyCapability(ITaskStrategyCapability):
         Args:
             config: 配置参数
         """
-        from ..llm.qwen_adapter import QwenAdapter
-        self.llm = QwenAdapter()
+        from ..llm.interface import ILLMCapability
+        from ..registry import capability_registry
+        self.llm = capability_registry.get_capability("llm", ILLMCapability)
+
         self.llm.initialize({})
     
     def shutdown(self) -> None:
@@ -86,8 +88,9 @@ class TaskOperationCapability(ITaskOperationCapability):
         Args:
             config: 配置参数
         """
-        from ..llm.qwen_adapter import QwenAdapter
-        self.llm = QwenAdapter()
+        from capabilities.llm.interface import ILLMCapability
+        from capabilities.registry import capability_registry
+        self.llm = capability_registry.get_capability("llm", ILLMCapability)
         self.llm.initialize({})
     
     def shutdown(self) -> None:

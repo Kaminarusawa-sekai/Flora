@@ -1,5 +1,6 @@
 ~$market_code.xlsx
 config.py
+config.json
 market_tree.csv
 test5.py
 # Python

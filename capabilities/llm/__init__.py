@@ -1,5 +1,5 @@
 """LLM适配模块"""
 
-from .qwen_adapter import QwenAdapter
+from .qwen_llm import QwenLLM
 
-__all__ = ['QwenAdapter']
+__all__ = ['QwenLLM']
