@@ -2,13 +2,15 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
-from thespian.actors import Actor, ActorAddress
-
+from thespian.actors import Actor, ActorAddress, ActorExitRequest,ChildActorExited
+import uuid
 from capability_actors.mcp_actor import MCPCapabilityActor
 from common.messages.agent_messages import (
-    InitMessage, AgentTaskMessage, ResumeTaskMessage, 
-    TaskPausedMessage, TaskResultMessage, McpFallbackRequest
+    AgentTaskMessage, ResumeTaskMessage, 
 )
+from common.messages.types import MessageType
+from common.messages.task_messages import TaskCompletedMessage
+from common.messages.interact_messages import TaskResultMessage, TaskPausedMessage as InteractTaskPausedMessage
 
 # 导入新的能力管理模块
 from capabilities import init_capabilities, get_capability, get_capability_registry
@@ -66,39 +68,53 @@ class AgentActor(Actor):
         # 添加当前聚合器和原始客户端地址
         self.current_aggregator = None
         self.original_client_addr = None
+        
+        self._task_path: Optional[str] = None
 
         self.memory_cap: Optional[IMemoryCapability] = None
         self.task_planner: Optional[ITaskPlanningCapability] = None
 
 
 
+
     def receiveMessage(self, message: Any, sender: ActorAddress):
+
+        if isinstance(message, ActorExitRequest):
+            # 可选：做清理工作
+            logger.info("Received ActorExitRequest, shutting down.")
+            return  # Thespian will destroy the actor automatically
+        elif isinstance(message, ChildActorExited):
+            # 可选：处理子 Actor 退出
+            logger.info(f"Child actor exited: {message.childAddress}, reason: {message.__dict__}")
+            return
         try:
-            if isinstance(message, dict) and "message_type" in message:
-                msg_type = message["message_type"]
-                handlers = {
-                    "init": self._handle_init,
-                    "agent_task": self._handle_task,
-                    "resume_task": self._handle_resume_task,
-                    "task_paused": self._handle_task_paused_from_execution,
-                    "task_result": self._handle_task_result,
-                }
-                handler = handlers.get(msg_type)
-                if handler:
-                    handler(message, sender)
-                else:
-                    self.log.warning(f"Unknown message type: {msg_type}")
-            elif isinstance(message, TaskPausedMessage):
-                self._handle_task_paused_from_execution(message.__dict__, sender)
-            elif isinstance(message, TaskResultMessage):
-                self._handle_task_result(message.__dict__, sender)
+            if isinstance(message, AgentTaskMessage):
+                # 检查是否需要初始化，如果未初始化则先执行初始化
+                if not self.agent_id:
+                    # 从AgentTaskMessage中提取agent_id进行初始化
+                    self._handle_init_from_task(message, sender)
+                self._handle_task(message, sender)
+            elif isinstance(message, ResumeTaskMessage):
+                self._handle_resume_task(message, sender)
+            elif hasattr(message, "message_type") and message.message_type in [MessageType.TASK_PAUSED, "task_paused"]:
+                self._handle_task_paused_from_execution(message, sender)
+            elif isinstance(message, TaskCompletedMessage):
+                self._handle_task_result(message, sender)
             else:
                 self.log.warning(f"Unknown message type: {type(message)}")
         except Exception as e:
             self.log.exception(f"Error in AgentActor {self.agent_id}: {e}")
 
-    def _handle_init(self, msg: Dict[str, Any], sender: ActorAddress):
-        self.agent_id = msg["agent_id"]
+    def _handle_init_from_task(self, msg: AgentTaskMessage, sender: ActorAddress):
+        # 从message或context中获取agent_id，这里假设agent_id可以从其他地方获取
+        # 或者我们可以从message的task_id中提取，或者使用默认值
+        # 这里使用一个简单的方式，假设agent_id是固定的或者从context中获取
+        self.agent_id = msg.context.get("agent_id", "default_agent")
+        if msg.task_path:
+            self._task_path: Optional[str] = msg.task_path  
+        else:
+            self._task_path = ""
+
         from agents.tree.tree_manager import TreeManager
         tree_manager = TreeManager()
         self.meta=tree_manager.get_agent_meta(self.agent_id)
@@ -110,19 +126,17 @@ class AgentActor(Actor):
             
             self.log = logging.getLogger(f"AgentActor_{self.agent_id}")
             self.log.info(f"AgentActor initialized for {self.agent_id}")
-            self.send(sender, {"status": "initialized", "agent_id": self.agent_id})
+            # 不需要发送初始化响应，因为任务处理会返回结果
         except Exception as e:
             self.log.error(f"Failed to initialize capabilities for agent {self.agent_id}: {e}")
-            self.send(sender, {"status": "init_failed", "agent_id": self.agent_id, "error": str(e)})
-            return
+            # 初始化失败时，后续任务处理会捕获异常
 
-    def _handle_task(self, task: Dict[str, Any], sender: ActorAddress):
+    def _handle_task(self, task: AgentTaskMessage, sender: ActorAddress):
         """
         主任务处理入口（后台）：专注于任务执行
 
         流程说明:
         0-是否是参数补完逻辑
-        ① 检查是否为叶子节点
         ② 任务操作分类
         ③ 根据操作类型分发
         ④ 节点选择
@@ -135,10 +149,10 @@ class AgentActor(Actor):
             return
 
         # 获取任务信息
-        user_input = str(task.get("content", "")) + str(task.get("description", ""))
-        user_id = task.get("user_id", "default_user")
-        parent_task_id = task.get("task_id")
-        reply_to = task.get("reply_to", sender)  # 前台要求回复的地址
+        user_input = str(task.content) + str(task.description or "")
+        user_id = task.user_id
+        parent_task_id = task.task_id
+        reply_to = task.reply_to or sender  # 前台要求回复的地址
 
         if not parent_task_id:
             self.log.error("Missing task_id in agent_task")
@@ -151,17 +165,11 @@ class AgentActor(Actor):
 
         # --- 流程 0: 参数补完检查 ---
         # 如果是参数补完消息，直接分发给对应的ExecutionActor
-        if task.get("is_parameter_completion", False):
+        if task.is_parameter_completion:
             self.log.info(f"[AgentActor] Detected parameter completion for task {parent_task_id}")
             # 直接调用恢复逻辑
-            parameters = task.get("parameters", {})
+            parameters = task.parameters
             self._resume_paused_task(parent_task_id, parameters, reply_to)
-            return
-
-        # --- 流程 ①: 叶子节点检查 ---
-        if self._is_leaf_node(self.agent_id):
-            self.log.info(f"[AgentActor] Agent {self.agent_id} is a leaf node, executing directly")
-            self._execute_leaf_logic(task, reply_to)
             return
 
         # --- 流程 ②: 任务操作分类 ---
@@ -170,7 +178,7 @@ class AgentActor(Actor):
         # --- 流程 ③: 根据操作类型分发 ---
         self._dispatch_operation(operation_result, task, reply_to)
 
-    def _dispatch_operation(self, operation_result: Dict[str, Any], task: Dict[str, Any], sender: ActorAddress):
+    def _dispatch_operation(self, operation_result: Dict[str, Any], task: AgentTaskMessage, sender: ActorAddress):
         """
         ③ 操作分发 - 根据操作类型执行不同的处理逻辑
 
@@ -181,23 +189,24 @@ class AgentActor(Actor):
         """
         operation_type = operation_result["operation_type"]
         category = operation_result["category"]
-        parent_task_id = task.get("task_id")
-        user_input = task.get("content", task.get("description", ""))
+        parent_task_id = task.task_id
+        user_input = str(task.content) + str(task.description or "")
 
         self.log.info(f"[AgentActor] Dispatching operation: {operation_type.value}, category: {category.value}")
+
 
         if category == TaskOperationCategory.CREATION:
             # 创建类 → 继续任务执行流程
             if operation_type == TaskOperationType.NEW_TASK:
-                self._handle_task_creation(task, sender)
+                self._handle_task_creation(task.__dict__, sender)
             if operation_type == TaskOperationType.NEW_DELAYED_TASK:
-                self._handle_delayed_task_creation(task, sender)
+                self._handle_delayed_task_creation(task.__dict__, sender)
             if operation_type == TaskOperationType.NEW_SCHEDULED_TASK:
-                self._handle_scheduled_task_creation(task, sender)
+                self._handle_scheduled_task_creation(task.__dict__, sender)
 
         elif category == TaskOperationCategory.EXECUTION:
             # 执行控制类 → 执行对应操作
-            self._handle_execution_control(operation_type, operation_result, task, sender)
+            self._handle_execution_control(operation_type, operation_result, task.__dict__, sender)
 
         elif category == TaskOperationCategory.LOOP_MANAGEMENT:
             # 循环管理类 → 转发到LoopScheduler
@@ -205,19 +214,21 @@ class AgentActor(Actor):
 
         elif category == TaskOperationCategory.MODIFICATION:
             # 修改类 → 执行修改操作
-            self._handle_task_modification(operation_type, operation_result, task, sender)
+            self._handle_task_modification(operation_type, operation_result, task.__dict__, sender)
 
         elif category == TaskOperationCategory.QUERY:
             # 查询类 → 查询并返回
-            self._handle_task_query(operation_type, operation_result, task, sender)
+            self._handle_task_query(operation_type, operation_result, task.__dict__, sender)
 
         else:
             # 未知类型
-            self.send(sender, {
-                "message_type": "task_error",
-                "task_id": parent_task_id,
-                "error": f"不支持的操作类型: {operation_type.value}"
-            })
+            task_result = TaskResultMessage(
+                task_id=parent_task_id,
+                result=None,
+                error=f"不支持的操作类型: {operation_type.value}",
+                message=None
+            )
+            self.send(sender, task_result)
 
     def _handle_task_creation(self, task: Dict[str, Any], sender: ActorAddress):
         """
@@ -285,11 +296,13 @@ class AgentActor(Actor):
         elif operation_type == TaskOperationType.PAUSE_TASK:
             # 暂停任务 - 这里需要实现任务暂停逻辑
             self.log.info(f"Pausing task {task_id}")
-            self.send(sender, {
-                "message_type": "task_paused",
-                "task_id": task_id,
-                "status": "paused"
-            })
+            from common.messages.interact_messages import TaskPausedMessage
+            pause_msg = TaskPausedMessage(
+                task_id=task_id,
+                missing_params=[],
+                question="任务已暂停"
+            )
+            self.send(sender, pause_msg)
 
         elif operation_type == TaskOperationType.RESUME_TASK:
             # 恢复任务
@@ -304,11 +317,13 @@ class AgentActor(Actor):
             self._handle_re_run_task(task, sender)
 
         else:
-            self.send(sender, {
-                "message_type": "task_error",
-                "task_id": task_id,
-                "error": f"Unsupported execution control operation: {operation_type.value}"
-            })
+            task_result = TaskResultMessage(
+                task_id=task_id,
+                result=None,
+                error=f"Unsupported execution control operation: {operation_type.value}",
+                message=None
+            )
+            self.send(sender, task_result)
 
     def _handle_task_modification(self, operation_type, operation_result: Dict[str, Any],
                                   task: Dict[str, Any], sender: ActorAddress):
@@ -324,11 +339,13 @@ class AgentActor(Actor):
             self._handle_revise_result(task, revision, sender)
 
         else:
-            self.send(sender, {
-                "message_type": "task_error",
-                "task_id": task_id,
-                "error": f"Unsupported modification operation: {operation_type.value}"
-            })
+            task_result = TaskResultMessage(
+                task_id=task_id,
+                result=None,
+                error=f"Unsupported modification operation: {operation_type.value}",
+                message=None
+            )
+            self.send(sender, task_result)
 
     def _handle_task_query(self, operation_type, operation_result: Dict[str, Any],
                           task: Dict[str, Any], sender: ActorAddress):
@@ -338,11 +355,16 @@ class AgentActor(Actor):
         
 
         # TODO: 实现查询逻辑
-        self.send(sender, {
-            "message_type": "query_result",
-            "task_id": task_id,
-            "result": f"Query operation {operation_type.value} not fully implemented yet"
-        })
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={
+                "message_type": "query_result",
+                "result": f"Query operation {operation_type.value} not fully implemented yet"
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
     
     def _handle_new_task(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str, parent_task_id: str):
@@ -353,18 +375,32 @@ class AgentActor(Actor):
     def _handle_query_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str):
         """处理查询相关操作"""
         # 这里实现查询相关的逻辑
-        self.send(sender, {
-            "status": "query_result",
-            "message": f"查询结果：{current_desc}"
-        })
+        task_id = task.get("task_id", "")
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={
+                "status": "query_result",
+                "message": f"查询结果：{current_desc}"
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
     
     def _handle_chat_operation(self, task: Dict[str, Any], sender: ActorAddress, current_desc: str):
         """处理闲聊相关操作"""
         # 这里实现闲聊相关的逻辑
-        self.send(sender, {
-            "status": "chat_response",
-            "message": f"闲聊回复：{current_desc}"
-        })
+        task_id = task.get("task_id", "")
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={
+                "status": "chat_response",
+                "message": f"闲聊回复：{current_desc}"
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
     
     def _classify_task_operation(self, user_input: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -436,11 +472,13 @@ class AgentActor(Actor):
         if not exec_actor:
             self.log.error(f"Cannot find ExecutionActor for task {task_id}, task cannot be resumed")
             # 通知前台恢复失败
-            self.send(sender, {
-                "message_type": "task_error",
-                "task_id": task_id,
-                "error": "Cannot find the ExecutionActor for this task"
-            })
+            task_result = TaskResultMessage(
+                task_id=task_id,
+                result=None,
+                error="Cannot find the ExecutionActor for this task",
+                message=None
+            )
+            self.send(sender, task_result)
             return
 
         # 构建恢复消息，发送到原来的ExecutionActor
@@ -457,7 +495,7 @@ class AgentActor(Actor):
         # 记录sender以便接收结果（更新，因为可能是新的前台请求）
         self.task_id_to_sender[task_id] = sender
 
-    def _handle_resume_task(self, message: Dict[str, Any], sender: ActorAddress):
+    def _handle_resume_task(self, message: ResumeTaskMessage, sender: ActorAddress):
         """
         处理来自前台的resume_task消息
 
@@ -465,10 +503,10 @@ class AgentActor(Actor):
             message: 包含task_id, parameters, user_id, reply_to
             sender: 发送者
         """
-        task_id = message.get("task_id")
-        parameters = message.get("parameters", {})
-        user_id = message.get("user_id", "default_user")
-        reply_to = message.get("reply_to", sender)
+        task_id = message.task_id
+        parameters = message.parameters
+        user_id = message.user_id
+        reply_to = message.reply_to or sender
 
         self.log.info(f"Received resume task request for {task_id} from InteractionActor")
 
@@ -478,42 +516,55 @@ class AgentActor(Actor):
         # 调用恢复逻辑
         self._resume_paused_task(task_id, parameters, reply_to)
 
-    def _handle_task_paused_from_execution(self, message: Dict[str, Any], sender: ActorAddress):
+    def _handle_task_paused_from_execution(self, message: Any, sender: ActorAddress):
         """
-        处理来自ExecutionActor的task_paused消息，转发给前台InteractionActor
+        处理来自ExecutionActor的task_paused消息，现在改为处理NEED_INPUT状态并使用TaskCompletedMessage向上报告
 
         Args:
             message: 包含task_id, missing_params, question, execution_actor_address
             sender: ExecutionActor的地址
         """
-        task_id = message.get("task_id")
-        missing_params = message.get("missing_params", [])
-        question = message.get("question", "")
-        execution_actor_address = message.get("execution_actor_address")
+        task_id = message.task_id
+        missing_params = getattr(message, "missing_params", [])
+        question = getattr(message, "question", "")
+        execution_actor_address = getattr(message, "execution_actor_address", None)
 
-        self.log.info(f"Task {task_id} paused by ExecutionActor, forwarding to InteractionActor")
+        self.log.info(f"Task {task_id} needs input by ExecutionActor, forwarding with TaskCompletedMessage")
 
         # 重要：保存ExecutionActor地址到映射，以便恢复时能找到
         if execution_actor_address:
             self.task_id_to_execution_actor[task_id] = execution_actor_address
             self.log.info(f"Saved ExecutionActor address for task {task_id}")
         else:
-            self.log.warning(f"No execution_actor_address in pause message for task {task_id}")
+            self.log.warning(f"No execution_actor_address in need_input message for task {task_id}")
 
-        # 找到对应的前台地址
-        reply_to = self.task_id_to_sender.get(task_id)
-
-        if reply_to:
-            # 转发暂停消息给前台（不需要包含execution_actor_address）
-            frontend_message = {
-                "message_type": "task_paused",
-                "task_id": task_id,
+        # 构建TaskCompletedMessage
+        task_result = TaskCompletedMessage(
+            task_id=task_id,
+            status="NEED_INPUT",
+            result={
                 "missing_params": missing_params,
                 "question": question
-            }
-            self.send(reply_to, frontend_message)
+            },
+            agent_id=self.agent_id
+        )
+
+        # 如果有聚合器，通知聚合器
+        if self.current_aggregator:
+            self.send(self.current_aggregator, task_result)
         else:
-            self.log.warning(f"No reply_to address found for task {task_id}, cannot forward pause message")
+            # 否则，直接返回给前台InteractionActor
+            original_sender = self.task_id_to_sender.get(task_id, sender)
+            if original_sender:
+                # 构建前台交互消息，使用InteractTaskPausedMessage
+                frontend_paused_msg = InteractTaskPausedMessage(
+                    task_id=task_id,
+                    missing_params=missing_params,
+                    question=question
+                )
+                self.send(original_sender, frontend_paused_msg)
+            else:
+                self.log.warning(f"No reply_to address found for task {task_id}, cannot forward need_input message")
 
     def _handle_loop_task_setup(self, task: Dict[str, Any], sender: ActorAddress):
         """处理循环任务设置"""
@@ -528,21 +579,6 @@ class AgentActor(Actor):
         ## TODO: 待实现
         return True
     
-    def _is_leaf_node(self, agent_id: str) -> bool:
-        """
-        判断当前Agent是否为叶子节点
-        通过TreeManager查询是否有子节点
-
-        Args:
-            agent_id: Agent节点ID
-
-        Returns:
-            bool: 是否为叶子节点
-        """
-        from agents.tree.tree_manager import TreeManager
-        tree_manager = TreeManager()
-        children = tree_manager.get_children(agent_id)
-        return len(children) == 0
 
 
 
@@ -577,7 +613,7 @@ class AgentActor(Actor):
         tasks: List[Dict[str, Any]], 
         parent_task_id: str
     ) :
-        from common.messages.task_messages import TaskSpec, TaskGroupRequest
+        from common.messages.task_messages import TaskSpec, TaskGroupRequestMessage
 
         task_specs = []
         for task in tasks:
@@ -587,7 +623,7 @@ class AgentActor(Actor):
                 "type": task.get("type", "unknown"),
                 "executor": task.get("executor", "unknown"),
                 "description": task.get("description", ""),  # ← 关键修复
-                "params": task.get("params", {}),
+                "params": str(task.get("params", "")),
                 "is_parallel": bool(task.get("is_parallel", False)),
                 "strategy_reasoning": task.get("strategy_reasoning", ""),
                 "is_dependency_expanded": bool(task.get("is_dependency_expanded", False)),
@@ -604,7 +640,11 @@ class AgentActor(Actor):
             task_spec = TaskSpec(**task_clean)
             task_specs.append(task_spec)
 
-        request = TaskGroupRequest(
+
+        request = TaskGroupRequestMessage(
+            task_id=str(uuid.uuid4()),           # ← 唯一任务 ID
+            trace_id=str(uuid.uuid4()),          # ← 链路追踪 ID（可与 task_id 相同或不同）
+            task_path=self._task_path+self.agent_id,      # ← 任务路径，按你系统逻辑填写
             source=getattr(self, "myAddress", "unknown_address"),
             destination="TaskGroupAggregator",
             parent_task_id=parent_task_id,
@@ -624,7 +664,7 @@ class AgentActor(Actor):
             sender: 原始发送者（用于回复）
         """
         from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
-        from common.messages.task_messages import TaskGroupRequest
+
 
         # 创建TaskGroupAggregatorActor
         aggregator = self.createActor(TaskGroupAggregatorActor)
@@ -645,45 +685,6 @@ class AgentActor(Actor):
 
     
     
-    def _execute_leaf_logic(self, task: Dict[str, Any], sender: ActorAddress):
-        """处理叶子节点执行逻辑"""
-        # --- 流程 ⑩：准备单任务执行 ---
-        # 不需要 TaskExecutionService，直接找 ExecutionActor
-        
-        # 获取 ExecutionActor (通常是单例或池化)
-        from capability_actors.execution_actor import ExecutionActor
-        exec_actor = self.createActor(ExecutionActor)
-        
-        # 构建执行请求
-        exec_request = {
-            "type": "execute",
-            "task_id": task.get("task_id"),
-
-            "capability": "dify", ##TODO：动态传入类型
-            
-            "params": {"api_key":self.meta["dify"],
-                       "inputs":task.get("inpus", {}),
-                       "agent_id":self.agent_id,
-                       "user_id": self.current_user_id,
-                       "content": task.get("description","")+ task.get("content", "")+ task.get("context", ""),
-                       },
-                        # 此时参数可能还不完整
-            
-            "sender": self.myAddress # 记录谁发起的
-        }
-        
-        # 发布任务开始事件
-        from events.event_bus import event_bus
-        from events.event_types import EventType
-        event_bus.publish_task_event(
-            task_id=task.get("task_id"),
-            event_type=EventType.TASK_CREATED.value,
-            source="AgentActor",
-            agent_id=self.agent_id,
-            data={"node_id": self.agent_id, "type": "leaf_execution"}
-        )
-        
-        self.send(exec_actor, exec_request)
 
     # ======================
     # 子任务结果处理（保持聚合逻辑不变）
@@ -697,7 +698,13 @@ class AgentActor(Actor):
         """
         parent_task_id = task.get("task_id")
         if not parent_task_id:
-            self.send(sender, {"error": "缺少任务ID", "task": task})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="缺少任务ID",
+                message=None
+            )
+            self.send(sender, task_result)
             return
             
         current_desc = task.get("description") or task.get("content", "")
@@ -740,12 +747,17 @@ class AgentActor(Actor):
             self.log.warning(f"Failed to save loop task: {e}")
 
         # 回复用户：已注册循环任务
-        self.send(sender, {
-            "status": "loop_registered",
-            "task_id": parent_task_id,
-            "interval_sec": loop_interval,
-            "reasoning": "循环任务已成功注册"
-        })
+        task_result = TaskResultMessage(
+            task_id=parent_task_id,
+            result={
+                "status": "loop_registered",
+                "interval_sec": loop_interval,
+                "reasoning": "循环任务已成功注册"
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
         return
     
     def _estimate_loop_interval(self, task_desc: str) -> int:
@@ -768,7 +780,13 @@ class AgentActor(Actor):
         ref = intent["task_reference"]
         task_id = self._resolve_task_id_by_reference(ref)
         if not task_id:
-            self.send(sender, {"error": "未找到相关循环任务", "reference": ref})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关循环任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
 
         # 向 LoopScheduler 发送“立即执行”消息（自定义类型）
@@ -777,13 +795,25 @@ class AgentActor(Actor):
             "type": "trigger_task_now",
             "task_id": task_id
         })
-        self.send(sender, {"status": "triggered", "task_id": task_id})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={"status": "triggered"},
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
     def _handle_cancel_existing(self, intent: Dict[str, Any], sender: ActorAddress):
         ref = intent["task_reference"]
         task_id = self._resolve_task_id_by_reference(ref)
         if not task_id:
-            self.send(sender, {"error": "未找到相关循环任务"})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关循环任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
 
         loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
@@ -791,7 +821,13 @@ class AgentActor(Actor):
             "type": "cancel_loop_task",
             "task_id": task_id
         })
-        self.send(sender, {"status": "cancelled", "task_id": task_id})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={"status": "cancelled"},
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
     def _handle_modify_existing(self, intent: Dict[str, Any], sender: ActorAddress):
         ref = intent["task_reference"]
@@ -802,7 +838,13 @@ class AgentActor(Actor):
 
         task_id = self._resolve_task_id_by_reference(ref)
         if not task_id:
-            self.send(sender, {"error": "未找到相关循环任务"})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关循环任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
 
         loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
@@ -811,7 +853,16 @@ class AgentActor(Actor):
             "task_id": task_id,
             "interval_sec": int(new_interval)
         })
-        self.send(sender, {"status": "updated", "task_id": task_id, "new_interval_sec": new_interval})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={
+                "status": "updated",
+                "new_interval_sec": new_interval
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
 
 
@@ -820,58 +871,118 @@ class AgentActor(Actor):
         if task_id:
             self._send_to_scheduler({"type": "pause_loop_task", "task_id": task_id}, sender)
         else:
-            self.send(sender, {"error": "任务未找到"})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="任务未找到",
+                message=None
+            )
+            self.send(sender, task_result)
 
     def _handle_resume_existing(self, intent: Dict[str, Any], sender: ActorAddress):
         task_id = self._resolve_task_id_by_reference(intent["task_reference"])
         if task_id:
             self._send_to_scheduler({"type": "resume_loop_task", "task_id": task_id}, sender)
         else:
-            self.send(sender, {"error": "任务未找到"})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="任务未找到",
+                message=None
+            )
+            self.send(sender, task_result)
 
     def _handle_add_comment(self, task: dict, comment: str, sender: ActorAddress):
         task_id = task.get("task_id") or task.get("target_task_id")
         if not task_id:
-            self.send(sender, {"error": "缺少任务ID", "task": task})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="缺少任务ID",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         # 使用task_registry添加评论
         target_task = self.task_registry.get_task(task_id)
         if not target_task:
-            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         # 添加评论
         target_task.comments.append({"content": comment, "created_at": datetime.now().isoformat()})
         self.task_registry.update_task(task_id, {"comments": target_task.comments})
-        self.send(sender, {"status": "comment_added", "task_id": task_id})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={"status": "comment_added"},
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
     def _handle_revise_result(self, task: dict, new_content: str, sender: ActorAddress):
         task_id = task.get("task_id") or task.get("target_task_id")
         if not task_id:
-            self.send(sender, {"error": "缺少任务ID", "task": task})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="缺少任务ID",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         # 使用task_registry修改结果
         target_task = self.task_registry.get_task(task_id)
         if not target_task:
-            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         # 简单策略：全量替换；高级策略：结构化 patch
         self.task_registry.update_task(task_id, {"corrected_result": new_content})
-        self.send(sender, {"status": "result_revised", "task_id": task_id})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={"status": "result_revised"},
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
     def _handle_re_run_task(self, task: dict, sender: ActorAddress):
         # 重新提交原任务描述
         task_id = task.get("task_id") or task.get("target_task_id")
         if not task_id:
-            self.send(sender, {"error": "缺少任务ID", "task": task})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="缺少任务ID",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         target_task = self.task_registry.get_task(task_id)
         if not target_task:
-            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         new_task_msg = {
@@ -887,12 +998,24 @@ class AgentActor(Actor):
     def _handle_cancel_any_task(self, task: dict, sender: ActorAddress):
         task_id = task.get("task_id") or task.get("target_task_id")
         if not task_id:
-            self.send(sender, {"error": "缺少任务ID", "task": task})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="缺少任务ID",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         target_task = self.task_registry.get_task(task_id)
         if not target_task:
-            self.send(sender, {"error": "未找到相关任务", "task_id": task_id})
+            task_result = TaskResultMessage(
+                task_id="",
+                result=None,
+                error="未找到相关任务",
+                message=None
+            )
+            self.send(sender, task_result)
             return
         
         if target_task.type == TaskType.LOOP:
@@ -900,7 +1023,13 @@ class AgentActor(Actor):
         else:
             # 普通任务：标记为 cancelled（若还在运行，可发取消信号）
             self.task_registry.update_task(task_id, {"status": "cancelled"})
-            self.send(sender, {"status": "task_cancelled", "task_id": task_id})
+            task_result = TaskResultMessage(
+                task_id=task_id,
+                result={"status": "task_cancelled"},
+                error=None,
+                message=None
+            )
+            self.send(sender, task_result)
     
     def _forward_to_loop_scheduler(self, intent: Dict[str, Any], task_id: str, sender: ActorAddress):
         """转发给循环调度器"""
@@ -918,7 +1047,16 @@ class AgentActor(Actor):
             forward_msg["interval_sec"] = intent.get("new_interval_sec", 3600)
         
         self.send(loop_scheduler, forward_msg)
-        self.send(sender, {"status": "command_sent", "task_id": task_id, "command": forward_msg["type"]})
+        task_result = TaskResultMessage(
+            task_id=task_id,
+            result={
+                "status": "command_sent",
+                "command": forward_msg["type"]
+            },
+            error=None,
+            message=None
+        )
+        self.send(sender, task_result)
 
 
 
@@ -928,16 +1066,25 @@ class AgentActor(Actor):
         scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
         self.send(scheduler, msg)
         # 可选：等待响应或直接回复
-        self.send(reply_to, {"status": "command_sent", **msg})
+        task_result = TaskResultMessage(
+            task_id=msg.get("task_id", ""),
+            result={
+                "status": "command_sent",
+                "command": msg.get("type", "")
+            },
+            error=None,
+            message=None
+        )
+        self.send(reply_to, task_result)
 
-    def _handle_task_result(self, result_msg: Dict[str, Any], sender: ActorAddress):
-        """统一处理任务结果（成功、失败、错误）"""
-        task_id = result_msg.get("task_id")
-        result_data = result_msg.get("result", {})
-        status = result_msg.get("status", "SUCCESS") or result_data.get("status", "SUCCESS")
+    def _handle_task_result(self, result_msg: TaskCompletedMessage, sender: ActorAddress):
+        """统一处理任务结果（成功、失败、错误、需要输入），使用TaskCompletedMessage向上报告"""
+        task_id = result_msg.task_id
+        result_data = result_msg.result
+        status = result_msg.status
 
         # 1. 发送优化反馈
-        self._send_optimization_feedback(task_id, result_msg, success=status == "SUCCESS")
+        # self._send_optimization_feedback(task_id, result_msg, success=status == "SUCCESS")
 
         if self.current_aggregator:
             # 2. 如果有聚合器，通知聚合器
@@ -946,12 +1093,21 @@ class AgentActor(Actor):
             # 3. 如果是根任务，直接返回给前台InteractionActor
             original_sender = self.task_id_to_sender.get(task_id, sender)
 
-            # 构建统一的任务结果消息
+            # 构建前台交互消息，使用TaskResultMessage
+            error_str = None
+            if isinstance(result_data, dict) and "error" in result_data:
+                error_str = str(result_data["error"])
+            elif hasattr(result_msg, "error") and result_msg.error:
+                error_str = str(result_msg.error)
+            
+            # 构建TaskResultMessage
             task_result = TaskResultMessage(
                 task_id=task_id,
+                trace_id=result_msg.trace_id,
+                task_path=result_msg.task_path,
                 result=result_data,
-                status=status,
-                error=result_msg.get("error") or result_data.get("error")
+                error=error_str,
+                message=None
             )
 
             self.send(original_sender, task_result)
@@ -972,7 +1128,7 @@ class AgentActor(Actor):
             self.task_id_to_sender.pop(task_id, None)
             self.task_id_to_execution_actor.pop(task_id, None)
 
-    def _send_optimization_feedback(self, task_id: str, result_msg: Dict[str, Any], success: bool):
+    def _send_optimization_feedback(self, task_id: str, result_msg: Any, success: bool):
         """
         发送优化反馈给OptimizerActor
 
@@ -987,16 +1143,22 @@ class AgentActor(Actor):
             import time
             from datetime import datetime
 
-            result_data = result_msg.get("result", {})
+            # 处理不同类型的result_msg
+            if hasattr(result_msg, "result"):
+                result_data = result_msg.result
+                parameters = getattr(result_msg, "parameters", {})
+            else:
+                result_data = result_msg.get("result", {})
+                parameters = result_msg.get("parameters", {})
 
             execution_record = {
                 "execution_time": datetime.now().isoformat(),
-                "parameters": result_msg.get("parameters", {}),
+                "parameters": parameters,
                 "result": result_data,
                 "success": success,
-                "duration": result_data.get("duration", 0.0),
+                "duration": result_data.get("duration", 0.0) if isinstance(result_data, dict) else 0.0,
                 "score": self._calculate_execution_score(result_data, success),
-                "error": result_data.get("error") if not success else None
+                "error": result_data.get("error") if isinstance(result_data, dict) and not success else None
             }
 
             # 发送给OptimizerActor
@@ -1016,7 +1178,7 @@ class AgentActor(Actor):
             # 优化反馈失败不应该影响主流程
             self.log.warning(f"Failed to send optimization feedback for task {task_id}: {e}")
 
-    def _calculate_execution_score(self, result_data: Dict[str, Any], success: bool) -> float:
+    def _calculate_execution_score(self, result_data: Any, success: bool) -> float:
         """
         计算执行分数
         
@@ -1036,14 +1198,20 @@ class AgentActor(Actor):
         base_score = 0.7
 
         # 根据执行时间调整
-        duration = result_data.get("duration", 0.0)
+        duration = 0.0
+        if isinstance(result_data, dict):
+            duration = result_data.get("duration", 0.0)
+        
         if duration < 1.0:
             base_score += 0.2
         elif duration > 10.0:
             base_score -= 0.2
 
         # 根据结果质量调整（如果有）
-        quality_score = result_data.get("quality_score")
+        quality_score = None
+        if isinstance(result_data, dict):
+            quality_score = result_data.get("quality_score")
+        
         if quality_score is not None:
             base_score = (base_score + quality_score) / 2
 
@@ -1195,10 +1363,10 @@ class AgentActor(Actor):
         self.log.info(f"[{event_type}] {task_id}: {details}")
 
     def _report_error(self, task_id: str, error: str, sender: ActorAddress):
-        self.send(sender, TaskResultMessage(
+        self.send(sender, TaskCompletedMessage(
             task_id=task_id,
-            result={},
+            result={"error": {"message": error}},
             status="ERROR",
-            error={"message": error}
+            agent_id=self.agent_id
         ))
 

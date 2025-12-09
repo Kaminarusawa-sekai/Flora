@@ -2,9 +2,10 @@
 from typing import Dict, Any, List, Optional
 from thespian.actors import Actor, ActorExitRequest
 from common.messages.task_messages import (
-    RepeatTaskRequest, TaskSpec, ExecuteTaskMessage,
-    TaskCompleted, TaskFailed
+    ParallelTaskRequestMessage, TaskSpec, ExecuteTaskMessage,
+    TaskCompletedMessage
 )
+from common.messages.types import MessageType
 import logging
 from collections import Counter
 
@@ -50,27 +51,31 @@ class ParallelTaskAggregatorActor(Actor):
     def receiveMessage(self, msg: Any, sender: Any) -> None:
         """处理接收到的消息"""
         try:
-            if isinstance(msg, RepeatTaskRequest):
+            if isinstance(msg, ParallelTaskRequestMessage):
                 self._handle_repeat_task_request(msg, sender)
-            elif isinstance(msg, TaskCompleted):
-                self._handle_task_completed(msg, sender)
-            elif isinstance(msg, TaskFailed):
-                self._handle_task_failed(msg, sender)
+            elif isinstance(msg, TaskCompletedMessage):
+                if msg.status in ["SUCCESS"]:
+                    self._handle_task_completed(msg, sender)
+                elif msg.status in ["FAILED", "ERROR", "CANCELLED"]:
+                    self._handle_task_failed(msg, sender)
         except Exception as e:
             logger.error(f"ParallelTaskAggregatorActor error: {e}")
             # 发生错误时向发起者发送失败消息
             if self.reply_to and self.spec:
-                self.send(self.reply_to, TaskFailed(
-                    source=self.myAddress,
-                    destination=self.reply_to,
+                self.send(self.reply_to, TaskCompletedMessage(
+                    message_type=MessageType.TASK_COMPLETED,
+                    source=str(self.myAddress),
+                    destination=str(self.reply_to),
                     task_id=self.spec.task_id,
-                    error=str(e),
-                    details="ParallelTaskAggregatorActor system error",
-                    original_spec=self.spec
+                    trace_id=self.spec.task_id,
+                    task_path="/",
+                    result=None,
+                    status="FAILED",
+                    agent_id=None
                 ))
                 self.send(self.myAddress, ActorExitRequest())
     
-    def _handle_repeat_task_request(self, msg: RepeatTaskRequest, sender: Any) -> None:
+    def _handle_repeat_task_request(self, msg: ParallelTaskRequestMessage, sender: Any) -> None:
         """
         处理重复任务请求
 
@@ -78,7 +83,7 @@ class ParallelTaskAggregatorActor(Actor):
         1. 简单重复执行：直接执行N次
         2. 优化模式：使用Optuna+LLM优化参数
         """
-        logger.info(f"Received RepeatTaskRequest: {msg.spec.task_id} (repeat_count: {msg.spec.repeat_count})")
+        logger.info(f"Received ParallelTaskRequestMessage: {msg.spec.task_id} (repeat_count: {msg.spec.repeat_count})")
 
         self.spec = msg.spec
         self.reply_to = sender  # 使用实际的sender地址
@@ -233,9 +238,9 @@ class ParallelTaskAggregatorActor(Actor):
             logger.error(f"Failed to start optimization round: {e}")
             self._finalize_optimization()
     
-    def _handle_task_completed(self, msg: TaskCompleted, sender: Any) -> None:
+    def _handle_task_completed(self, msg: TaskCompletedMessage, sender: Any) -> None:
         """处理任务完成消息"""
-        logger.info(f"Received TaskCompleted: {msg.task_id}")
+        logger.info(f"Received TaskCompletedMessage: {msg.task_id}")
         
         # 移除已完成的任务
         if sender in self.pending_tasks:
@@ -245,15 +250,16 @@ class ParallelTaskAggregatorActor(Actor):
         self.completed_runs += 1
         self._check_done()
     
-    def _handle_task_failed(self, msg: TaskFailed, sender: Any) -> None:
+    def _handle_task_failed(self, msg: TaskCompletedMessage, sender: Any) -> None:
         """处理任务失败消息"""
-        logger.error(f"Received TaskFailed: {msg.task_id}, Error: {msg.error}")
+        error = msg.error if hasattr(msg, 'error') and msg.error else "Unknown error"
+        logger.error(f"Received TaskCompletedMessage (failed): {msg.task_id}, Error: {error}")
         
         # 移除已完成的任务
         if sender in self.pending_tasks:
             del self.pending_tasks[sender]
         
-        self.failures.append(msg.error)
+        self.failures.append(error)
         self.completed_runs += 1
         self._check_done()
     
@@ -290,16 +296,18 @@ class ParallelTaskAggregatorActor(Actor):
                     }
                 )
                 # 有失败，返回失败消息
-                result_msg = {
-                    "type": "parallel_task_result",
-                    "task_id": self.spec.task_id,
-                    "success": False,
-                    "aggregated_result": final_result,
-                    "error": f"{len(self.failures)} out of {total} runs failed",
-                    "failures": self.failures,
-                    "total_runs": total,
-                    "successful_runs": len(self.results)
-                }
+                error = f"{len(self.failures)} out of {total} runs failed"
+                result_msg = TaskCompletedMessage(
+                    message_type=MessageType.TASK_COMPLETED,
+                    source=str(self.myAddress),
+                    destination=str(self.reply_to),
+                    task_id=self.spec.task_id,
+                    trace_id=self.spec.task_id,
+                    task_path="/",
+                    result=final_result,
+                    status="FAILED",
+                    agent_id=None
+                )
             else:
                 event_bus.publish_task_event(
                     task_id=self.spec.task_id,
@@ -315,14 +323,17 @@ class ParallelTaskAggregatorActor(Actor):
                     }
                 )
                 # 所有任务成功
-                result_msg = {
-                    "type": "parallel_task_result",
-                    "task_id": self.spec.task_id,
-                    "success": True,
-                    "aggregated_result": final_result,
-                    "total_runs": total,
-                    "successful_runs": len(self.results)
-                }
+                result_msg = TaskCompletedMessage(
+                    message_type=MessageType.TASK_COMPLETED,
+                    source=str(self.myAddress),
+                    destination=str(self.reply_to),
+                    task_id=self.spec.task_id,
+                    trace_id=self.spec.task_id,
+                    task_path="/",
+                    result=final_result,
+                    status="SUCCESS",
+                    agent_id=None
+                )
 
             self.send(self.reply_to, result_msg)
             self.send(self.myAddress, ActorExitRequest())
@@ -416,10 +427,7 @@ class ParallelTaskAggregatorActor(Actor):
             optimization_history = self.orchestrator.optimizer.get_optimization_history() if self.orchestrator else []
 
             # 构建最终结果
-            final_result = {
-                "type": "optimization_result",
-                "task_id": self.spec.task_id,
-                "success": True,
+            optimization_result = {
                 "best_parameters": best_params,
                 "optimization_history": optimization_history,
                 "total_rounds": self.current_round,
@@ -441,17 +449,36 @@ class ParallelTaskAggregatorActor(Actor):
 
             logger.info(f"Optimization completed. Best value: {best_params.get('value') if best_params else 'N/A'}")
 
+            # 创建成功的 TaskCompletedMessage
+            result_msg = TaskCompletedMessage(
+                message_type=MessageType.TASK_COMPLETED,
+                source=str(self.myAddress),
+                destination=str(self.reply_to),
+                task_id=self.spec.task_id,
+                trace_id=self.spec.task_id,
+                task_path="/",
+                result=optimization_result,
+                status="SUCCESS",
+                agent_id=None
+            )
+
         except Exception as e:
             logger.error(f"Failed to finalize optimization: {e}")
-            final_result = {
-                "type": "optimization_result",
-                "task_id": self.spec.task_id,
-                "success": False,
-                "error": str(e)
-            }
+            # 创建失败的 TaskCompletedMessage
+            result_msg = TaskCompletedMessage(
+                message_type=MessageType.TASK_COMPLETED,
+                source=str(self.myAddress),
+                destination=str(self.reply_to),
+                task_id=self.spec.task_id,
+                trace_id=self.spec.task_id,
+                task_path="/",
+                result=None,
+                status="FAILED",
+                agent_id=None
+            )
 
         # 发送结果并退出
-        self.send(self.reply_to, final_result)
+        self.send(self.reply_to, result_msg)
         self.send(self.myAddress, ActorExitRequest())
     
     def _aggregate_results(self) -> Any:

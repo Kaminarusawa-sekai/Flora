@@ -20,6 +20,11 @@ from common.messages.interact_messages import (
     TaskPausedMessage,
     TaskResultMessage
 )
+from common.messages.agent_messages import (
+    AgentTaskMessage,
+    ResumeTaskMessage
+)
+from common.messages.types import MessageType
 
 
 logger = logging.getLogger("InteractionActor")
@@ -77,7 +82,7 @@ class InteractionActor(Actor):
 
     def _handle_init_config(self, message: InitConfigMessage, sender: ActorAddress):
         """处理初始化配置"""
-        self.backend_addr = message.backend_addr
+        self.backend_addr : ActorAddress = message.backend_addr
 
         # 获取ConversationManager
         try:
@@ -205,14 +210,18 @@ class InteractionActor(Actor):
 
 
         # 构建转发消息
-        backend_message = {
-            "message_type": "agent_task",
-            "task_id": task_id,
-            "content": user_input,
-            "description": user_input,
-            "user_id": user_id,
-            "reply_to": self.myAddress  # 让后台回复给InteractionActor
-        }
+        backend_message = AgentTaskMessage(
+            agent_id='private_domain',
+            # agent_id="goal_setting",
+            message_type=MessageType.AGENT_TASK,
+            source=self.myAddress,
+            destination=self.backend_addr,
+            task_id=task_id,
+            content=user_input,
+            description=user_input,
+            user_id=user_id,
+            reply_to=self.myAddress  # 让后台回复给InteractionActor
+        )
 
         self.logger.info(f"Forwarding task {task_id} to backend for user {user_id}")
 
@@ -230,13 +239,15 @@ class InteractionActor(Actor):
             return
 
         # 构建恢复消息
-        resume_message = {
-            "message_type": "resume_task",
-            "task_id": task_id,
-            "parameters": parameters,
-            "user_id": user_id,
-            "reply_to": self.myAddress
-        }
+        resume_message = ResumeTaskMessage(
+            message_type="resume_task",
+            source=self.myAddress,
+            destination=self.backend_addr,
+            task_id=task_id,
+            parameters=parameters,
+            user_id=user_id,
+            reply_to=self.myAddress
+        )
 
         self.logger.info(f"Resuming task {task_id} with parameters: {list(parameters.keys())}")
 

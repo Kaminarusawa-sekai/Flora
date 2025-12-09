@@ -61,13 +61,14 @@ class TreeContextResolver(IContextResolverCapbility):
 
     def resolve_context(self, context_requirements: Dict[str, str], agent_id: str) -> Dict[str, Any]:
         """
-        解析上下文需求
+        解析上下文需求：
+        1. 先通过 _resolve_kv_via_layered_search 定位数据所在位置（库/表/列）；
+        2. 若定位成功，则使用 VannaTextToSQL 执行真实查询，返回实际数据。
         """
         if not self.tree_manager or not self.llm_client:
             self.set_dependencies()
 
         result = {}
-        # 为了日志清晰，打印一下当前 Agent 的路径（利用 TreeManager 的新能力）
         try:
             path = self.tree_manager.get_full_path(agent_id)
             path_str = " -> ".join(path)
@@ -76,20 +77,72 @@ class TreeContextResolver(IContextResolverCapbility):
 
         self.logger.info(f"Start resolving context for agent: {agent_id} (Path: {path_str})")
 
+        # 获取当前 Agent 的基础元信息（用于 fallback 或日志）
+        base_agent_meta = {}
+        try:
+            base_agent_meta = self.tree_manager.get_agent_meta(agent_id) or {}
+        except Exception as e:
+            self.logger.warning(f"Could not retrieve base agent meta for {agent_id}: {e}")
+
         for key, value_desc in context_requirements.items():
             try:
                 query = f"需查找数据: '{key}', 业务描述: '{value_desc}'"
                 
-                # 调用搜索
+                # Step 1: 定位数据位置（库、表、列等）
                 leaf_meta = self._resolve_kv_via_layered_search(agent_id, query, key)
                 
-                if leaf_meta:
-                    result[key] = leaf_meta
-                    self.logger.info(f"✅ Resolved '{key}' -> Node Found")
-                else:
-                    self.logger.warning(f"❌ Unresolved '{key}' (Desc: {value_desc})")
+                if not leaf_meta:
+                    self.logger.warning(f"❌ Unresolved '{key}' (Desc: {value_desc}) – no location found")
                     result[key] = None
+                    continue
+
+                # Step 2: 如果定位成功，尝试用 Vanna 查询真实数据
+                self.logger.info(f"📍 Located '{key}' at: {leaf_meta}")
+                
+                # 构造 Vanna 所需的 agent_meta 格式：database = "db.table"
+                db_name = leaf_meta.get("database") or leaf_meta.get("db")
+                table_name = leaf_meta.get("table") or leaf_meta.get("tbl")
+                
+                if not db_name or not table_name:
+                    self.logger.warning(f"⚠️ Incomplete location info for '{key}': {leaf_meta}, skip Vanna query")
+                    result[key] = leaf_meta  # 或设为 None，按需
+                    continue
+
+                vanna_agent_meta = {
+                    "database": f"{db_name}.{table_name}",
+                    "database_type": leaf_meta.get("database_type", base_agent_meta.get("database_type", "mysql"))
+                }
+
+                # 初始化 Vanna 能力
+                from capabilities.registry import capability_registry
+                from capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
+                text_to_sql_cap: ITextToSQLCapability = capability_registry.get_capability(
+                    "text_to_sql", expected_type=ITextToSQLCapability
+                )
+
+                text_to_sql_cap.initialize({
+                    "agent_id": agent_id,
+                    "agent_meta": vanna_agent_meta
+                })
+
+                try:
+                    # 使用原始业务描述作为查询语句
+                    response = text_to_sql_cap.execute_query(user_query=value_desc, context=None)
+                    records = response.get("result", [])
                     
+                    if records:
+                        # 假设返回的是单值或单行，可按需调整
+                        resolved_value = records[0] if len(records) == 1 else records
+                        result[key] = resolved_value
+                        self.logger.info(f"✅ Resolved '{key}' with real data (rows: {len(records)})")
+                    else:
+                        self.logger.warning(f"🔍 Located but no data returned for '{key}'")
+                        result[key] = None  # 或保留 leaf_meta，视业务而定
+                        
+                finally:
+                    # 确保释放资源
+                    text_to_sql_cap.shutdown()
+
             except Exception as e:
                 self.logger.error(f"Error resolving key '{key}': {str(e)}", exc_info=True)
                 result[key] = None

@@ -5,8 +5,8 @@ from typing import Optional
 
 class BaseMessage(BaseModel):
     message_type: str
-    source: str
-    destination: str
+    # source: str
+    # destination: str
     timestamp: datetime = Field(default_factory=datetime.now)
     id: str = Field(default_factory=lambda: str(uuid4()))
 

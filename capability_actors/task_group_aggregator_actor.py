@@ -1,11 +1,15 @@
 # capability_actors/task_group_aggregator_actor.py
 from typing import Dict, Any, List, Optional
-from thespian.actors import Actor, ActorExitRequest
+from thespian.actors import Actor, ActorExitRequest,ChildActorExited
 from common.messages.task_messages import (
-    TaskGroupRequest, TaskCompleted, TaskFailed,
-    ExecuteTaskMessage, TaskSpec, TaskGroupResult,
-    RepeatTaskRequest, MCPTaskMessage
+    TaskGroupRequestMessage as TaskGroupRequest, 
+    TaskCompletedMessage,
+    ExecuteTaskMessage, TaskSpec,
+    ParallelTaskRequestMessage,
+    MCPTaskRequestMessage as MCPTaskMessage,
+    ResultAggregatorTaskRequestMessage
 )
+from common.messages.types import MessageType
 import logging
 
 # 导入事件总线
@@ -48,43 +52,35 @@ class TaskGroupAggregatorActor(Actor):
         # 当前工作的 Worker (用于验证回复来源)
         self.current_worker: Optional[Actor] = None 
         
+        # 保存任务 ID 信息
+        self._task_id: Optional[str] = None
+        self._trace_id: Optional[str] = None
+        self._task_path: Optional[str] = None
+        
     def receiveMessage(self, msg: Any, sender: Actor) -> None:
+        if isinstance(msg, ActorExitRequest):
+            # 可选：做清理工作
+            logger.info("Received ActorExitRequest, shutting down.")
+            return  # Thespian will destroy the actor automatically
+        elif isinstance(msg, ChildActorExited):
+            # 可选：处理子 Actor 退出
+            logger.info(f"Child actor exited: {msg.childAddress}, reason: {msg.__dict__}")
+            return
         try:
             # 1. 启动请求
             if isinstance(msg, TaskGroupRequest):
                 self._start_workflow(msg, sender)
-            
-            # 2. 处理并行聚合器/优化的返回结果 (通常是字典)
-            elif isinstance(msg, dict) and msg.get("type") in ["parallel_task_result", "optimization_result"]:
-                self._handle_parallel_result(msg, sender)
 
-            # 3. 处理标准对象类型的完成消息 (来自 ResultAggregator 或 MCP)
-            elif isinstance(msg, (TaskCompleted, TaskGroupResult)):
-                # 兼容处理：如果是 TaskGroupResult，通常包含 results 字典；TaskCompleted 包含 result
-                # 这里假设 ResultAggregator 返回的是 TaskCompleted (单任务模式) 或 TaskGroupResult (多任务模式)
-                result_data = None
-                if isinstance(msg, TaskCompleted):
+            # 2. 处理标准对象类型的完成消息 (来自 ResultAggregator 或 MCP)
+            elif isinstance(msg, TaskCompletedMessage):
+                # 检查 status 属性判断任务是否成功
+                if msg.status in ["SUCCESS"]:
                     result_data = msg.result
-                elif isinstance(msg, TaskGroupResult):
-                    # 如果返回的是 GroupResult，我们取 results 里的值，或者整个 results
-                    result_data = msg.results
-                
-                self._handle_step_success(result_data, sender)
-                
-            # 4. 处理失败
-            elif isinstance(msg, TaskFailed):
-                self._handle_step_failure(msg, sender)
-            
-            # 5. 处理字典类型的失败 (兼容并行聚合器的返回)
-            elif isinstance(msg, dict) and msg.get("success") is False:
-                # 构造一个 TaskFailed 对象方便统一处理
-                failed_msg = TaskFailed(
-                    task_id=msg.get("task_id", "unknown"),
-                    error=msg.get("error", "Unknown parallel error"),
-                    details=str(msg)
-                )
-                self._handle_step_failure(failed_msg, sender)
-                
+                    self._handle_step_success(result_data, sender)
+                elif msg.status in ["FAILED", "ERROR", "CANCELLED"]:
+                    # 处理失败情况
+                    self._handle_step_failure(msg, sender)
+        
         except Exception as e:
             logger.error(f"Workflow system error: {e}", exc_info=True)
             self._fail_workflow(f"System Error: {str(e)}")
@@ -97,6 +93,11 @@ class TaskGroupAggregatorActor(Actor):
         self.request_msg = msg
         self.context = msg.context.copy() if msg.context else {}
         self.step_results = {}
+        
+        # 保存任务 ID 信息
+        self._task_id = msg.task_id
+        self._trace_id = msg.trace_id
+        self._task_path = msg.task_path
         
         # 按 Step 排序
         self.sorted_subtasks = sorted(msg.subtasks, key=lambda x: x.step)
@@ -165,15 +166,18 @@ class TaskGroupAggregatorActor(Actor):
              # 这里假设 TaskSpec 类有这个字段，或者通过 params 传递
              task.aggregation_strategy = "list" 
 
-        # 3. 发送 RepeatTaskRequest
-        request = RepeatTaskRequest(
-            source=self.myAddress,
-            destination=parallel_aggregator,
+        # 3. 发送 ParallelTaskRequestMessage
+        import uuid
+        task_id = str(uuid.uuid4())
+        request = ParallelTaskRequestMessage(
+            message_type=MessageType.PARALLEL_TASK_REQUEST,
+            source=str(self.myAddress),
+            destination=str(parallel_aggregator),
+            task_id=task_id,
+            trace_id=task_id,  # 使用生成的 task_id 作为 trace_id
+            task_path="/",  # 根任务路径
             spec=task,
-            # ParallelActor 的 receiveMessage 主要看 spec，但也可能看 msg 属性
-            # 这里保持冗余以防万一
-            count=count,
-            strategy=task.strategy_reasoning
+            reply_to=str(self.myAddress)
         )
         self.send(parallel_aggregator, request)
 
@@ -184,25 +188,17 @@ class TaskGroupAggregatorActor(Actor):
         aggregator = self.createActor(ResultAggregatorActor)
         self.current_worker = aggregator
         
-        # 1. 初始化
-        self.send(aggregator, {
-            "type": "initialize",
-            "trace_id": f"{self.request_msg.parent_task_id}_step_{task.step}",
-            "max_retries": 3,
-            "timeout": 300
-        })
+        # 发送 ResultAggregatorTaskRequestMessage
+        task_request = ResultAggregatorTaskRequestMessage(
+            spec=task,
+            reply_to=self.myAddress,
+            user_id=self.current_user_id,
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path
+        )
         
-        # 2. 发送单任务执行指令
-        self.send(aggregator, {
-            "type": "execute_subtask",
-            "task_id": f"step_{task.step}",
-            "task_spec": task,
-            "capability": "AGENT",
-            "executor": task.executor,
-            "parameters": params,
-            "description": task.description,
-            "user_id": self.current_user_id,
-        })
+        self.send(aggregator, task_request)
 
     def _dispatch_to_mcp_executor(self, task: TaskSpec, params: Dict[str, Any]) -> None:
         """分发给 MCP Actor (工具调用)"""
@@ -213,36 +209,18 @@ class TaskGroupAggregatorActor(Actor):
 
         # 使用 MCPTaskMessage 替代 ExecuteTaskMessage
         msg = MCPTaskMessage(
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
             step=task.step,
             description=task.description,  # 假设 TaskSpec 有 description 字段
             params=params,
             executor=task.executor if hasattr(task, 'executor') else None,  # 可选：如果 TaskSpec 有指定执行器
-            source=self.myAddress,
-            destination=mcp_worker,
-            reply_to=self.myAddress  # 注意：MCPTaskMessage 没有 reply_to 字段！
+            reply_to=self.myAddress  # MCPTaskMessage 有 reply_to 字段
         )
         self.send(mcp_worker, msg)
 
-    def _handle_parallel_result(self, msg: Dict[str, Any], sender: Actor) -> None:
-        """
-        专门处理 ParallelTaskAggregator 返回的字典结果
-        格式参考: {"type": "parallel_task_result", "success": True, "aggregated_result": ...}
-        """
-        if msg.get("success"):
-            # 提取核心结果
-            # 如果是 optimization_result，结果在 best_parameters
-            # 如果是 parallel_task_result，结果在 aggregated_result
-            result = msg.get("aggregated_result") or msg.get("best_parameters")
-            
-            logger.info(f"Parallel execution success. Result type: {type(result)}")
-            self._handle_step_success(result, sender)
-        else:
-            # 失败处理
-            error_msg = msg.get("error", "Parallel execution failed")
-            failures = msg.get("failures", [])
-            logger.error(f"Parallel execution failed: {error_msg}, Details: {failures}")
-            
-            self._fail_workflow(f"Parallel Task Failed: {error_msg}")
+
 
     def _handle_step_success(self, result: Any, sender: Actor) -> None:
         """通用步骤成功回调"""
@@ -263,10 +241,16 @@ class TaskGroupAggregatorActor(Actor):
         self.current_step_index += 1
         self._execute_next_step()
 
-    def _handle_step_failure(self, msg: TaskFailed, sender: Actor) -> None:
+    def _handle_step_failure(self, msg: TaskCompletedMessage, sender: Actor) -> None:
         """通用步骤失败回调"""
         current_task = self.sorted_subtasks[self.current_step_index]
-        error_msg = f"Step {current_task.step} failed: {msg.error}"
+        # 从 TaskCompletedMessage 中提取错误信息
+        error_msg = f"Step {current_task.step} failed with status: {msg.status}"
+        if hasattr(msg, 'error') and msg.error:
+            error_msg += f": {msg.error}"
+        elif hasattr(msg, 'result') and msg.result:
+            # 如果 result 包含错误信息，也提取出来
+            error_msg += f": {str(msg.result)}"
         logger.error(error_msg)
         self._fail_workflow(error_msg)
 
@@ -372,13 +356,18 @@ class TaskGroupAggregatorActor(Actor):
         """完成"""
         logger.info(f"Workflow {self.request_msg.parent_task_id} Completed.")
         
-        # 构造最终结果
-        final_result = TaskGroupResult(
-            source=self.myAddress,
-            destination=self.request_msg.original_sender or self.request_msg.source,
-            group_id=self.request_msg.parent_task_id,
-            results=self.step_results, # 返回所有步骤的详细结果
-            failures={}
+        # 构造最终结果，使用TaskCompletedMessage
+        final_result = TaskCompletedMessage(
+            message_type=MessageType.TASK_COMPLETED,
+            result={
+                "step_results": self.step_results,  # 返回所有步骤的详细结果
+                "group_id": self.request_msg.parent_task_id
+            },
+            status="SUCCESS",
+            agent_id=None,
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path
         )
         
         target = self.request_msg.original_sender or self.request_msg.source
@@ -389,12 +378,18 @@ class TaskGroupAggregatorActor(Actor):
         """失败"""
         logger.error(f"Workflow Terminated: {error_msg}")
         
-        fail_result = TaskGroupResult(
-            source=self.myAddress,
-            destination=self.request_msg.original_sender or self.request_msg.source,
-            group_id=self.request_msg.parent_task_id,
-            results=self.step_results, # 返回已经成功的部分
-            failures={"error": error_msg, "failed_step_index": self.current_step_index + 1}
+        fail_result = TaskCompletedMessage(
+            message_type=MessageType.TASK_COMPLETED,
+            result={
+                "step_results": self.step_results,  # 返回已经成功的部分
+                "error": error_msg,
+                "failed_step_index": self.current_step_index + 1
+            },
+            status="FAILED",
+            agent_id=None,
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path
         )
         
         target = self.request_msg.original_sender or self.request_msg.source

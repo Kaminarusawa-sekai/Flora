@@ -5,7 +5,7 @@ import importlib
 import inspect
 import re
 from typing import Dict, Any, Type, Optional
-from .registry import CapabilityRegistry
+from .registry import CapabilityRegistry,capability_registry
 from .capability_base import CapabilityBase
 from .capbility_config import CapabilityConfig
 
@@ -16,7 +16,8 @@ class CapabilityManager:
     """
     
     def __init__(self, config_path: str = "config.json"):
-        self.registry = CapabilityRegistry()
+        # self.registry = CapabilityRegistry()
+        self.registry = capability_registry
         self.config = CapabilityConfig(config_path)
         self._setup_logging()
         

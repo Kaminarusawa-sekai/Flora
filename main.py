@@ -265,16 +265,10 @@ def init_actor_system(context: SystemContext, system_base: str) -> ActorSystem:
     # 3. 启动 后台执行 AgentActor
     agent_actor = system.createActor(AgentActor)
     context.agent_actor = agent_actor
-
-    # 初始化AgentActor
-    init_msg = {
-        "message_type": "init",
-        "agent_id": "private_domain"
-        # "agent_id": "goal_setting",
-    }
-    system.tell(agent_actor, init_msg)
-
     logger.info(f"✓ 后台 AgentActor 已启动: {agent_actor}")
+    
+    # 导入必要的消息类
+    from common.messages.interact_messages import InitConfigMessage
 
     # 4. 启动 前台交互 InteractionActor
     interaction_actor = system.createActor(InteractionActor)
@@ -282,11 +276,15 @@ def init_actor_system(context: SystemContext, system_base: str) -> ActorSystem:
     logger.info(f"✓ 前台 InteractionActor 已启动: {interaction_actor}")
 
     # 5. 组装：告诉前台，后台在哪里
+    from common.messages.types import MessageType
     logger.info("正在组装 Actor 关系...")
-    system.tell(interaction_actor, {
-        "message_type": "configure",
-        "backend_addr": agent_actor
-    })
+    config_msg = InitConfigMessage(
+        message_type=MessageType.INIT_CONFIG,
+        # source="main",
+        # destination=interaction_actor,
+        backend_addr=agent_actor
+    )
+    system.tell(interaction_actor, config_msg)
     logger.info("✓ InteractionActor 已配置 backend_addr")
 
     # 6. 启动 LoopSchedulerActor（循环任务调度）
@@ -302,15 +300,22 @@ def send_test_message(system: ActorSystem, target_actor: ActorAddress):
     # ... (保持原样) ...
     logger.info("\n=== 发送测试消息 ===")
     time.sleep(2)  
-    test_msg = {
-        "message_type": "user_input",
-        "user_id": "user_id:test_admin_001,tenant_id:test_tenant_001",
-        "content": "帮设定一下裂变目标，我是做投影仪的",
-        # "content": "设计用户激励体系",
-        "msg_id": "msg_test_1"
-
-    }
-    logger.info(f"发送模拟用户消息: {test_msg['content']}")
+    from common.messages.interact_messages import UserRequestMessage
+    from common.messages.types import MessageType
+    import uuid
+    
+    test_msg = UserRequestMessage(
+        message_type=MessageType.USER_REQUEST,
+        source="main_test",
+        destination="interaction_actor",
+        user_id="user_id:test_admin_001,tenant_id:test_tenant_001",
+        content="帮设定一下裂变目标，我是做投影仪的",
+        # content="设计用户激励体系",
+        task_id=str(uuid.uuid4()),
+        trace_id=str(uuid.uuid4()),
+        task_path="/"
+    )
+    logger.info(f"发送模拟用户消息: {test_msg.content}")
     try:
         # response = system.ask(target_actor, test_msg, timeout=30)
         system.tell(target_actor, test_msg) # 改用 tell 发送，不要阻塞在 ask

@@ -13,6 +13,7 @@ class MessageType(str, Enum):
     SUBTASK_SPAWNED = "subtask_spawned"
     TASK_GROUP_REQUEST = "task_group_request"
     PARALLEL_TASK_REQUEST = "parallel_task_request"
+    RESULT_AGGREGATOR_REQUEST = "result_aggregator_request"
     EXECUTE_TASK = "execute_task"
 
     AGENT_TASK = "agent_task"
@@ -23,5 +24,6 @@ class MessageType(str, Enum):
 
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
+    EXECUTION_RESULT = "execution_result"
 
     TASK_GROUP_RESULT = "task_group_result"

@@ -150,7 +150,7 @@ class TaskSpec(BaseModel):
     type: str
     executor: str
     description: str
-    params: Dict[str, Any]
+    params: str
     user_id: Optional[str] = None
 
     # 新增控制字段

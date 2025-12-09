@@ -6,7 +6,7 @@ from typing import Optional, Any
 from thespian.actors import ActorAddress
 
 # 导入配置管理器
-from ..common.config.config_manager import config_manager
+from common.config.config_manager import config_manager
 
 # 尝试导入Redis
 REDIS_AVAILABLE = False

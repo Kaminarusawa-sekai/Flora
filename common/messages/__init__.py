@@ -1,16 +1,16 @@
 """消息模块"""
-from .event_message import EventMessage, EventType, EventBatch
-from .base_message import BaseMessage, SimpleMessage, TaskMessage
+from .event_message import SystemEventMessage
+from .base_message import BaseMessage, TaskMessage
 from .task_messages import (
-    TaskCreatedMessage,
-    TaskStartedMessage,
     TaskCompletedMessage,
-    TaskFailedMessage,
-    TaskProgressMessage,
-    TaskCancelledMessage,
-    SubtaskSpawnedMessage
+    MCPTaskRequestMessage,
+    TaskGroupRequestMessage,
+    ParallelTaskRequestMessage,
+    ResultAggregatorTaskRequestMessage,
+    ExecuteTaskMessage,
+    ExecutionResultMessage
 )
-from .front_messages import (
+from .interact_messages import (
     UserRequestMessage,
     InitConfigMessage,
     TaskPausedMessage,
@@ -26,45 +26,33 @@ from .optimization_messages import (
     OptimizationConvergedMessage
 )
 from .agent_messages import (
-    InitMessage,
     AgentTaskMessage,
-    ResumeTaskMessage,
-    TaskPausedMessage,
-    TaskResultMessage,
-    McpFallbackRequest
+    ResumeTaskMessage
 )
-from .connector_messages import (
-    ExecuteConnectorRequest,
-    PrepareConnectorRequest,
-    CancelConnectorRequest,
-    GetConnectorStatusRequest,
-    ConnectorResult,
-    ConnectorError,
-    PrepareConnectorResponse,
-    ConnectorStatusResponse,
-    InvokeConnectorRequest,
-    ConnectorExecutionSuccess,
-    ConnectorExecutionFailure
-)
+from .types import MessageType
 
 __all__ = [
-    "EventMessage",
-    "EventType",
-    "EventBatch",
+    # 基础消息类
     "BaseMessage",
-    "SimpleMessage",
     "TaskMessage",
-    "TaskCreatedMessage",
-    "TaskStartedMessage",
+    "SystemEventMessage",
+    
+    # 任务相关消息
     "TaskCompletedMessage",
-    "TaskFailedMessage",
-    "TaskProgressMessage",
-    "TaskCancelledMessage",
-    "SubtaskSpawnedMessage",
+    "MCPTaskRequestMessage",
+    "TaskGroupRequestMessage",
+    "ParallelTaskRequestMessage",
+    "ResultAggregatorTaskRequestMessage",
+    "ExecuteTaskMessage",
+    "ExecutionResultMessage",
+    
+    # 交互相关消息
     "UserRequestMessage",
     "InitConfigMessage",
     "TaskPausedMessage",
     "TaskResultMessage",
+    
+    # 优化相关消息
     "OptimizationMessage",
     "OptimizationStartedMessage",
     "OptimizationCompletedMessage",
@@ -72,17 +60,11 @@ __all__ = [
     "ParameterUpdatedMessage",
     "OptimizationProgressMessage",
     "OptimizationConvergedMessage",
-    "InitMessage",
+    
+    # 代理相关消息
     "AgentTaskMessage",
     "ResumeTaskMessage",
-    "McpFallbackRequest",
-    "ExecuteConnectorRequest",
-    "PrepareConnectorRequest",
-    "CancelConnectorRequest",
-    "GetConnectorStatusRequest",
-    "InvokeConnectorRequest",
-    "ConnectorResult",
-    "ConnectorError",
-    "PrepareConnectorResponse",
-    "ConnectorStatusResponse"
+    
+    # 类型定义
+    "MessageType"
 ]
