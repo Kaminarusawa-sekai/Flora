@@ -381,8 +381,21 @@ class TreeContextResolver(IContextResolverCapbility):
         # 构建上下文字符串（只保留非空、非敏感字段，可扩展过滤逻辑）
         context_items = []
         for k, v in current_inputs.items():
-            if v and isinstance(v, str) and len(v) < 100:  # 简单过滤
-                context_items.append(f"{k}: {v}")
+                
+            # 2. 类型安全检查
+            if not v or not isinstance(v, (str, int, float, bool)):
+                continue
+                
+            v_str = str(v)
+            
+            # 3. 放宽长度限制：建议从 100 提升到 500 或 1000
+            # 这样既能防住几万字的超大文本，又能容纳 URL 和 业务描述
+            if len(v_str) < 1000:  
+                context_items.append(f"{k}: {v_str}")
+            else:
+                # 可选：对于超长文本，截取前 100 个字符作为“摘要”放进去
+                # 这样 LLM 至少知道有这个字段存在
+                context_items.append(f"{k}: {v_str[:100]}... (content too long)")
         
         context_str = "\n".join(context_items) if context_items else "无可用上下文"
 

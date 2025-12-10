@@ -195,7 +195,8 @@ class TaskGroupAggregatorActor(Actor):
             user_id=self.current_user_id,
             task_id=self._task_id,
             trace_id=self._trace_id,
-            task_path=self._task_path
+            task_path=self._task_path,
+            params=params
         )
         
         self.send(aggregator, task_request)
@@ -291,7 +292,17 @@ class TaskGroupAggregatorActor(Actor):
         elif isinstance(raw_params, dict):
             resolved = raw_params.copy()
             
-            # 1. 传统的显式替换逻辑 ($key)
+            # 1. [新增逻辑] 自动合并上一步的字典结果到当前参数
+            # 这样 activity_id 就会直接出现在 resolved 字典的根目录下
+            if isinstance(prev_output, dict):
+                for k, v in prev_output.items():
+                    # 只有当当前参数里没有同名 Key 时才覆盖，避免覆盖用户手动传的参
+                    if k not in resolved:
+                        resolved[k] = v
+                        logger.info(f"Auto-injecting param '{k}' from prev_step_output")
+
+
+            # 2. 传统的显式替换逻辑 ($key)
             for k, v in resolved.items():
                 if isinstance(v, str) and v.startswith("$"):
                     key_ref = v[1:]
@@ -299,7 +310,7 @@ class TaskGroupAggregatorActor(Actor):
                         logger.info(f"Injecting dependency '{k}' <- context['{key_ref}']")
                         resolved[k] = self.context[key_ref]
             
-            # 2. 隐式上下文注入
+            # 3. 隐式上下文注入
             # 即使参数是字典，我们也把"上一步结果"整理好放入一个保留字段
             # 这样 Agent 如果需要参考上一步，可以直接读取 _full_context
             if prev_output:

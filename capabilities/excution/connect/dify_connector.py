@@ -131,52 +131,79 @@ class DifyConnector(BaseConnector):
         """
         执行Dify连接器操作
         """
-        # 1. 检查配置参数 - 直接报错，不返回NEED_INPUT
-        missing_config_params = self._check_missing_config_params(params)
-        if missing_config_params:
-            raise Exception(f"Missing required config parameters: {', '.join(missing_config_params)}")
-        
-        # 2. 解析最终使用的配置
-        api_key = self._resolve_param("api_key", params)
-        base_url = self._resolve_param("base_url", params).rstrip('/') # 去除末尾斜杠以防万一
-        user = self._resolve_param("user", params) or "default_user"
-        agent_id = self._resolve_param("agent_id", params)
-        # content=self._resolve_param("content", params) or {}
-        
-
-        # 3. 检查输入参数 - 去掉params参数
-        missing_inputs = self._check_missing_inputs(inputs)
-        logger.info(f"Missing inputs: {missing_inputs}")
-        if missing_inputs:
-
-            from capabilities import get_capability
-            from capabilities.context_resolver.interface import IContextResolverCapbility
-            context_resolver:IContextResolverCapbility = get_capability("context_resolver", IContextResolverCapbility)
-            filled_inputs,remaining_inputs = context_resolver.pre_fill_known_params_with_llm(missing_inputs, str(params))
-            enhanced_inputs = context_resolver.enhance_param_descriptions_with_context(remaining_inputs, params)
-            logger.info(f"Enhanced inputs: {enhanced_inputs}")
-            completed_inputs = context_resolver.resolve_context(enhanced_inputs,agent_id)
-            completed_inputs.update(filled_inputs)
-            logger.info(f"Completed inputs: {completed_inputs}")
-            also_missing_inputs={}
-            for key in missing_inputs:
-                if completed_inputs[key] is  None:
-                    also_missing_inputs[key] = missing_inputs[key]
-            if also_missing_inputs:
-                
-                # 返回需要补充输入参数的结果
-                return {
-                    "status": "NEED_INPUT",
-                    "missing": also_missing_inputs,
-                    "tool_schema": self._get_required_inputs()
-                }
-        
-        # 4. 获取Dify配置 - 去掉workflow_id参数
-        api_key = self._resolve_param("api_key", params)
-        base_url = self._resolve_param("base_url", params)
-        
         try:
-            # 调用Dify API执行工作流
+            # 1. 检查配置参数 - 直接报错，不返回NEED_INPUT
+            missing_config_params = self._check_missing_config_params(params)
+            if missing_config_params:
+                 return {
+                    "status": "ERROR",
+                    "error": f"Missing required config parameters: {', '.join(missing_config_params)}"
+                }
+            
+            # 2. 解析最终使用的配置
+            api_key = self._resolve_param("api_key", params)
+            base_url = self._resolve_param("base_url", params).rstrip('/') # 去除末尾斜杠以防万一
+            user = self._resolve_param("user", params) or "default_user"
+            agent_id = self._resolve_param("agent_id", params)
+            # content=self._resolve_param("content", params) or {}
+            
+
+            # 3. 检查输入参数 - 去掉params参数
+            missing_inputs = self._check_missing_inputs(inputs)
+            logger.info(f"Missing inputs: {missing_inputs}")
+            if missing_inputs:
+
+                from capabilities import get_capability
+                from capabilities.context_resolver.interface import IContextResolverCapbility
+                context_resolver:IContextResolverCapbility = get_capability("context_resolver", IContextResolverCapbility)
+                filled_inputs,remaining_inputs = context_resolver.pre_fill_known_params_with_llm(missing_inputs, str(params))
+                logger.info(f"params will be used: {params}")
+                enhanced_inputs = context_resolver.enhance_param_descriptions_with_context(remaining_inputs, params)
+                logger.info(f"Enhanced inputs: {enhanced_inputs}")
+                completed_inputs = context_resolver.resolve_context(enhanced_inputs,agent_id)
+                completed_inputs.update(filled_inputs)
+                logger.info(f"Completed inputs: {completed_inputs}")
+                also_missing_inputs={}
+                for key in missing_inputs:
+                    if completed_inputs[key] is  None:
+                        also_missing_inputs[key] = missing_inputs[key]
+                if also_missing_inputs:
+                    
+                    # 返回需要补充输入参数的结果
+                    return {
+                        "status": "NEED_INPUT",
+                        "missing": also_missing_inputs,
+                        "tool_schema": self._get_required_inputs()
+                    }
+            
+            # 4. 获取Dify配置 - 去掉workflow_id参数
+            api_key = self._resolve_param("api_key", params)
+            base_url = self._resolve_param("base_url", params)
+        
+        # try:
+        #     # 调用Dify API执行工作流
+        #     url = f"{base_url}/workflows/run"
+        #     headers = {
+        #         "Authorization": f"Bearer {api_key}",
+        #         "Content-Type": "application/json"
+        #     }
+        #     payload = {
+        #         "inputs": completed_inputs,
+        #         "response_mode": "blocking",
+        #         "user": user
+        #     }
+            
+        #     response = requests.post(url, json=payload, headers=headers, timeout=120)
+        #     print(response.json())            
+        #     response.raise_for_status()
+            
+        #     return response.json()
+        # except Exception as e:
+        #     logger.error(f"Dify execution failed: {str(e)}")
+        #     raise Exception(f"Dify execution failed: {str(e)}")
+
+
+            # 4. 调用 Dify API
             url = f"{base_url}/workflows/run"
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -187,15 +214,54 @@ class DifyConnector(BaseConnector):
                 "response_mode": "blocking",
                 "user": user
             }
-            
-            response = requests.post(url, json=payload, headers=headers, timeout=120)
-            print(response.json())            
-            response.raise_for_status()
-            
-            return response.json()
+
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=120)
+                logger.info(f"Dify response: {response.json()}")
+                if response.status_code >= 500:
+                # 5xx 服务端错误 → 可重试
+                    return {
+                        "status": "FAILURE",
+                        "error": f"Dify service unavailable (HTTP {response.status_code})"
+                    }
+                elif response.status_code >= 400:
+                    # 4xx 客户端错误（如 invalid token, bad request）→ 不重试
+                    try:
+                        err_detail = response.json().get("message", response.text)
+                    except:
+                        err_detail = response.text
+                    return {
+                        "status": "ERROR",
+                        "error": f"Dify client error (HTTP {response.status_code}): {err_detail}"
+                    }
+
+                result_data = response.json()
+
+            except requests.exceptions.Timeout:
+                return {"status": "FAILURE", "error": "Dify API request timed out"}
+            except requests.exceptions.ConnectionError:
+                return {"status": "FAILURE", "error": "Failed to connect to Dify service"}
+            except requests.exceptions.RequestException as e:
+                # 其他 requests 异常（如 DNS、SSL）通常也是临时问题
+                return {"status": "FAILURE", "error": f"Network error when calling Dify: {str(e)}"}
+
+            # 4. 解析 Dify 业务响应
+            if not isinstance(result_data, dict) or "data" not in result_data:
+                return {"status": "ERROR", "error": "Invalid Dify API response format"}
+
+            workflow_data = result_data["data"]
+            if workflow_data.get("status") != "succeeded":
+                # Dify 工作流执行失败（如 prompt 错、节点异常）→ 通常是逻辑错误，不重试
+                error_msg = workflow_data.get("error") or "Unknown execution error"
+                return {"status": "ERROR", "error": f"Dify workflow failed: {error_msg}"}
+
+            outputs = workflow_data.get("outputs", {})
+            logger.info(f"Dify outputs: {outputs}")
+            return {"status": "SUCCESS", "result": outputs}
+
         except Exception as e:
-            logger.error(f"Dify execution failed: {str(e)}")
-            raise Exception(f"Dify execution failed: {str(e)}")
+            logger.exception("Unexpected internal error in Dify connector")
+            return {"status": "ERROR", "error": f"Internal system error: {str(e)}"}
     
     def health_check(self, params: Dict[str, Any]) -> bool:
         """

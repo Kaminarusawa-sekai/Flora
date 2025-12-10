@@ -132,6 +132,8 @@ class LeafActor(Actor):
         # 构建执行请求消息
         exec_request = ExecuteTaskMessage(
             task_id=task.task_id,
+            task_path=task.task_path,
+            trace_id=task.trace_id,
             capability="dify",
             params={
                 "api_key": self.meta["dify"],
@@ -141,7 +143,7 @@ class LeafActor(Actor):
                 "content": str(task.description or "") + task.content + str(task.context or ""),
             },
             sender=str(self.myAddress),
-            reply_to=str(self.myAddress)
+            reply_to=self.myAddress
         )
         
         # 发布任务开始事件
@@ -166,6 +168,8 @@ class LeafActor(Actor):
         # 构建 TaskCompletedMessage 向上报告
         task_completed_msg = TaskCompletedMessage(
             task_id=task_id,
+            trace_id=result_msg.trace_id,
+            task_path=result_msg.task_path,
             result=result_data,
             status=status,
             agent_id=self.agent_id

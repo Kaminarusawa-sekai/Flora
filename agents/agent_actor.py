@@ -109,7 +109,7 @@ class AgentActor(Actor):
         # 从message或context中获取agent_id，这里假设agent_id可以从其他地方获取
         # 或者我们可以从message的task_id中提取，或者使用默认值
         # 这里使用一个简单的方式，假设agent_id是固定的或者从context中获取
-        self.agent_id = msg.context.get("agent_id", "default_agent")
+        self.agent_id = msg.agent_id
         if msg.task_path:
             self._task_path: Optional[str] = msg.task_path  
         else:
@@ -244,42 +244,42 @@ class AgentActor(Actor):
 
 
         parent_task_id = task.get("task_id")
-        user_input = task.get("content", "") + task.get("description", "")
+        user_input = task.get("content", "") + task.get("description", "")+ str(task.get("context", {}))
 
         self.log.info(f"[AgentActor] Handling task creation: {user_input[:50]}...")
 
         decision_context = self.memory_cap.build_conversation_context(self.current_user_id)
         # --- 流程 ⑤: 任务规划 ---
-        plan = self._plan_task_execution(user_input, decision_context)  
-        for task in plan:
+        plans = self._plan_task_execution(user_input, decision_context)  
+        for plan in plans:
                 # 仅对 AGENT 类型的节点进行判断，MCP 通常是确定性工具
-                if task.get('type') == 'AGENT':
+                if plan.get('type') == 'AGENT':
                     # 构造上下文：结合任务本身的描述 + 全局记忆
-                    task_ctx = (
-                        f"Task Step: {task['step']}\n"
+                    plan_ctx = (
+                        f"Task Step: {plan['step']}\n"
                         f"Global Memory: {decision_context or 'None'}\n"
-                        f"Params: {task.get('params')}"
+                        f"Params: {plan.get('params')}"
                     )
                     
                     # 调用 LLM 判断
                     strategy = self._llm_decide_should_execute_in_parallel(
-                        task_desc=task.get('description', ''),
-                        context=task_ctx
+                        task_desc=plan.get('description', ''),
+                        context=plan_ctx
                     )
                     
                     # 标记结果
-                    task['is_parallel'] = strategy['is_parallel']
-                    task['strategy_reasoning'] = strategy['reasoning']
+                    plan['is_parallel'] = strategy['is_parallel']
+                    plan['strategy_reasoning'] = strategy['reasoning']
                     
-                    if task['is_parallel']:
-                        logger.info(f"Task {task['step']} marked for parallel diversity: {strategy['reasoning']}")
+                    if plan['is_parallel']:
+                        logger.info(f"Task {plan['step']} marked for parallel diversity: {strategy['reasoning']}")
                 else:
                     # MCP 默认单次执行
-                    task['is_parallel'] = False      
+                    plan['is_parallel'] = False      
 
 
         # --- 流程 ⑦: 构建TaskGroupRequest ---
-        task_group_request = self._build_task_group_request(plan,parent_task_id )
+        task_group_request = self._build_task_group_request(plans,parent_task_id,user_input )
 
         # --- 流程 ⑧: 发送给TaskGroupAggregatorActor ---
         self._send_to_task_group_aggregator(task_group_request, sender)
@@ -611,7 +611,8 @@ class AgentActor(Actor):
     def _build_task_group_request(
         self, 
         tasks: List[Dict[str, Any]], 
-        parent_task_id: str
+        parent_task_id: str,
+        context: str,
     ) :
         from common.messages.task_messages import TaskSpec, TaskGroupRequestMessage
 
@@ -651,7 +652,7 @@ class AgentActor(Actor):
             subtasks=task_specs,
             strategy="standard",
             original_sender=getattr(self, "myAddress", None),
-            context={},
+            context={"above_context": context},
             user_id=self.current_user_id,
         )
         return request

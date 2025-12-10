@@ -33,6 +33,9 @@ class ExecutionActor(Actor):
         self._pending_requests = {}  # task_id -> request_info
         self._excution:BaseExecution = get_capability("execution", BaseExecution)  # 添加连接器管理器实例
         self.logger.info("ExecutionActor initialized")
+        self.task_id=None
+        self.trace_id=None
+        self.task_path=None
 
     def receiveMessage(self, msg: Any, sender: str) -> None:
         """
@@ -63,13 +66,15 @@ class ExecutionActor(Actor):
             msg: 执行任务消息对象
             sender: 发送者
         """
-        task_id = msg.task_id
+        self.task_id = msg.task_id
+        self.trace_id = msg.trace_id
+        self.task_path = msg.task_path
         capability = msg.capability
         parameters = msg.params
         reply_to = msg.reply_to
         
         # 复用现有执行逻辑
-        self._execute(capability, task_id, parameters, reply_to)
+        self._execute(capability, self.task_id, parameters, reply_to)
     
     def _execute(self, capability: str, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
         """
@@ -128,15 +133,23 @@ class ExecutionActor(Actor):
                 inputs=parameters.get("inputs", {}),
                 params=parameters
             )
-            
+            status = result.get("status")
             # 处理执行结果
-            if result["status"] == "NEED_INPUT":
+            if status == "NEED_INPUT":
                 # 需要补充参数
                 missing_params = result["missing"]
-                self._send_missing_parameters(task_id, missing_params, parameters, reply_to)
-            else:
-                # 执行成功
+                missing_params_descriptions = [str({"name": k, "description": v}) for k, v in missing_params.items()]
+                self._send_missing_parameters(task_id, missing_params_descriptions, parameters, reply_to)
+            elif status == "SUCCESS":
                 self._send_success(task_id, result["result"], reply_to)
+            elif status == "FAILURE":
+                # 可重试的失败
+                self._send_failure(task_id, result["error"], reply_to)
+            elif status == "ERROR":
+                # 不可重试的错误
+                self._send_error(task_id, result["error"], reply_to)
+            else:
+                self._send_error(task_id, f"Unknown status from connector: {status}", reply_to)
 
         except Exception as e:
             self.logger.exception(f"Dify execution failed: {e}")
@@ -189,9 +202,12 @@ class ExecutionActor(Actor):
         """
         self.logger.info(f"Task {task_id} missing parameters: {missing_params}")
         
+        
         # 使用新的执行结果消息类型返回需要输入的状态
         response = ExecutionResultMessage(
-            task_id=task_id,
+            task_id=self.task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             status="NEED_INPUT",
             result=None,
             error=None,
@@ -218,6 +234,8 @@ class ExecutionActor(Actor):
         # 使用新的执行结果消息类型
         response = ExecutionResultMessage(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             status="SUCCESS",
             result=result,
             error=None,
@@ -239,11 +257,36 @@ class ExecutionActor(Actor):
         if task_id in self._pending_requests:
             del self._pending_requests[task_id]
 
+    def _send_failure(self, task_id: str, error: str, reply_to: str) -> None:
+        """发送可重试的失败结果"""
+        response = ExecutionResultMessage(
+            task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
+            status="FAILED",          # 或 "RETRYABLE_FAILURE"
+            result=None,
+            error=error,
+            agent_id="system"
+        )
+        self.send(reply_to, response)
+        # 发布可重试事件（调度器可监听并重试）
+        event_bus.publish_task_event(
+            task_id=task_id,
+            event_type=EventType.CAPABILITY_FAILED.value,
+            source="ExecutionActor",
+            agent_id="system",
+            data={"error": error, "retryable": True}
+        )
+        if task_id in self._pending_requests:
+            del self._pending_requests[task_id]
+
     def _send_error(self, task_id: str, error: str, reply_to: str) -> None:
         """发送错误响应"""
         # 使用新的执行结果消息类型
         response = ExecutionResultMessage(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             status="FAILED",
             result=None,
             error=error,
@@ -255,7 +298,7 @@ class ExecutionActor(Actor):
         # 发布执行失败事件
         event_bus.publish_task_event(
             task_id=task_id,
-            event_type=EventType.CAPABILITY_FAILED.value,
+            event_type=EventType.CAPABILITY_ERROR.value,
             source="ExecutionActor",
             agent_id="system",
             data={"status": "failed", "error": error}

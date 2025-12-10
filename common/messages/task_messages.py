@@ -39,6 +39,7 @@ class TaskGroupRequestMessage(TaskMessage):
     strategy: str = 'standard'
     original_sender: Optional[ActorAddress] = None
     context: Dict[str, Any] = Field(default_factory=dict)
+    # context: str = ""
     user_id: Optional[str] = None
 
 
@@ -52,7 +53,7 @@ class ParallelTaskRequestMessage(TaskMessage):
 class ResultAggregatorTaskRequestMessage(TaskMessage):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message_type: Literal[MessageType.RESULT_AGGREGATOR_REQUEST] = MessageType.RESULT_AGGREGATOR_REQUEST
-    
+    params: Dict[str, Any]
     spec: TaskSpec
     reply_to: ActorAddress
     user_id: Optional[str] = None

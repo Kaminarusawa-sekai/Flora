@@ -99,6 +99,9 @@ class ResultAggregatorActor(Actor):
 
         task_spec = msg.spec
         agent_id = task_spec.executor
+
+        params = msg.params
+
         if not agent_id:
             self._process_failure(self._root_task_id, "Missing 'executor' in task spec", sender)
             return
@@ -126,7 +129,7 @@ class ResultAggregatorActor(Actor):
                 description=task_spec.description,
                 user_id=self.current_user_id,
                 reply_to=self.myAddress,
-                context={},
+                context=params,
                 is_parameter_completion=False,
                 parameters={}
             )
