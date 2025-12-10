@@ -153,7 +153,8 @@ class NodeService:
                 "is_leaf": node.get("is_leaf", False),
                 "code": node.get("code", ""),
                 "config": node.get("config", {}),
-                "dify": node.get("dify", {})
+                "dify": node.get("dify", {}),
+                "seq": node.get("seq", 100)
             }
             return meta
         return None

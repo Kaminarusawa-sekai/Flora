@@ -364,11 +364,123 @@ class AgentStructureRepository:
             return {"nodes": [], "edges": []}
 
 
-def close(self) -> None:
-    """
-    关闭底层 Neo4j 客户端连接（如果支持）
-    """
-    
-    if hasattr(self.neo4j_client, 'disconnect'):
-        self.neo4j_client.disconnect()
-        logging.info("Neo4j client connection closed via AgentStructureRepository")
+    def get_influenced_subgraph_with_scc_multi_roots(
+            self,
+            root_codes: List[str],
+            threshold: float = 0.3,
+            max_hops: int = 5
+        ) -> Dict[str, List]:
+            """
+            获取多个根节点的联合依赖子图，并在 Python 层计算每个节点的 SCC ID。
+
+            Args:
+                root_codes: 根 Agent ID 列表，如 ["strat_portraits", "strat_fission_strat"]
+                threshold: 保留参数（当前未用于过滤，可后续扩展）
+                max_hops: 最大跳数（依赖深度）
+
+            Returns:
+                {
+                    "nodes": [{"node_id": "A", "properties": {"name": "...", "scc_id": "2"}}, ...],
+                    "edges": [{"from": "A", "to": "B", "weight": 0.8}, ...]
+                }
+            """
+            if not root_codes:
+                return {"nodes": [], "edges": []}
+
+            # Cypher 查询：合并多个根的子图，确保边在子图内部
+            query = """
+            UNWIND $root_codes AS root_id
+            MATCH (r:Agent {id: root_id})
+            CALL apoc.path.subgraphAll(r, {
+                relationshipFilter: 'DEPENDS_ON>',
+                minLevel: 0,
+                maxLevel: $max_hops
+            })
+            YIELD nodes AS subNodes, relationships AS subRels
+            WITH collect(DISTINCT subNodes) AS nodeLists, collect(subRels) AS relLists
+            WITH apoc.coll.toSet(apoc.coll.flatten(nodeLists)) AS allNodes,
+                apoc.coll.toSet(apoc.coll.flatten(relLists)) AS allRels
+            // 过滤只保留在子图内部的边
+            WITH allNodes, [rel IN allRels WHERE startNode(rel) IN allNodes AND endNode(rel) IN allNodes] AS filteredRels
+            RETURN 
+                [n IN allNodes | {node_id: n.id, properties: n{.*}}] AS nodes,
+                [rel IN filteredRels | {
+                    from: startNode(rel).id,
+                    to: endNode(rel).id,
+                    weight: coalesce(rel.weight, 1.0)
+                }] AS edges
+            """
+
+            try:
+                with self.driver.session() as session:
+                    result = session.run(query, root_codes=root_codes, max_hops=max_hops)
+                    record = result.single()
+                    if not record:
+                        return {"nodes": [], "edges": []}
+
+                    # --- 解析节点 ---
+                    raw_nodes = []
+                    node_id_set = set()
+                    for item in record["nodes"]:
+                        node_id = item.get("node_id")
+                        if not node_id:
+                            continue
+                        props = item.get("properties", {})
+                        if not isinstance(props, dict):
+                            props = {}
+                        raw_nodes.append({"node_id": node_id, "properties": props})
+                        node_id_set.add(node_id)
+
+                    # --- 解析边（仅保留两端都在子图中的边）---
+                    raw_edges = []
+                    for item in record["edges"]:
+                        src = item.get("from")
+                        dst = item.get("to")
+                        if src in node_id_set and dst in node_id_set:
+                            weight = float(item.get("weight", 1.0))
+                            raw_edges.append({"from": src, "to": dst, "weight": weight})
+
+                    # --- 构建 NetworkX 有向图 ---
+                    G = nx.DiGraph()
+                    for node in raw_nodes:
+                        G.add_node(node["node_id"])
+                    for edge in raw_edges:
+                        G.add_edge(edge["from"], edge["to"], weight=edge["weight"])
+
+                    # --- 计算 SCC 并分配 ID ---
+                    scc_id_map = {}
+                    for idx, component in enumerate(nx.strongly_connected_components(G)):
+                        scc_id = str(idx)
+                        for node_id in component:
+                            scc_id_map[node_id] = scc_id
+
+                    # --- 注入 scc_id 到节点属性 ---
+                    final_nodes = []
+                    for node in raw_nodes:
+                        node_id = node["node_id"]
+                        props = node["properties"].copy()
+                        props["scc_id"] = scc_id_map.get(node_id, "-1")  # -1 表示异常（理论上不会发生）
+                        final_nodes.append({
+                            "node_id": node_id,
+                            "properties": props
+                        })
+
+                    return {
+                        "nodes": final_nodes,
+                        "edges": raw_edges
+                    }
+
+            except Exception as e:
+                print(f"[ERROR] Failed to fetch subgraph for {root_codes}: {e}")
+                return {"nodes": [], "edges": []}
+
+
+
+    def close(self) -> None:
+        """
+        关闭底层 Neo4j 客户端连接（如果支持）
+        """
+        
+        if hasattr(self.neo4j_client, 'disconnect'):
+            self.neo4j_client.disconnect()
+            logging.info("Neo4j client connection closed via AgentStructureRepository")

@@ -308,7 +308,7 @@ def send_test_message(system: ActorSystem, target_actor: ActorAddress):
         message_type=MessageType.USER_REQUEST,
         source="main_test",
         destination="interaction_actor",
-        user_id="user_id:1,tenant_id:1",
+        user_id="<user_id:1>,<tenant_id:1>",
         content="帮设定一下裂变目标，我是做投影仪的",
         # content="设计用户激励体系",
         task_id=str(uuid.uuid4()),

@@ -36,8 +36,11 @@ class CommonTaskPlanning(ITaskPlanningCapability):
         from agents.tree.tree_manager import treeManager
 
         self.tree_manager = treeManager
-        self._llm = None
-        self._structure_repo = None
+        from capabilities.llm.interface import ILLMCapability
+        from capabilities.registry import capability_registry
+        self._llm = capability_registry.get_capability("llm", ILLMCapability)
+
+        self._structure_repo = AgentStructureRepository()
         return True
 
     def generate_execution_plan(
@@ -62,7 +65,8 @@ class CommonTaskPlanning(ITaskPlanningCapability):
                 "main_intent": user_input,
                 "global_memory": memory_context or ""  # <--- 注入点
             }
-            final_plan = self._expand_plan_with_dependencies(base_plan, context=expansion_context)
+            final_plan = base_plan
+            # final_plan = self._expand_plan_with_dependencies(base_plan, context=expansion_context)
             
             self.logger.info(f"Final plan generated with {len(final_plan)} steps (expanded from {len(base_plan)}).")
             return final_plan
@@ -95,6 +99,7 @@ class CommonTaskPlanning(ITaskPlanningCapability):
 
     def _build_enhanced_planning_prompt(self, user_input, memory, agents):
         agents_str = json.dumps(agents, ensure_ascii=False, indent=2)
+        logger.info(f"[CommonTaskPlanner] agents:\n{agents_str}")
         memory_section = ""
         if memory:
             memory_section = f"""
@@ -130,55 +135,275 @@ class CommonTaskPlanning(ITaskPlanningCapability):
     # =========================================================================
 
     def _expand_plan_with_dependencies(self, base_plan: List[Dict], context: Dict) -> List[Dict]:
-        expanded_plan = []
-        global_step_counter = 1
+        """
+        按原始步骤顺序处理：
+        - MCP：原位保留；
+        - AGENT：用其**未展开过的依赖子图（按全局拓扑序）** 替换自身；
+        全局去重，确保每个 Agent 节点只执行一次。
+        """
+        if not base_plan:
+            return []
 
+        # Step 1: 提取所有唯一 AGENT executors
+        all_agent_executors = set()
         for step in base_plan:
-            if step.get('type') == 'MCP':
-                step['step'] = global_step_counter
-                expanded_plan.append(step)
-                global_step_counter += 1
-                continue
+            if step.get("type") == "AGENT":
+                all_agent_executors.add(step["executor"])
 
-            if step.get('type') == 'AGENT':
-                
-                ##TODO：暂时先忽略AGENT
-                step['step'] = global_step_counter
-                expanded_plan.append(step)
-                global_step_counter += 1
-                continue
+        # Step 2: 获取联合子图（含 scc_id）
+        all_nodes, all_edges = [], []
+        node_to_original_step = {}
 
-                target_agent_id = step.get('executor')
-                
-                # 构造子上下文，确保 global_memory 被传递
-                sub_context = context.copy()
-                sub_context['step_params'] = step.get('params', "")
-                # 确保 context 里有 global_memory，如果上层没传则为空
-                if 'global_memory' not in sub_context:
-                    sub_context['global_memory'] = "" 
+        if all_agent_executors:
+            result = self._structure_repo.get_influenced_subgraph_with_scc_multi_roots(
+                root_codes=list(all_agent_executors),
+                threshold=context.get("influence_threshold", 0.3),
+                max_hops=5
+            )
+            all_nodes = result.get("nodes", [])
+            all_edges = result.get("edges", [])
 
-                # 调用子任务规划
-                sub_tasks = self.plan_subtasks(target_agent_id, sub_context)
+            # 建立原始元信息映射（首次出现为准）
+            for step in base_plan:
+                if step.get("type") == "AGENT":
+                    eid = step["executor"]
+                    if eid not in node_to_original_step:
+                        node_to_original_step[eid] = step
 
-                if not sub_tasks:
-                    step['step'] = global_step_counter
-                    expanded_plan.append(step)
-                    global_step_counter += 1
-                else:
-                    for sub in sub_tasks:
-                        # 将子任务加入列表
-                        expanded_plan.append({
-                            "step": global_step_counter,
+        # Step 3: 构建全局依赖图
+        global_dg = nx.DiGraph()
+        node_properties = {}
+
+        for node in all_nodes:
+            nid = node["node_id"]
+            global_dg.add_node(nid)
+            node_properties[nid] = node.get("properties", {})
+
+        for edge in all_edges:
+            u, v = edge["from"], edge["to"]
+            if u != v:
+                global_dg.add_edge(u, v)
+
+        # Step 4: 全局拓扑排序（支持环）
+        try:
+            global_order = list(nx.topological_sort(global_dg))
+        except nx.NetworkXUnfeasible:
+            # 使用 SCC 缩点排序（即使 Neo4j 返回了 scc_id，这里仍用 networkx 确保一致）
+            global_order = self._topo_sort_with_scc(global_dg, {})
+
+        # Step 5: 协同规划所有节点参数
+        task_details = {}
+        if all_nodes:
+            task_details = self._plan_all_nodes_with_context(
+                node_ids=global_order,
+                node_properties=node_properties,
+                context=context,
+                original_meta=node_to_original_step
+            )
+
+        # Step 6: 按原始顺序构建最终计划
+        final_plan = []
+        expanded_cache = set()  # 已加入 plan 的节点 ID
+
+        for orig_step in base_plan:
+            if orig_step.get("type") == "MCP":
+                final_plan.append(orig_step)
+            elif orig_step.get("type") == "AGENT":
+                executor = orig_step["executor"]
+
+                # 如果该 executor 本身不在图中（孤立节点），则直接保留
+                if executor not in global_dg:
+                    final_plan.append(orig_step)
+                    expanded_cache.add(executor)
+                    continue
+
+                # 找出所有“从 executor 出发可达”的节点（包括自己）
+                reachable = {executor}
+                try:
+                    for descendant in nx.descendants(global_dg, executor):
+                        reachable.add(descendant)
+                except nx.NodeNotFound:
+                    pass  # shouldn't happen
+
+                # 从全局拓扑序中筛选：属于 reachable 且未展开
+                to_insert = [
+                    nid for nid in global_order
+                    if nid in reachable and nid not in expanded_cache
+                ]
+
+                if to_insert:
+                    expanded_cache.update(to_insert)
+                    for nid in to_insert:
+                        detail = task_details.get(nid, {})
+                        final_plan.append({
                             "type": "AGENT",
-                            "executor": sub['node_id'],
-                            "description": sub['intent_params'].get('description', 'Dependency Task'),
-                            "params": sub['intent_params'].get('parameters', {}),
+                            "executor": nid,
+                            "description": detail.get("intent", f"Execute {nid}"),
+                            "params": detail.get("parameters", {}),
                             "is_dependency_expanded": True,
-                            "original_parent": target_agent_id,
-                            "reasoning": "Based on SCC structure & Memory" # 可选：增加可解释性字段
+                            "original_parent": executor
                         })
-                        global_step_counter += 1
-        return expanded_plan
+                else:
+                    # 所有依赖都已执行过，跳过（或保留原步骤？）
+                    # 通常不会发生，但为安全起见，保留原步骤
+                    final_plan.append(orig_step)
+
+        return self._reindex_steps(final_plan)
+
+
+    def _fetch_combined_subgraph(self, root_agent_ids: set, context: Dict) -> Tuple[List, List]:
+        """
+        一次性从 Neo4j 获取多个根节点的联合影响子图。
+        假设 AgentStructureRepository 支持多根查询。
+        """
+        if not self._structure_repo:
+            return [], []
+
+        try:
+            # 修改 repo 接口：支持 roots=list
+            result = self._structure_repo.get_influenced_subgraph_with_scc_multi_roots(
+                root_codes=list(root_agent_ids),
+                threshold=context.get("influence_threshold", 0.3),
+                max_hops=5
+            )
+            return result.get("nodes", []), result.get("edges", [])
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch combined subgraph: {e}")
+            return [], []
+
+
+    def _plan_single_node_with_qwen(self, node: Dict, context: Dict) -> Dict:
+        """
+        使用 Qwen 对单个节点进行规划。
+        """
+        # 假设我们有一个与Qwen交互的方法，这里简化表示
+        response = self._call_llm(
+            f"基于以下上下文：{context}, 为节点 {node['properties']} 规划执行参数。",
+            node["properties"]
+        )
+        
+        return {
+            "intent": response.get("intent", ""),
+            "parameters": response.get("params", {}),
+        }
+
+    def _qwen_plan_scc_group(
+        self,
+        scc_id: str,
+        nodes: List[Dict],
+        influence_map: Dict,
+        main_intent: str,
+        global_memory: str
+    ) -> Dict[str, Dict]:
+        """
+        使用 Qwen 协同规划 SCC 组。
+        """
+        # 合并所有节点的信息，构建协同提示
+        group_info = [node["properties"] for node in nodes]
+        prompt = f"对于一组相互依赖的任务（SCC ID: {scc_id}），它们的共同目标是 '{main_intent}'。"
+        prompt += "请根据以下信息为每个任务规划执行参数：\n"
+        for info in group_info:
+            prompt += f"- {info}\n"
+
+        # 假设我们有一个与Qwen交互的方法，这里简化表示
+        response = self._call_llm(prompt, {"influence_map": influence_map, "global_memory": global_memory})
+        
+        # 解析响应，构造返回结果
+        task_details = {}
+        for node in nodes:
+            detail = response.get(node["node_id"], {})
+            task_details[node["node_id"]] = {
+                "intent": detail.get("intent", ""),
+                "parameters": detail.get("params", {}),
+            }
+        
+        return task_details
+
+    def _plan_all_nodes_with_context(
+        self,
+        node_ids: List[str],
+        node_properties: Dict[str, Dict],
+        context: Dict,
+        original_meta: Dict[str, Dict]
+    ) -> Dict[str, Dict]:
+        """
+        对所有节点进行参数规划，支持 SCC 分组协同。
+        """
+        if not node_ids:
+            return {}
+
+        # Step 1 & 2: 构建图和分组
+        dg = nx.DiGraph()
+        dg.add_nodes_from(node_ids)
+        use_dynamic_scc = False
+        scc_groups = {}
+        node_to_scc = {}
+
+        for nid in node_ids:
+            props = node_properties.get(nid, {})
+            scc_id = props.get("scc_id")
+            if scc_id is None:
+                use_dynamic_scc = True
+                break
+            node_to_scc[nid] = scc_id
+            scc_groups.setdefault(scc_id, []).append({"node_id": nid, "properties": props})
+
+        if use_dynamic_scc:
+            # 动态计算 SCC（退化为单点）
+            scc_groups = {}
+            for nid in node_ids:
+                scc_id = f"SINGLE_{nid}"
+                node_to_scc[nid] = scc_id
+                scc_groups[scc_id] = [{"node_id": nid, "properties": node_properties.get(nid, {})}]
+
+        # Step 3: 规划每个组
+        all_task_details = {}
+        main_intent = context.get("main_intent", "")
+        global_memory = context.get("global_memory", "")
+
+        for scc_id, group_nodes in scc_groups.items():
+            if len(group_nodes) == 1:
+                node = group_nodes[0]
+                fallback_params = original_meta.get(node["node_id"], {}).get("params", "")
+                sub_context = {
+                    "main_intent": main_intent,
+                    "global_memory": global_memory,
+                    "step_params": fallback_params
+                }
+                detail = self._plan_single_node_with_qwen(node, sub_context)
+                all_task_details[node["node_id"]] = detail
+            else:
+                group_plan = self._qwen_plan_scc_group(
+                    scc_id=scc_id,
+                    nodes=group_nodes,
+                    influence_map={},  # 可扩展传入
+                    main_intent=main_intent,
+                    global_memory=global_memory
+                )
+                all_task_details.update(group_plan)
+
+        # Step 4: 格式化输出以符合指定格式
+        formatted_output = []
+        step = 1
+        for nid in node_ids:
+            detail = all_task_details.get(nid, {})
+            formatted_output.append({
+                "step": step,
+                "type": "AGENT",
+                "executor": nid,
+                "params": detail.get("parameters", ""),
+                "description": detail.get("intent", f"Execute {nid}")
+            })
+            step += 1
+        
+        return formatted_output
+
+
+    def _reindex_steps(self, plan: List[Dict]) -> List[Dict]:
+        """统一重排 step 字段"""
+        for i, step in enumerate(plan):
+            step["step"] = i + 1
+        return plan
 
     # =========================================================================
     # 你的核心逻辑集成: plan_subtasks & SCC Helpers
@@ -302,6 +527,7 @@ class CommonTaskPlanning(ITaskPlanningCapability):
 **关键要求**：
 1. **一致性**：组内节点的参数必须互相兼容（如：文件路径、版本号）。
 2. **个性化**：如果【上下文记忆】中提到了相关偏好（如：超时时间设置、默认审批人、日志级别），请务必应用到参数中。
+3. **顺序执行**：尽量根据节点间的seq大小，排序执行。
 
 ## 输出 (JSON)
 {{
@@ -334,30 +560,36 @@ class CommonTaskPlanning(ITaskPlanningCapability):
         return {"intent": f"Execute {node['node_id']}", "parameters": {}}
     
 
-    def _topo_sort_with_scc(self, graph: nx.DiGraph, node_to_scc: Dict) -> List[str]:
-        """包含环的拓扑排序算法 (保留你的原逻辑)"""
-        # ... (完整复用你提供的 _topo_sort_with_scc 代码) ...
-        # 为了节省篇幅，这里假设已完全复制你的逻辑
+    def _topo_sort_with_scc(self, graph: nx.DiGraph, node_to_scc: Dict = None) -> List[str]:
+        """处理含环图的拓扑排序"""
         scc_graph = nx.DiGraph()
         scc_map = {}
-        # 标准的 SCC 缩点 + 拓扑排序逻辑
+        
+        # 重新计算 SCC（忽略传入的 node_to_scc）
         for idx, comp in enumerate(nx.strongly_connected_components(graph)):
-            scc_id = f"COMP_{idx}"
-            for node in comp: scc_map[node] = scc_id
+            scc_id = f"SCC_{idx}"
+            for node in comp:
+                scc_map[node] = scc_id
             scc_graph.add_node(scc_id)
+        
         for u, v in graph.edges():
-            if scc_map[u] != scc_map[v]: scc_graph.add_edge(scc_map[u], scc_map[v])
+            if scc_map[u] != scc_map[v]:
+                scc_graph.add_edge(scc_map[u], scc_map[v])
         
         try:
             scc_order = list(nx.topological_sort(scc_graph))
         except:
-            scc_order = list(scc_graph.nodes) # Fallback
-            
-        final_order = []
-        # 将 SCC 内部节点简单展开 (因为内部是环，顺序相对不重要或需要额外逻辑，这里简单处理)
+            scc_order = list(scc_graph.nodes)
+        
+        # 展开 SCC 内部（顺序不重要，或可按字母排）
         reverse_map = {}
-        for n, sid in scc_map.items(): reverse_map.setdefault(sid, []).append(n)
-        for sid in scc_order: final_order.extend(reverse_map.get(sid, []))
+        for node, sid in scc_map.items():
+            reverse_map.setdefault(sid, []).append(node)
+        
+        final_order = []
+        for sid in scc_order:
+            nodes_in_scc = sorted(reverse_map.get(sid, []))  # 确定性排序
+            final_order.extend(nodes_in_scc)
         return final_order
 
     # =========================================================================
@@ -376,6 +608,7 @@ class CommonTaskPlanning(ITaskPlanningCapability):
             if meta:
                 info_list.append({
                     "id": cid,
+                    "seq":meta.get("seq", 100),
                     "name": meta.get("name", "Unknown"),
                     "capabilities": meta.get("capability", []), # 假设这是一个列表或描述字符串
                     "description": meta.get("description", "")
