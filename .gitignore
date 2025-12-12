@@ -3,6 +3,7 @@ config.py
 config.json
 market_tree.csv
 test5.py
+interaction_config.json
 # Python
 __pycache__/
 *.pyc

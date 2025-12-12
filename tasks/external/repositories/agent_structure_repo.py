@@ -1,0 +1,486 @@
+"""Agent结构仓储，负责操作Neo4j，维护父子关系"""
+from typing import Dict, List, Any, Optional
+import logging
+import networkx as nx
+from tasks.external.database.neo4j_client import Neo4jClient
+
+
+class AgentStructureRepository:
+    """
+    Agent结构仓储类，负责操作Neo4j，维护Agent的父子关系
+    """
+    
+    def __init__(self, neo4j_client: Neo4jClient=None):
+        """
+        初始化Agent结构仓储
+        
+        Args:
+            neo4j_client: Neo4j客户端实例
+        """
+        if not neo4j_client:
+            self.neo4j_client = Neo4jClient()
+        else:
+            self.neo4j_client = neo4j_client
+    
+    def get_agent_relationship(self, agent_id: str) -> Dict[str, Any]:
+        """
+        获取Agent的父子关系
+        
+        Args:
+            agent_id: Agent唯一标识符
+            
+        Returns:
+            包含父子关系信息的字典，格式为 {'parent': parent_id, 'children': [child_ids]}
+        """
+        # 查询父节点
+        parent_query = """
+        MATCH (parent)-[:HAS_CHILD]->(child {id: $agent_id})
+        RETURN parent.id as parent_id
+        LIMIT 1
+        """
+        parent_result = self.neo4j_client.execute_query(parent_query, {'agent_id': agent_id})
+        parent_id = parent_result[0]['parent_id'] if parent_result else None
+        
+        # 查询子节点
+        children_query = """
+        MATCH (parent {id: $agent_id})-[:HAS_CHILD]->(child)
+        RETURN child.id as child_id
+        """
+        children_result = self.neo4j_client.execute_query(children_query, {'agent_id': agent_id})
+        child_ids = [record['child_id'] for record in children_result]
+        
+        return {
+            'parent': parent_id,
+            'children': child_ids
+        }
+    
+    def load_all_agents(self) -> List[Dict[str, Any]]:
+        """
+        加载所有Agent节点
+        
+        Returns:
+            Agent节点信息列表
+        """
+        # 修改查询：排除 id 属性，将其他所有属性打包叫 meta
+        query = """
+        MATCH (a:Agent)
+        RETURN a.id as agent_id, 
+               {name: a.name, businessId: a.businessId, dify: a.dify, strength: a.strength, capability: a.capability} as meta
+        """
+        # 或者更偷懒的写法（返回除 id 外的所有属性）：
+        # RETURN a.id as agent_id, [k in keys(a) WHERE k <> 'id' | [k, a[k]]] AS meta_pairs
+        
+        # 建议使用上面的显式列出，或者使用 properties(a) 然后在 Python 里剔除 id
+        # 下面是通用的写法：
+        query = """
+        MATCH (a:Agent)
+        RETURN a.id as agent_id, properties(a) as all_props
+        """
+        results = self.neo4j_client.execute_query(query)
+        
+        agents = []
+        for record in results:
+            props = record['all_props']
+            # 从属性中移除 id，剩下的就是 meta
+            if 'id' in props:
+                del props['id']
+            
+            agent = {'agent_id': record['agent_id']}
+            agent.update(props)
+            agents.append(agent)
+        return agents
+    
+    def add_agent_relationship(self, parent_id: str, child_id: str, relationship_type: str = 'HAS_CHILD') -> bool:
+        """
+        添加Agent间的父子关系
+        
+        Args:
+            parent_id: 父Agent ID
+            child_id: 子Agent ID
+            relationship_type: 关系类型
+            
+        Returns:
+            是否添加成功
+        """
+        try:
+            query = """
+            MATCH (parent {id: $parent_id})
+            MATCH (child {id: $child_id})
+            MERGE (parent)-[:HAS_CHILD]->(child)
+            """
+            self.neo4j_client.execute_write(query, {
+                'parent_id': parent_id,
+                'child_id': child_id
+            })
+            return True
+        except Exception:
+            return False
+    
+    def get_agent_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取指定Agent的信息
+        
+        Args:
+            agent_id: Agent唯一标识符
+            
+        Returns:
+            Agent信息字典，如果不存在则返回None
+        """
+        query = """
+        MATCH (a:Agent {id: $agent_id})
+        RETURN a.id as agent_id, a.meta as meta
+        """
+        result = self.neo4j_client.execute_query(query, {'agent_id': agent_id})
+        if not result:
+            return None
+        
+        record = result[0]
+        # 转换格式，将meta中的字段展开到顶层
+        agent = {'agent_id': record['agent_id']}
+        if record['meta']:
+            agent.update(record['meta'])
+        return agent
+    
+    def remove_agent(self, agent_id: str) -> bool:
+        """
+        删除指定Agent及其所有关系
+        
+        Args:
+            agent_id: 要删除的Agent ID
+            
+        Returns:
+            是否删除成功
+        """
+        try:
+            # 先删除所有与该Agent相关的关系
+            query_remove_relationships = """
+            MATCH (a:Agent {id: $agent_id})-[r]-()
+            DELETE r
+            """
+            self.neo4j_client.execute_write(query_remove_relationships, {'agent_id': agent_id})
+            
+            # 再删除Agent节点
+            query_remove_node = """
+            MATCH (a:Agent {id: $agent_id})
+            DELETE a
+            """
+            self.neo4j_client.execute_write(query_remove_node, {'agent_id': agent_id})
+            
+            return True
+        except Exception:
+            return False
+    
+    def create_node(self, node_data: Dict[str, Any]) -> Optional[str]:
+        """
+        创建新的Agent节点
+        
+        Args:
+            node_data: 节点数据，必须包含agent_id
+            
+        Returns:
+            创建的节点ID，如果创建失败则返回None
+        """
+        try:
+            agent_id = node_data.get('agent_id')
+            if not agent_id:
+                return None
+            
+            # 提取meta数据（除了agent_id之外的所有字段）
+            meta_data = {k: v for k, v in node_data.items() if k != 'agent_id'}
+            
+            # 修改查询：直接设置属性
+            query = """
+            CREATE (a:Agent {id: $agent_id})
+            SET a += $meta_data
+            RETURN a
+            """
+            self.neo4j_client.execute_write(query, {
+                'agent_id': agent_id,
+                'meta_data': meta_data
+            })
+            return agent_id
+        except Exception:
+            return None
+    
+    def update_node(self, node_id: str, updates: Dict[str, Any]) -> bool:
+        """
+        更新节点信息
+        
+        Args:
+            node_id: 节点ID
+            updates: 更新内容
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            # 获取现有节点信息
+            existing_node = self.get_agent_by_id(node_id)
+            if not existing_node:
+                return False
+            
+            # 提取当前的meta数据
+            current_meta = {k: v for k, v in existing_node.items() if k != 'agent_id'}
+            # 更新meta数据
+            current_meta.update(updates)
+            
+            # 修改查询：使用 += 操作符来更新平铺的属性
+            query = """
+            MATCH (a:Agent {id: $node_id})
+            SET a += $meta_data
+            RETURN a
+            """
+            self.neo4j_client.execute_write(query, {
+                'node_id': node_id,
+                'meta_data': current_meta # 这里的字典会被展开成属性
+            })
+            return True
+        except Exception:
+            return False
+        
+
+    def get_influenced_subgraph_with_scc(
+        self,
+        root_code: str,
+        threshold: float = 0.3,
+        max_hops: int = 5
+    ) -> Dict[str, List[Dict]]:
+        """
+        获取从 root_code 出发的影响子图，并为每个节点标注 scc_id。
+        - 影响传播：路径上边的 strength 相乘
+        - 仅保留总影响 >= threshold 的节点
+        - 对于多跳情况，使用可达路径中的最大影响强度作为边权重
+        - SCC 在该子图内部计算（Python 端）
+        """
+        # Step 1: 查询所有满足条件的路径，并提取节点和边
+        node_query = """
+        MATCH (start:Agent {code: $rootCode})
+        CALL apoc.path.expandConfig(start, {
+            relationshipFilter: 'HAS_CHILD>',
+            minLevel: 0,
+            maxLevel: $maxHops,
+            uniqueness: 'NODE_GLOBAL'
+        }) YIELD path
+        WITH path,
+            reduce(acc = 1.0, r IN relationships(path) | 
+                acc * coalesce(r.strength, 0.5)) AS totalStrength
+        WHERE totalStrength >= $threshold
+        UNWIND nodes(path) AS node
+        WITH DISTINCT node.id AS node_id, node AS node_props
+        RETURN DISTINCT node_id, node_props
+        """
+
+        edge_query = """
+        MATCH (start:Agent {code: $rootCode})
+        CALL apoc.path.expandConfig(start, {
+            relationshipFilter: 'HAS_CHILD>',
+            minLevel: 1,
+            maxLevel: $maxHops,
+            uniqueness: 'RELATIONSHIP_GLOBAL'
+        }) YIELD path
+        WITH startNode(path) AS from_node, endNode(path) AS to_node,
+            reduce(acc = 1.0, r IN relationships(path) | 
+                acc * coalesce(r.strength, 0.5)) AS totalStrength
+        WITH from_node.id AS from_id, to_node.id AS to_id, max(totalStrength) AS maxTotalStrength
+        WHERE maxTotalStrength >= $threshold
+        RETURN DISTINCT from_id, to_id, maxTotalStrength
+        """
+
+        try:
+            # 加载所有 agent 用于属性合并
+            all_agents = self.load_all_agents()
+            agent_map = {agent.get('agent_id'): agent for agent in all_agents}
+
+            # 执行节点查询
+            node_records = self.neo4j_client.execute_query(
+                node_query,
+                {'rootCode': root_code, 'threshold': threshold, 'maxHops': max_hops}
+            )
+            node_set = set()
+            node_properties = {}
+            for rec in node_records:
+                nid = rec.get("node_id")
+                if nid is None:
+                    continue
+                node_set.add(nid)
+                props = dict(rec["node_props"]) if isinstance(rec["node_props"], dict) else {}
+                if "id" in props:
+                    del props["id"]
+                if nid in agent_map:
+                    full_props = agent_map[nid].copy()
+                    full_props.update(props)
+                    node_properties[nid] = full_props
+                else:
+                    node_properties[nid] = props
+
+            # 执行边查询
+            edge_records = self.neo4j_client.execute_query(
+                edge_query,
+                {'rootCode': root_code, 'threshold': threshold, 'maxHops': max_hops}
+            )
+            edges = []
+            for rec in edge_records:
+                f, t, w = rec["from_id"], rec["to_id"], rec["maxTotalStrength"]
+                if f in node_set and t in node_set:
+                    edges.append((f, t, float(w)))
+
+            if not node_set:
+                logging.warning(f"No influenced nodes found for root {root_code}")
+                return {"nodes": [], "edges": []}
+
+            # 构建 NetworkX 图并计算 SCC
+            subgraph = nx.DiGraph()
+            subgraph.add_nodes_from(node_set)
+            subgraph.add_weighted_edges_from(edges)
+
+            scc_id_map = {}
+            for idx, component in enumerate(nx.strongly_connected_components(subgraph)):
+                scc_label = f"SCC_{idx}"
+                for node in component:
+                    scc_id_map[node] = scc_label
+
+            # 组装结果
+            nodes_result = []
+            for nid in node_set:
+                props = node_properties.get(nid, {"agent_id": nid})
+                props["scc_id"] = scc_id_map.get(nid, f"SCC_SINGLE_{nid}")
+                nodes_result.append({
+                    "node_id": nid,
+                    "properties": props
+                })
+
+            edges_result = [
+                {"from": f, "to": t, "weight": w}
+                for (f, t, w) in edges
+            ]
+
+            return {
+                "nodes": nodes_result,
+                "edges": edges_result
+            }
+
+        except Exception as e:
+            logging.error(f"Error in get_influenced_subgraph_with_scc: {e}", exc_info=True)
+            return {"nodes": [], "edges": []}
+
+
+    def get_influenced_subgraph_with_scc_multi_roots(
+            self,
+            root_codes: List[str],
+            threshold: float = 0.3,
+            max_hops: int = 5
+        ) -> Dict[str, List]:
+            """
+            获取多个根节点的联合依赖子图，并在 Python 层计算每个节点的 SCC ID。
+
+            Args:
+                root_codes: 根 Agent ID 列表，如 ["strat_portraits", "strat_fission_strat"]
+                threshold: 保留参数（当前未用于过滤，可后续扩展）
+                max_hops: 最大跳数（依赖深度）
+
+            Returns:
+                {
+                    "nodes": [{"node_id": "A", "properties": {"name": "...", "scc_id": "2"}}, ...],
+                    "edges": [{"from": "A", "to": "B", "weight": 0.8}, ...]
+                }
+            """
+            if not root_codes:
+                return {"nodes": [], "edges": []}
+
+            # Cypher 查询：合并多个根的子图，确保边在子图内部
+            query = """
+            UNWIND $root_codes AS root_id
+            MATCH (r:Agent {id: root_id})
+            CALL apoc.path.subgraphAll(r, {
+                relationshipFilter: 'DEPENDS_ON>',
+                minLevel: 0,
+                maxLevel: $max_hops
+            })
+            YIELD nodes AS subNodes, relationships AS subRels
+            WITH collect(DISTINCT subNodes) AS nodeLists, collect(subRels) AS relLists
+            WITH apoc.coll.toSet(apoc.coll.flatten(nodeLists)) AS allNodes,
+                apoc.coll.toSet(apoc.coll.flatten(relLists)) AS allRels
+            // 过滤只保留在子图内部的边
+            WITH allNodes, [rel IN allRels WHERE startNode(rel) IN allNodes AND endNode(rel) IN allNodes] AS filteredRels
+            RETURN 
+                [n IN allNodes | {node_id: n.id, properties: n{.*}}] AS nodes,
+                [rel IN filteredRels | {
+                    from: startNode(rel).id,
+                    to: endNode(rel).id,
+                    weight: coalesce(rel.weight, 1.0)
+                }] AS edges
+            """
+
+            try:
+                with self.driver.session() as session:
+                    result = session.run(query, root_codes=root_codes, max_hops=max_hops)
+                    record = result.single()
+                    if not record:
+                        return {"nodes": [], "edges": []}
+
+                    # --- 解析节点 ---
+                    raw_nodes = []
+                    node_id_set = set()
+                    for item in record["nodes"]:
+                        node_id = item.get("node_id")
+                        if not node_id:
+                            continue
+                        props = item.get("properties", {})
+                        if not isinstance(props, dict):
+                            props = {}
+                        raw_nodes.append({"node_id": node_id, "properties": props})
+                        node_id_set.add(node_id)
+
+                    # --- 解析边（仅保留两端都在子图中的边）---
+                    raw_edges = []
+                    for item in record["edges"]:
+                        src = item.get("from")
+                        dst = item.get("to")
+                        if src in node_id_set and dst in node_id_set:
+                            weight = float(item.get("weight", 1.0))
+                            raw_edges.append({"from": src, "to": dst, "weight": weight})
+
+                    # --- 构建 NetworkX 有向图 ---
+                    G = nx.DiGraph()
+                    for node in raw_nodes:
+                        G.add_node(node["node_id"])
+                    for edge in raw_edges:
+                        G.add_edge(edge["from"], edge["to"], weight=edge["weight"])
+
+                    # --- 计算 SCC 并分配 ID ---
+                    scc_id_map = {}
+                    for idx, component in enumerate(nx.strongly_connected_components(G)):
+                        scc_id = str(idx)
+                        for node_id in component:
+                            scc_id_map[node_id] = scc_id
+
+                    # --- 注入 scc_id 到节点属性 ---
+                    final_nodes = []
+                    for node in raw_nodes:
+                        node_id = node["node_id"]
+                        props = node["properties"].copy()
+                        props["scc_id"] = scc_id_map.get(node_id, "-1")  # -1 表示异常（理论上不会发生）
+                        final_nodes.append({
+                            "node_id": node_id,
+                            "properties": props
+                        })
+
+                    return {
+                        "nodes": final_nodes,
+                        "edges": raw_edges
+                    }
+
+            except Exception as e:
+                print(f"[ERROR] Failed to fetch subgraph for {root_codes}: {e}")
+                return {"nodes": [], "edges": []}
+
+
+
+    def close(self) -> None:
+        """
+        关闭底层 Neo4j 客户端连接（如果支持）
+        """
+        
+        if hasattr(self.neo4j_client, 'disconnect'):
+            self.neo4j_client.disconnect()
+            logging.info("Neo4j client connection closed via AgentStructureRepository")
