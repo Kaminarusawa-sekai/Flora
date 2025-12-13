@@ -7,7 +7,7 @@ from ...common import (
     EntityDTO
 )
 
-class IIntentRecognitionManager(BaseManager):
+class IIntentRecognitionManagerCapability(BaseManager):
     """意图识别管理器接口"""
     
     @abstractmethod

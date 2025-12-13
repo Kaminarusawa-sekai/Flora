@@ -20,7 +20,24 @@ class EntityDTO(BaseModel):
 
 class IntentRecognitionResultDTO(BaseModel):
     """🎯 [2. IntentRecognitionResultDTO] 意图识别结果"""
-    intent: IntentType
+    # 主意图字段
+    primary_intent: IntentType
     confidence: float
+    
+    # 候选意图列表 (intent, score)
+    alternative_intents: List[tuple[IntentType, float]] = []
+    
+    # 提取的实体
     entities: List[EntityDTO] = []
-    raw_nlu_output: Dict[str, Any] = Field(default_factory=dict) # 调试用
+    
+    # 是否存在显著歧义（如 top2 意图分差 < 0.2）
+    is_ambiguous: bool = False
+    
+    # 调试用
+    raw_nlu_output: Dict[str, Any] = Field(default_factory=dict)
+    
+    # 兼容旧版字段，保持向后兼容
+    @property
+    def intent(self) -> IntentType:
+        """兼容旧版代码，返回主意图"""
+        return self.primary_intent

@@ -1,13 +1,15 @@
-from typing import List, Optional
+from typing import List, Optional, Any
 from abc import abstractmethod
 from ..base import BaseManager, TaskStorage
 from ...common import (
     DialogStateDTO,
     TaskDraftDTO,
-    TaskSummary
+    TaskSummary,
+    IntentRecognitionResultDTO,
+    UserInputDTO
 )
 
-class IDialogStateManager(BaseManager):
+class IDialogStateManagerCapability(BaseManager):
     """对话状态管理器接口"""
     
     def __init__(self, task_storage: TaskStorage, context: dict = None):
@@ -125,5 +127,36 @@ class IDialogStateManager(BaseManager):
             
         Returns:
             更新后的对话状态
+        """
+        pass
+    
+    @abstractmethod
+    def process_intent_result(
+        self,
+        session_id: str,
+        intent_result: IntentRecognitionResultDTO,
+        user_input: Optional[UserInputDTO] = None
+    ) -> DialogStateDTO:
+        """主入口：根据意图识别结果更新对话状态，可能触发澄清、草稿填充、意图修正等
+        
+        Args:
+            session_id: 会话ID
+            intent_result: 意图识别结果
+            user_input: 用户输入（可选，用于日志或澄清）
+            
+        Returns:
+            更新后的对话状态
+        """
+        pass
+    
+    @abstractmethod
+    def cleanup_expired_sessions(self, max_idle_minutes: int = 30) -> int:
+        """清理超过 N 分钟未活动的会话
+        
+        Args:
+            max_idle_minutes: 最大空闲分钟数
+            
+        Returns:
+            清理的会话数量
         """
         pass

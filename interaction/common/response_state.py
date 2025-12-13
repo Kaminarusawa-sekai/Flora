@@ -45,3 +45,12 @@ class DialogStateDTO(BaseModel):
     last_mentioned_task_id: Optional[str] = None
 
     is_in_idle_mode: bool = False # 闲聊模式
+    
+    # --- 新增字段：意图处理与澄清 ---
+    requires_clarification: bool = False
+    clarification_context: Optional[Dict[str, Any]] = None
+    clarification_message: Optional[str] = None
+    missing_required_slots: List[str] = Field(default_factory=list)
+    
+    # --- 新增字段：会话生命周期 ---
+    last_updated: datetime = Field(default_factory=datetime.utcnow)

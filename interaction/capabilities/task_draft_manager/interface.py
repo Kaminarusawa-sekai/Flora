@@ -9,7 +9,7 @@ from ...common import (
     IntentRecognitionResultDTO
 )
 
-class ITaskDraftManager(BaseManager):
+class ITaskDraftManagerCapability(BaseManager):
     """任务草稿管理器接口"""
     
     def __init__(self, task_storage: TaskStorage, context: Dict[str, Any] = None):

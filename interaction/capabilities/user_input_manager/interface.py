@@ -3,7 +3,7 @@ from abc import abstractmethod
 from ..base import BaseManager
 from ...common import UserInputDTO
 
-class IUserInputManager(BaseManager):
+class IUserInputManagerCapability(BaseManager):
     """用户输入管理器接口"""
     
     @abstractmethod

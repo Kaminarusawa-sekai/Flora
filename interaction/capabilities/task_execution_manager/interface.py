@@ -7,7 +7,7 @@ from ...common import (
     ExecutionLogEntry
 )
 
-class ITaskExecutionManager(BaseManager):
+class ITaskExecutionManagerCapability(BaseManager):
     """任务执行管理器接口"""
     
     def __init__(self, task_storage: TaskStorage, context: Dict[str, Any] = None):

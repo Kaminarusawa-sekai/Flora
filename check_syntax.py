@@ -1,37 +1,37 @@
 import os
 import sys
-import ast
 
+def check_syntax(file_path):
+    """检查单个文件的语法"""
+    try:
+        with open(file_path, 'rb') as f:
+            code = compile(f.read(), file_path, 'exec')
+        return True, None
+    except SyntaxError as e:
+        return False, f"{file_path}:{e.lineno}:{e.offset}: SyntaxError: {e.text.strip()}"
+    except Exception as e:
+        return False, f"{file_path}: Error: {str(e)}"
 
-def check_syntax(directory):
-    """检查指定目录下所有Python文件的语法"""
-    errors = []
+def main():
+    """递归检查目录下所有 Python 文件的语法"""
+    capabilities_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'interaction', 'capabilities')
+    error_count = 0
     
-    for root, dirs, files in os.walk(directory):
+    print(f"Checking syntax in {capabilities_dir}...")
+    
+    for root, dirs, files in os.walk(capabilities_dir):
         for file in files:
             if file.endswith('.py'):
                 file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        ast.parse(content)
-                except SyntaxError as e:
-                    errors.append(f"{file_path}: {e}")
-                except Exception as e:
-                    errors.append(f"{file_path}: {type(e).__name__}: {e}")
+                is_valid, error_msg = check_syntax(file_path)
+                if not is_valid:
+                    print(f"❌ {error_msg}")
+                    error_count += 1
+                else:
+                    print(f"✅ {file_path}")
     
-    return errors
-
+    print(f"\nSyntax check completed. Found {error_count} errors.")
+    sys.exit(error_count)
 
 if __name__ == "__main__":
-    directory = sys.argv[1] if len(sys.argv) > 1 else "."
-    errors = check_syntax(directory)
-    
-    if errors:
-        print(f"发现 {len(errors)} 个语法错误:")
-        for error in errors:
-            print(error)
-        sys.exit(1)
-    else:
-        print("没有发现语法错误")
-        sys.exit(0)
+    main()

@@ -111,6 +111,11 @@ class CapabilityManager:
             if not isinstance(type_config, dict):
                 continue
             
+            # === 新增逻辑：检查是否启用该能力类型 ===
+            if not type_config.get("enabled", False):
+                self.logger.info(f"[{cap_type}] Capability type is disabled. Skipping initialization.")
+                continue
+            
             # === 新增逻辑：检查是否有 active_impl 开关 ===
             active_implementation = type_config.get("active_impl")
             

@@ -8,7 +8,7 @@ from ...common import (
     TaskStatusSummary
 )
 
-class ISystemResponseManager(BaseManager):
+class ISystemResponseManagerCapability(BaseManager):
     """系统响应管理器接口"""
     
     @abstractmethod

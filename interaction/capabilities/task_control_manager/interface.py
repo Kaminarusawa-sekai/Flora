@@ -3,7 +3,7 @@ from abc import abstractmethod
 from ..base import BaseManager, TaskStorage
 from ...common import TaskExecutionContextDTO
 
-class ITaskControlManager(BaseManager):
+class ITaskControlManagerCapability(BaseManager):
     """任务控制管理器接口"""
     
     def __init__(self, task_storage: TaskStorage, task_execution_manager: Any, context: dict = None):

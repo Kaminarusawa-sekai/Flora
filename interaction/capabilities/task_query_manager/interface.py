@@ -6,7 +6,7 @@ from ...common import (
     TaskExecutionContextDTO
 )
 
-class ITaskQueryManager(BaseManager):
+class ITaskQueryManagerCapability(BaseManager):
     """任务查询管理器接口"""
     
     def __init__(self, task_storage: TaskStorage, context: dict = None):

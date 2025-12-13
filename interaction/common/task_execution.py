@@ -36,8 +36,12 @@ class TaskExecutionContextDTO(BaseModel):
     title: str                  # 任务标题（便于展示）
     tags: List[str] = Field(default_factory=list)        # 标签（如 ["爬虫", "日报"]）
     created_by: str             # 创建者 ID
+    created_at: datetime = Field(default_factory=datetime.now) # 创建时间
 
     # 日志与结果
     logs: List[ExecutionLogEntry] = Field(default_factory=list)
     result_data: Optional[Dict[str, Any]] = None # 执行成功后的结果
     error_detail: Optional[Dict[str, Any]] = None # 错误信息
+    
+    # 外部执行系统关联
+    external_job_id: Optional[str] = None # 外部执行系统的任务ID

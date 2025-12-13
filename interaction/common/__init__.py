@@ -9,6 +9,11 @@ from .base import (
     TaskStatusSummary
 )
 
+# 对话相关
+from .dialog import (
+    DialogTurn
+)
+
 # 用户输入与NLU
 from .input_nlu import (
     UserInputDTO,
@@ -44,6 +49,7 @@ __all__ = [
     "ExecutionLogEntry",
     "TaskSummary",
     "TaskStatusSummary",
+    "DialogTurn",
     
     # 用户输入与NLU
     "UserInputDTO",

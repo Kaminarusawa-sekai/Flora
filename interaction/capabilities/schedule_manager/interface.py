@@ -5,7 +5,7 @@ from ...common import (
     ScheduleDTO
 )
 
-class IScheduleManager(BaseManager):
+class IScheduleManagerCapability(BaseManager):
     """定时/循环任务调度管理器接口"""
     
     @abstractmethod

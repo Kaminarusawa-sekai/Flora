@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 # 从external目录导入API路由
-from interaction.external import app as api_app
+from interaction.entry_layer import app as api_app
 
 # 创建主应用
 app = FastAPI(
