@@ -2,8 +2,8 @@
 import logging
 from typing import Dict, Any, Optional
 
-from tasks.common.types.task_operation import TaskOperationType, TaskOperationCategory, get_operation_category
-from tasks.capabilities.llm.interface import ILLMCapability
+from ...common.types.task_operation import TaskOperationType, TaskOperationCategory, get_operation_category
+from ..llm.interface import ILLMCapability
 from .interface import ITaskOperationCapability
 
 
@@ -53,8 +53,8 @@ class CommonTaskOperation(ITaskOperationCapability):
         try:
             # 调用LLM
             if not self.llm:
-                from tasks.capabilities import get_capability
-                from tasks.capabilities.llm.interface import ILLMCapability
+                from .. import get_capability
+                from ..llm.interface import ILLMCapability
                 self.llm = get_capability("llm", expected_type=ILLMCapability)
             response = self.llm.generate(prompt, temperature=0.1, max_tokens=500)
 

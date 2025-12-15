@@ -7,10 +7,10 @@ from typing import Any, Dict
 from datetime import datetime
 
 # 导入任务相关类型
-from tasks.common.types.task import Task, TaskType, TaskStatus
-from tasks.external.repositories.task_repo import TaskRepository
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..common.types.task import Task, TaskType, TaskStatus
+from ..external.repositories.task_repo import TaskRepository
+from ..events.event_bus import event_bus
+from ..events.event_types import EventType
 
 # 定义LoopTask类
 class LoopTask:
@@ -235,7 +235,7 @@ class LoopSchedulerActor(Actor):
     def _register_optimization(self, task_id: str, config: Dict[str, Any]):
         """向OptimizerActor注册优化"""
         try:
-            from tasks.capability_actors.optimizer_actor import OptimizerActor
+            from .optimizer_actor import OptimizerActor
 
             # 创建或获取OptimizerActor
             optimizer = self.createActor(OptimizerActor, globalName="optimizer_actor")

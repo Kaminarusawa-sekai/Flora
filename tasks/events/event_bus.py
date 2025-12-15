@@ -4,7 +4,7 @@
 """
 from typing import Dict, Any, Optional
 from thespian.actors import ActorSystem
-from tasks.common.messages.event_message import SystemEventMessage
+from ..common.messages.event_message import SystemEventMessage
 import time
 import uuid
 import logging

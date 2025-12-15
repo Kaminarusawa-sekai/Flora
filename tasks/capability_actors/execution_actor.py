@@ -11,11 +11,11 @@ from thespian.actors import Actor
 import logging
 from typing import Dict, Any, Optional, List, Union
 
-from tasks.common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage
-from tasks.capabilities import get_capability
-from tasks.capabilities.excution import BaseExecution
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage
+from ..capabilities import get_capability
+from ..capabilities.excution import BaseExecution
+from ..events.event_bus import event_bus
+from ..events.event_types import EventType
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

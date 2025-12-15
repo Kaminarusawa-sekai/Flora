@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 import requests
-from tasks.external.clients import DifyClient
+from ....external.clients import DifyClient
 from .base_connector import BaseConnector
 
 import logging
@@ -153,8 +153,8 @@ class DifyConnector(BaseConnector):
             logger.info(f"Missing inputs: {missing_inputs}")
             if missing_inputs:
 
-                from tasks.capabilities import get_capability
-                from tasks.capabilities.context_resolver.interface import IContextResolverCapbility
+                from ... import get_capability
+                from ...context_resolver.interface import IContextResolverCapbility
                 context_resolver:IContextResolverCapbility = get_capability("context_resolver", IContextResolverCapbility)
                 filled_inputs,remaining_inputs = context_resolver.pre_fill_known_params_with_llm(missing_inputs, str(params))
                 logger.info(f"params will be used: {params}")

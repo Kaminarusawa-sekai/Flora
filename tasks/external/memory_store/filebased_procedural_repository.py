@@ -1,12 +1,15 @@
 from pathlib import Path
-from typing import List, Optional
-from tasks.capabilities.llm_memory.unified_manageer.memory_interfaces import IProceduralRepository
+from typing import List, Optional, TYPE_CHECKING
+
+# 只在类型检查时导入，避免运行时循环导入
+if TYPE_CHECKING:
+    from ...capabilities.llm_memory.unified_manageer.memory_interfaces import IProceduralRepository
+
 import yaml
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-
-class FileBasedProceduralRepository(IProceduralRepository):
+class FileBasedProceduralRepository:
     def __init__(self, procedures_dir: str):
         self.dir = Path(procedures_dir)
         self.dir.mkdir(exist_ok=True)

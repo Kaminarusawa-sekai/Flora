@@ -1,10 +1,15 @@
-from typing import List, Optional
-from tasks.capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository
-from tasks.external.memory_store.sqLite_vault_dao import SQLiteVaultDAO
-from tasks.external.memory_store.security import Encryptor
+from typing import List, Optional, TYPE_CHECKING
 
-class EncryptedVaultRepository(IVaultRepository):
-    def __init__(self, dao: SQLiteVaultDAO, encryptor: Encryptor):
+# 只在类型检查时导入，避免运行时循环导入
+if TYPE_CHECKING:
+    from ...capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository
+    from .sqLite_vault_dao import SQLiteVaultDAO
+    from .security import Encryptor
+
+
+##TODO：class EncryptedVaultRepository(IVaultRepository)
+class EncryptedVaultRepository:
+    def __init__(self, dao: 'SQLiteVaultDAO', encryptor: 'Encryptor'):
         self.dao = dao
         self.encryptor = encryptor
 

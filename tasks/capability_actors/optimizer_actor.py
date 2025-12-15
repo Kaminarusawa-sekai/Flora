@@ -14,11 +14,11 @@ from thespian.actors import Actor, ActorAddress
 from datetime import datetime
 
 # 导入优化能力
-from tasks.capabilities.optimization import OptimizationInterface, MultiFeatureOptimizer
+from ..capabilities.optimization import OptimizationInterface, MultiFeatureOptimizer
 
 # 导入事件总线
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..events.event_bus import event_bus
+from ..events.event_types import EventType
 
 
 class OptimizerActor(Actor):
@@ -220,7 +220,7 @@ class OptimizerActor(Actor):
             self.log.info(f"Triggering optimization for task {task_id}, best_score: {stats.get('best_score')}")
 
             # 发送优化结果给LoopSchedulerActor
-            from tasks.capability_actors.loop_scheduler_actor import LoopSchedulerActor
+            from .loop_scheduler_actor import LoopSchedulerActor
             loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
 
             self.send(loop_scheduler, {
@@ -296,7 +296,7 @@ class OptimizerActor(Actor):
             })
 
             # 同时发送给LoopSchedulerActor
-            from tasks.capability_actors.loop_scheduler_actor import LoopSchedulerActor
+            from .loop_scheduler_actor import LoopSchedulerActor
             loop_scheduler = self.createActor(LoopSchedulerActor, globalName="loop_scheduler")
 
             self.send(loop_scheduler, {

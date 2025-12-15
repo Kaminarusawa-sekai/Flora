@@ -1,14 +1,26 @@
 """外部系统交互模块"""
 
-# 只导入不依赖外部服务的仓储类
-from .repositories.task_repo import TaskRepository
-from .repositories.draft_repo import DraftRepository
+# 导出子模块
+from . import clients
+from . import database
+from . import memory_store
+from . import message_queue
+from . import repositories
+
+# 暂时移除已删除的仓储类导入
 
 __all__ = [
-    # Repositories
-    'TaskRepository',
-    'DraftRepository',
+    # 子模块
+    'clients',
+    'database',
+    'memory_store',
+    'message_queue',
+    'repositories',
     
-    # 其他模块按需导入，避免不必要的依赖
-    # AgentStructureRepository, Database, Clients, Message Queue 等模块需要时单独导入
+    # 仓储类 - 暂时移除，因为 TaskRepository 和 DraftRepository 已删除
+    # 'TaskRepository',
+    # 'DraftRepository',
+    # 'AgentStructureRepository',
+    # 'EventRepository',
+    # 'SqlMetadataRepository'
 ]

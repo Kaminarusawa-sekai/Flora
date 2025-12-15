@@ -5,10 +5,10 @@ import sys
 # 确保可以导入当前目录的模块
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from tasks.capabilities.llm_memory.unified_manageer.manager import UnifiedMemoryManager, MemoryCapability
-from tasks.capabilities.llm_memory.unified_manageer.short_term import ShortTermMemory
-from tasks.capabilities.llm_memory.unified_manageer.resource_memory import ResourceMemory
-from tasks.capabilities.llm_memory.unified_manageer.vault_store import KnowledgeVault
+from .manager import UnifiedMemoryManager, MemoryCapability
+from .short_term import ShortTermMemory
+from .resource_memory import ResourceMemory
+from .vault_store import KnowledgeVault
 
 def test_short_term_memory():
     """测试短期记忆功能"""

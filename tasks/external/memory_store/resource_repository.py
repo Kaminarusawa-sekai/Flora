@@ -1,13 +1,16 @@
 from pathlib import Path
-from tasks.external.memory_store.sqlite_resource_dao import SQLiteResourceDAO
 import shutil
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import uuid
-from tasks.capabilities.llm_memory.unified_manageer.memory_interfaces import IResourceRepository
 
-class ResourceRepository(IResourceRepository):
-    def __init__(self, dao: SQLiteResourceDAO, use_minio: bool, minio_client=None, local_dir: str = None):
+# 只在类型检查时导入，避免运行时循环导入
+if TYPE_CHECKING:
+    from .sqlite_resource_dao import SQLiteResourceDAO
+    from ...capabilities.llm_memory.unified_manageer.memory_interfaces import IResourceRepository
+
+class ResourceRepository:
+    def __init__(self, dao: 'SQLiteResourceDAO', use_minio: bool, minio_client=None, local_dir: str = None):
         self.dao = dao
         self.use_minio = use_minio
         self.minio = minio_client

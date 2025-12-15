@@ -19,7 +19,7 @@ from datetime import datetime
 import json
 import os
 import re
-from tasks.capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
+from .memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
 
 
 class UnifiedMemoryManager():
@@ -54,8 +54,8 @@ class UnifiedMemoryManager():
         """
         print(f"🔍 [ADD] USER={user_id} | CONTENT='{content}'")
         if self.qwen is None:
-            from tasks.capabilities.registry import capability_registry
-            from tasks.capabilities.llm.interface import ILLMCapability
+            from ...registry import capability_registry
+            from ...llm.interface import ILLMCapability
             self.qwen = capability_registry.get_capability(
                 "qwen", expected_type=ILLMCapability
             )

@@ -1,7 +1,7 @@
 # capability_actors/task_group_aggregator_actor.py
 from typing import Dict, Any, List, Optional
 from thespian.actors import Actor, ActorExitRequest,ChildActorExited
-from tasks.common.messages.task_messages import (
+from ..common.messages.task_messages import (
     TaskGroupRequestMessage as TaskGroupRequest, 
     TaskCompletedMessage,
     ExecuteTaskMessage, TaskSpec,
@@ -9,17 +9,17 @@ from tasks.common.messages.task_messages import (
     MCPTaskRequestMessage as MCPTaskMessage,
     ResultAggregatorTaskRequestMessage
 )
-from tasks.common.messages.types import MessageType
+from ..common.messages.types import MessageType
 import logging
 
 # 导入事件总线
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..events.event_bus import event_bus
+from ..events.event_types import EventType
 
 # 导入相关 Actor 类引用
-from tasks.capability_actors.parallel_task_aggregator_actor import ParallelTaskAggregatorActor
-from tasks.capability_actors.result_aggregator_actor import ResultAggregatorActor
-from tasks.capability_actors.mcp_actor import MCPCapabilityActor
+from .parallel_task_aggregator_actor import ParallelTaskAggregatorActor
+from .result_aggregator_actor import ResultAggregatorActor
+from .mcp_actor import MCPCapabilityActor
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

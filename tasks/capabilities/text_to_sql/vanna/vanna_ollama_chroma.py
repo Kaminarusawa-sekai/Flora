@@ -5,8 +5,8 @@ import requests
 import json
 from vanna.base import VannaBase
 from vanna.chromadb import ChromaDB_VectorStore
-from ivanna_service import IVannaService
-from vanna_factory import register_vanna
+from .ivanna_service import IVannaService
+from .vanna_factory import register_vanna
 
 @register_vanna("ollama-chroma")
 class OllamaVanna(ChromaDB_VectorStore, VannaBase, IVannaService):

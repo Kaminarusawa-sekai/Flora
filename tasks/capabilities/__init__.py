@@ -3,11 +3,40 @@ from .capability_manager import CapabilityManager
 from .registry import CapabilityRegistry
 from .capability_base import CapabilityBase
 
+# 导出子模块
+from . import context_resolver
+from . import decision
+from . import dimension
+from . import draw_charts
+from . import excution
+from . import llm
+from . import llm_memory
+from . import multifeature
+from . import optimization
+from . import parallel
+from . import result_aggregation
+# from . import task_operation
+from . import task_planning
+from . import text_to_sql
+
 # 导出常用接口
 __all__ = [
     "CapabilityManager",
     "CapabilityRegistry",
-    "CapabilityBase"
+    "CapabilityBase",
+    "context_resolver",
+    "decision",
+    "dimension",
+    "draw_charts",
+    "excution",
+    "llm",
+    "llm_memory",
+    "multifeature",
+    "optimization",
+    "parallel",
+    "result_aggregation",
+    "task_planning",
+    "text_to_sql"
 ]
 
 # 创建全局能力管理器实例

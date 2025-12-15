@@ -1,8 +1,14 @@
 from typing import Dict, Any, Optional
-from tasks.capabilities.capability_base import CapabilityBase
-from tasks.capabilities.registry import CapabilityRegistry
-from tasks.common.types.intent import IntentResult, IntentType
-from .interface import IIntentRouterCapability
+from ..capability_base import CapabilityBase
+from ..registry import CapabilityRegistry
+from .interface import IIntentRouterCapability, IntentResult
+
+# 本地定义 IntentType 枚举，避免依赖缺失
+class IntentType:
+    """Intent type enum"""
+    CHAT = "chat"
+    TASK = "task"
+    INFO = "info"
 import logging
 logger = logging.getLogger(__name__)
 
@@ -62,8 +68,8 @@ class CommonIntentRouter(IIntentRouterCapability):
     
     def classify_intent(self, user_input: str, context: Optional[Dict[str, Any]] = None) -> IntentResult:
         """Classify user input intent"""
-        from tasks.capabilities import get_capability
-        from tasks.capabilities.llm.interface import ILLMCapability
+        from .. import get_capability
+        from ..llm.interface import ILLMCapability
         self.llm: ILLMCapability = get_capability("llm", expected_type=ILLMCapability)
         if not self.llm:
             logger.error("LLM capability not found, intent router may not work properly")

@@ -7,9 +7,9 @@ from vanna.base import VannaBase
 from vanna.chromadb import ChromaDB_VectorStore
 from dashscope import Generation
 from config import DASHSCOPE_API_KEY
-from tasks.capabilities.text_to_sql.vanna.ivanna_service import IVannaService  # 引入接口
+from .ivanna_service import IVannaService  # 引入接口
 
-from tasks.capabilities.text_to_sql.vanna.vanna_factory import register_vanna
+from .vanna_factory import register_vanna
 
 
 @register_vanna("qwen_chroma")

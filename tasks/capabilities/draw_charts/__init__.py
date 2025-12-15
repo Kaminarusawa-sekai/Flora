@@ -1,8 +1,7 @@
 from .interface import IChartDrawer
-from .common_draw_charts import CommonChartDrawer, enhance_with_charts
+from .common_draw_charts import CommonChartDrawer
 
 __all__ = [
     "IChartDrawer",
-    "CommonChartDrawer",
-    "enhance_with_charts"
+    "CommonChartDrawer"
 ]

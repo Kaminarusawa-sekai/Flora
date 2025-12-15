@@ -2,14 +2,14 @@ from thespian.actors import Actor
 import logging
 import json
 from typing import Any, Dict
-from tasks.capabilities import get_capability
-from tasks.capabilities.registry import capability_registry
-from tasks.capabilities.llm.interface import ILLMCapability
+from ..capabilities import get_capability
+from ..capabilities.registry import capability_registry
+from ..capabilities.llm.interface import ILLMCapability
 
 
 
-from tasks.common.messages.task_messages import TaskCompletedMessage, MCPTaskRequestMessage as MCPTaskMessage
-from tasks.common.messages.types import MessageType
+from ..common.messages.task_messages import TaskCompletedMessage, MCPTaskRequestMessage as MCPTaskMessage
+from ..common.messages.types import MessageType
 
 
 
@@ -61,7 +61,7 @@ class MCPCapabilityActor(Actor):
         使用 context_resolver 直接执行数据查询并返回结果
         """
         try:
-            from tasks.capabilities.context_resolver.interface import IContextResolverCapbility
+            from ..capabilities.context_resolver.interface import IContextResolverCapbility
             context_resolver: IContextResolverCapbility = get_capability(
                 "context_resolver", IContextResolverCapbility
             )
@@ -77,7 +77,7 @@ class MCPCapabilityActor(Actor):
             result = resolved_dict.get("query_result")
             if result:
                 # 获取图表绘制能力
-                from tasks.capabilities.draw_charts.interface import IChartDrawer
+                from ..capabilities.draw_charts.interface import IChartDrawer
                 chart_drawer: IChartDrawer = get_capability(
                     "chart_drawer", IChartDrawer
                 )

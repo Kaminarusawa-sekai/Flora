@@ -39,8 +39,8 @@ class RequestHandler:
         
         # 初始化仓库 (用于读操作)
         try:
-            from tasks.external.repositories.task_repo import TaskRepository
-            from tasks.external.repositories.draft_repo import DraftRepository
+            from ..external.repositories.task_repo import TaskRepository
+            from ..external.repositories.draft_repo import DraftRepository
             self.task_repo = TaskRepository()
             self.draft_repo = DraftRepository()
         except ImportError:
@@ -213,7 +213,7 @@ class RequestHandler:
         
         # 构造消息
         try:
-            from tasks.common.messages.base_message import UserRequestMessage
+            from ..common.messages.base_message import UserRequestMessage
             msg = UserRequestMessage(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
@@ -277,7 +277,7 @@ class RequestHandler:
         
         # 构造消息
         try:
-            from tasks.common.messages.base_message import ClearChatMessage
+            from ..common.messages.base_message import ClearChatMessage
             msg = ClearChatMessage(
                 id=str(uuid.uuid4()),
                 user_id=user_id
@@ -335,7 +335,7 @@ class RequestHandler:
         
         # 构造消息
         try:
-            from tasks.common.messages.base_message import TaskCommandMessage
+            from ..common.messages.base_message import TaskCommandMessage
             msg = TaskCommandMessage(
                 id=str(uuid.uuid4()),
                 task_id=task_id,

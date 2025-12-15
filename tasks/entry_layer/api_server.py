@@ -37,9 +37,9 @@ class AuthInfo(BaseModel):
     role: Optional[str] = None
 
 # 导入入口层其他组件
-from tasks.entry_layer.auth_middleware import AuthMiddleware, get_current_auth_info
-from tasks.entry_layer.request_handler import RequestHandler
-from tasks.entry_layer.tenant_router import TenantRouter
+from .auth_middleware import AuthMiddleware, get_current_auth_info
+from .request_handler import RequestHandler
+from .tenant_router import TenantRouter
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class APIServer:
         self.app.state.auth_middleware = self.auth_middleware
         
         # 注册EventActor服务
-        from tasks.events.event_actor import EventActor
+        from ..events.event_actor import EventActor
         self.tenant_router.register_service_factory('event_actor', EventActor)
         
         self.request_handler = RequestHandler(

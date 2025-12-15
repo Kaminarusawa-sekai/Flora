@@ -4,7 +4,7 @@ import re
 import networkx as nx  # 需要引入 networkx
 from typing import List, Dict, Optional, Any, Tuple
 from .interface import ITaskPlanningCapability
-from tasks.external.repositories.agent_structure_repo import AgentStructureRepository 
+from ...external.repositories.agent_structure_repo import AgentStructureRepository 
 
 import logging
 logger = logging.getLogger(__name__)
@@ -33,11 +33,11 @@ class CommonTaskPlanning(ITaskPlanningCapability):
 
     def initialize(self, config: Dict[str, Any]) -> bool:
  
-        from tasks.agents.tree.tree_manager import treeManager
+        from ...agents.tree.tree_manager import treeManager
 
         self.tree_manager = treeManager
-        from tasks.capabilities.llm.interface import ILLMCapability
-        from tasks.capabilities.registry import capability_registry
+        from ..llm.interface import ILLMCapability
+        from ..registry import capability_registry
         self._llm = capability_registry.get_capability("llm", ILLMCapability)
 
         self._structure_repo = AgentStructureRepository()
@@ -702,8 +702,8 @@ class CommonTaskPlanning(ITaskPlanningCapability):
         
         # 2. 动态加载 (兜底)
         try:
-            from tasks.capabilities.llm.interface import ILLMCapability
-            from tasks.capabilities.registry import capability_registry
+            from ..llm.interface import ILLMCapability
+            from ..registry import capability_registry
             llm = capability_registry.get_capability("llm", ILLMCapability)
             if llm:
                 return llm.generate(prompt)

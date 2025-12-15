@@ -2,7 +2,7 @@
 
 import logging
 from pymysql.cursors import Cursor
-from tasks.external.database.connection_pool import ConnectionPoolFactory, BaseConnectionPool
+from ..database.connection_pool import ConnectionPoolFactory, BaseConnectionPool
 from typing import Dict, Any
 from abc import ABC, abstractmethod
 

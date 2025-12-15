@@ -1,12 +1,12 @@
 import logging
 from typing import Dict, Any, Optional
 from thespian.actors import ActorAddress, Actor, ActorExitRequest,ChildActorExited
-from tasks.common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage
-from tasks.common.messages.agent_messages import AgentTaskMessage
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm_memory.interface import IMemoryCapability
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage
+from ..common.messages.agent_messages import AgentTaskMessage
+from ..capabilities import get_capability
+from ..capabilities.llm_memory.interface import IMemoryCapability
+from ..events.event_bus import event_bus
+from ..events.event_types import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class LeafActor(Actor):
 
     def _handle_init(self, msg: Dict[str, Any], sender: ActorAddress):
         self.agent_id = msg["agent_id"]
-        from tasks.agents.tree.tree_manager import TreeManager
+        from .tree.tree_manager import TreeManager
         tree_manager = TreeManager()
         self.meta = tree_manager.get_agent_meta(self.agent_id)
         try:
@@ -62,7 +62,7 @@ class LeafActor(Actor):
         # 如果尚未初始化，则执行初始化逻辑
         if not self.agent_id:
             self.agent_id = task.agent_id
-            from tasks.agents.tree.tree_manager import TreeManager
+            from .tree.tree_manager import TreeManager
             tree_manager = TreeManager()
             self.meta = tree_manager.get_agent_meta(self.agent_id)
             try:
@@ -124,7 +124,7 @@ class LeafActor(Actor):
     def _execute_leaf_logic(self, task: AgentTaskMessage, sender: ActorAddress):
         """处理叶子节点执行逻辑"""
         # 获取 ExecutionActor
-        from tasks.capability_actors.execution_actor import ExecutionActor
+        from ..capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
         
         
@@ -286,7 +286,7 @@ class LeafActor(Actor):
         self.current_user_id = state_data.get("current_user_id")
         
         # 3. 获取原始任务信息
-        from tasks.capability_actors.execution_actor import ExecutionActor
+        from ..capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
         
         # 4. 构建新的执行请求，合并用户输入数据

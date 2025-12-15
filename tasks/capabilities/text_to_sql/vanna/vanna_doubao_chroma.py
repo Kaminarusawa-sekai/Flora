@@ -4,8 +4,8 @@ from typing import List, Any, Optional
 import json
 from vanna.base import VannaBase
 from vanna.chromadb import ChromaDB_VectorStore
-from ivanna_service import IVannaService
-from vanna_factory import register_vanna
+from .ivanna_service import IVannaService
+from .vanna_factory import register_vanna
 from volcengine.maas import MaasService
 import os
 

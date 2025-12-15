@@ -3,8 +3,8 @@ from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime, timedelta
 
-from tasks.external.repositories.agent_structure_repo import AgentStructureRepository
-from tasks.common.config.config_manager import config_manager
+from ...external.repositories.agent_structure_repo import AgentStructureRepository
+from ...common.config.config_manager import config_manager
 
 
 class NodeService:

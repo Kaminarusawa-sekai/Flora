@@ -232,8 +232,8 @@ class TaskRouter(CapabilityBase):
         return llm_output.strip().split('\n')[0].strip()
     
     def call_qwen(self,prompt: str) -> str:
-        from tasks.capabilities.llm.interface import ILLMCapability
-        from tasks.capabilities.registry import capability_registry
+        from ..llm.interface import ILLMCapability
+        from ..registry import capability_registry
         llm = capability_registry.get_capability("llm", ILLMCapability)
         res=llm.generate(prompt)
         return res

@@ -7,9 +7,9 @@ from typing import Optional
 from datetime import datetime, timedelta
 from thespian.actors import ActorAddress
 
-from tasks.common.types.actor_reference import ActorReferenceDTO
-from tasks.external.repositories.actor_reference_repo import ActorReferenceRepo
-from tasks.external.database.redis_client import RedisClient
+from ..types.actor_reference import ActorReferenceDTO
+from ...external.repositories.actor_reference_repo import ActorReferenceRepo
+from ...external.database.redis_client import RedisClient
 
 
 class ActorReferenceManager:

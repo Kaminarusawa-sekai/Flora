@@ -1,10 +1,8 @@
 """仓储层模块，负责业务对象的持久化逻辑"""
 
-from .task_repo import TaskRepository
-from .draft_repo import DraftRepository
+# 暂时移除所有仓储类导出，因为相关文件已被删除
 
 __all__ = [
-    'TaskRepository',
-    'DraftRepository'
+    # 'DraftRepository'
     # AgentStructureRepository is imported separately to avoid dependencies
 ]

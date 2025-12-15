@@ -1,6 +1,6 @@
 # memory/short_term.py
 from typing import List, Dict
-from tasks.external.memory_store.stm_dao import STMRecordDAO
+from ....external.memory_store.stm_dao import STMRecordDAO
 
 class ShortTermMemory:
     def __init__(self, db_path: str = "memory.db", max_history: int = 10):

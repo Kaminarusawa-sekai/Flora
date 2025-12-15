@@ -4,29 +4,26 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from thespian.actors import Actor, ActorAddress, ActorExitRequest,ChildActorExited
 import uuid
-from tasks.common.messages.agent_messages import (
+from ..common.messages.agent_messages import (
     AgentTaskMessage, ResumeTaskMessage, 
 )
-from tasks.common.messages.types import MessageType
-from tasks.common.messages.task_messages import TaskCompletedMessage
-from tasks.common.messages.interact_messages import TaskResultMessage, TaskPausedMessage as InteractTaskPausedMessage
+from ..common.messages.types import MessageType
+from ..common.messages.task_messages import TaskCompletedMessage
+from ..common.messages.interact_messages import TaskResultMessage, TaskPausedMessage as InteractTaskPausedMessage
 
 # 导入新的能力管理模块
-from tasks.capabilities import init_capabilities, get_capability, get_capability_registry
+from ..capabilities import init_capabilities, get_capability, get_capability_registry
 
 # 导入能力接口
-from tasks.capabilities.llm_memory.interface import IMemoryCapability
-from tasks.capabilities.task_operation.interface import  ITaskOperationCapability
+from ..capabilities.llm_memory.interface import IMemoryCapability
 
-# 导入类型定义
-from tasks.common.types.task_operation import TaskOperationType, TaskOperationCategory
 
 # 导入新的能力接口
-from tasks.capabilities.task_planning.interface import ITaskPlanningCapability
+from ..capabilities.task_planning.interface import ITaskPlanningCapability
 
 # 导入事件总线
-from tasks.events.event_bus import event_bus
-from tasks.events.event_types import EventType
+from ..events.event_bus import event_bus
+
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +95,7 @@ class AgentActor(Actor):
         else:
             self._task_path = ""
 
-        from tasks.agents.tree.tree_manager import TreeManager
+        from .tree.tree_manager import TreeManager
         tree_manager = TreeManager()
         self.meta=tree_manager.get_agent_meta(self.agent_id)
         try:
@@ -465,7 +462,7 @@ class AgentActor(Actor):
         """
         构建任务组请求
         """
-        from tasks.common.messages.task_messages import TaskSpec, TaskGroupRequestMessage
+        from ..common.messages.task_messages import TaskSpec, TaskGroupRequestMessage
 
         task_specs = []
         for task in tasks:
@@ -514,7 +511,7 @@ class AgentActor(Actor):
             task_group_request: 任务组请求
             sender: 原始发送者（用于回复）
         """
-        from tasks.capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+        from ..capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
 
         # 创建TaskGroupAggregatorActor
         aggregator = self.createActor(TaskGroupAggregatorActor)
@@ -614,8 +611,8 @@ class AgentActor(Actor):
 
         try:
             # 使用新的能力获取方式获取LLM能力
-            from tasks.capabilities.llm.interface import ILLMCapability
-            from tasks.capabilities import get_capability
+            from ..capabilities.llm.interface import ILLMCapability
+            from ..capabilities import get_capability
             llm = get_capability("llm", expected_type=ILLMCapability)
             result = llm.generate(prompt, parse_json=True, max_tokens=300)
 

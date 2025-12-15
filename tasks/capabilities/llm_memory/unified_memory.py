@@ -20,17 +20,23 @@ from .unified_manageer.memory_manager_factory import (
 )
 
 
-from tasks.external.memory_store.memory_repos import (
-    build_procedural_repo,
-    build_resource_repo,
-    build_vault_repo
-)
+# 避免循环导入，将全局变量改为延迟初始化
+_SHARED_VAULT_REPO = None
+_SHARED_PROCEDURAL_REPO = None
+_SHARED_RESOURCE_REPO = None
 
-
-# 全局共享的底层依赖（初始化一次）
-_SHARED_VAULT_REPO = build_vault_repo()
-_SHARED_PROCEDURAL_REPO = build_procedural_repo()
-_SHARED_RESOURCE_REPO = build_resource_repo()
+# 延迟初始化函数
+def _init_shared_repos():
+    global _SHARED_VAULT_REPO, _SHARED_PROCEDURAL_REPO, _SHARED_RESOURCE_REPO
+    if _SHARED_VAULT_REPO is None:
+        from ...external.memory_store.memory_repos import (
+            build_procedural_repo,
+            build_resource_repo,
+            build_vault_repo
+        )
+        _SHARED_VAULT_REPO = build_vault_repo()
+        _SHARED_PROCEDURAL_REPO = build_procedural_repo()
+        _SHARED_RESOURCE_REPO = build_resource_repo()
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +106,8 @@ class UnifiedMemory(IMemoryCapability):
                 #     self._memory_manager = self._manager_cache[self.user_id]
                 #     logger.debug(f"Reusing cached UnifiedMemoryManager for user={self.user_id}")
                 # else:
+                # 初始化共享仓库
+                _init_shared_repos()
                 logger.info(f"Creating new UnifiedMemoryManager ")
                 self._memory_manager = UnifiedMemoryManager(
                     vault_repo=self._vault_repo or _SHARED_VAULT_REPO,

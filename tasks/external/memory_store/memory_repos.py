@@ -1,12 +1,12 @@
 # external/memory_repos.py
-from tasks.capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
+from ...capabilities.llm_memory.unified_manageer.memory_interfaces import IVaultRepository, IProceduralRepository, IResourceRepository
 
-from tasks.external.memory_store.filebased_procedural_repository import FileBasedProceduralRepository
-from tasks.external.memory_store.sqLite_vault_dao import SQLiteVaultDAO
-from tasks.external.memory_store.sqlite_resource_dao import SQLiteResourceDAO
-from tasks.external.memory_store.security import Encryptor
-from tasks.external.memory_store.encrypte_vault_repository import EncryptedVaultRepository
-from tasks.external.memory_store.resource_repository import ResourceRepository
+from .filebased_procedural_repository import FileBasedProceduralRepository
+from .sqLite_vault_dao import SQLiteVaultDAO
+from .sqlite_resource_dao import SQLiteResourceDAO
+from .security import Encryptor
+from .encrypte_vault_repository import EncryptedVaultRepository
+from .resource_repository import ResourceRepository
 from .storage import get_minio_client   # ← 统一获取 MinIO 客户端
 from config import MEMORY_CONFIG          # ← 从系统统一配置读取
 # ========================

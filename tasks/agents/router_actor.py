@@ -6,7 +6,7 @@ import threading
 from thespian.actors import Actor, ActorAddress
 
 # 导入Actor引用管理工具
-from tasks.common.utils.actor_reference_manager import actor_reference_manager
+from ..common.utils.actor_reference_manager import actor_reference_manager
 
 
 class UserRequest:

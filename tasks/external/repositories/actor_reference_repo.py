@@ -4,8 +4,8 @@ import json
 from typing import Optional, List
 from datetime import datetime, timedelta
 
-from tasks.common.types.actor_reference import ActorReferenceDTO
-from tasks.external.database.redis_client import RedisClient
+from ...common.types.actor_reference import ActorReferenceDTO
+from ..database.redis_client import RedisClient
 
 
 class ActorReferenceRepo:

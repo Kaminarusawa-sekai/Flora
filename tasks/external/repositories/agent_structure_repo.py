@@ -2,7 +2,7 @@
 from typing import Dict, List, Any, Optional
 import logging
 import networkx as nx
-from tasks.external.database.neo4j_client import Neo4jClient
+from ..database.neo4j_client import Neo4jClient
 
 
 class AgentStructureRepository:

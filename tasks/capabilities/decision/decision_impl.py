@@ -88,8 +88,8 @@ class TaskOperationCapability(ITaskOperationCapability):
         Args:
             config: 配置参数
         """
-        from tasks.capabilities.llm.interface import ILLMCapability
-        from tasks.capabilities.registry import capability_registry
+        from ..llm.interface import ILLMCapability
+        from ..registry import capability_registry
         self.llm = capability_registry.get_capability("llm", ILLMCapability)
         self.llm.initialize({})
     

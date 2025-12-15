@@ -3,8 +3,8 @@ from typing import Dict, Any, Optional, List
 import logging
 from .node_service import NodeService
 from .relationship_service import RelationshipService
-from tasks.external.repositories.agent_structure_repo import AgentStructureRepository
-from tasks.common.config.config_manager import config_manager
+from ...external.repositories.agent_structure_repo import AgentStructureRepository
+from ...common.config.config_manager import config_manager
 
 
 class TreeManager:

@@ -4,7 +4,7 @@ from pydantic import Field
 
 from .base_message import  TaskMessage
 from .types import MessageType
-from tasks.common.tasks.task_spec import TaskSpec
+from ..taskspec.task_spec import TaskSpec
 
 from thespian.actors import ActorAddress
 # === 前台消息创建 ===

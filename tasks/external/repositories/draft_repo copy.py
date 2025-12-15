@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from tasks.common.types.draft import TaskDraft
+from ...common.types.draft import TaskDraft
 
 class DraftRepository:
     """Draft repository for storing and retrieving task drafts"""

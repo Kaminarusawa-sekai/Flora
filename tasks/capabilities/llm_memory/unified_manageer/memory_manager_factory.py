@@ -4,19 +4,16 @@ import threading
 from functools import lru_cache, wraps
 from typing import Optional, Any, Dict
 
-from tasks.capabilities.llm_memory.unified_manageer.manager import UnifiedMemoryManager  # 替换为你的实际路径
-from tasks.capabilities.capbility_config import CapabilityConfig
-from tasks.external.memory_store.memory_repos import (
-    build_procedural_repo,
-    build_resource_repo,
-    build_vault_repo
-)
+from .manager import UnifiedMemoryManager  # 替换为你的实际路径
+from ...capbility_config import CapabilityConfig
+
+# 避免循环导入，将导入移到函数内部
 
 
-# 全局共享的底层依赖（初始化一次）
-_SHARED_VAULT_REPO = build_vault_repo()
-_SHARED_PROCEDURAL_REPO = build_procedural_repo()
-_SHARED_RESOURCE_REPO = build_resource_repo()
+# 全局共享的底层依赖（延迟初始化）
+_SHARED_VAULT_REPO = None
+_SHARED_PROCEDURAL_REPO = None
+_SHARED_RESOURCE_REPO = None
 
 
 
@@ -39,8 +36,24 @@ class MemoryManagerFactory:
 
     def _init_lru_cache(self):
         """动态创建带指定 maxsize 的 LRU 缓存方法"""
+        
+        def _init_shared_repos():
+            """初始化共享仓库"""
+            global _SHARED_VAULT_REPO, _SHARED_PROCEDURAL_REPO, _SHARED_RESOURCE_REPO
+            if _SHARED_VAULT_REPO is None:
+                from ....external.memory_store.memory_repos import (
+                    build_procedural_repo,
+                    build_resource_repo,
+                    build_vault_repo
+                )
+                _SHARED_VAULT_REPO = build_vault_repo()
+                _SHARED_PROCEDURAL_REPO = build_procedural_repo()
+                _SHARED_RESOURCE_REPO = build_resource_repo()
+        
         @lru_cache(maxsize=self.maxsize)
         def _get_manager_cached(user_id: str) -> UnifiedMemoryManager:
+            # 在创建管理器之前确保共享仓库已初始化
+            _init_shared_repos()
             return UnifiedMemoryManager(
                 user_id=user_id,
                 vault_repo=_SHARED_VAULT_REPO,

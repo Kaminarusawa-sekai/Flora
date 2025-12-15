@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    ports: ["5672:5672", "15672:15672"]
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_delayed_message_exchange true"
+    volumes:
+      - ./rabbitmq-delayed-plugin:/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: command_tower
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+volumes:
+  pgdata:

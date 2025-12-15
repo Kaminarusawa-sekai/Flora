@@ -44,13 +44,13 @@ class TreeContextResolver(IContextResolverCapbility):
         if tree_manager:
             self.tree_manager = tree_manager
         else:
-            from tasks.agents.tree.tree_manager import treeManager
+            from ...agents.tree.tree_manager import treeManager
             self.tree_manager=treeManager
         if llm_client:
             self.llm_client = llm_client
         else:
-            from tasks.capabilities.llm.interface import ILLMCapability
-            from tasks.capabilities import get_capability
+            from ..llm.interface import ILLMCapability
+            from .. import get_capability
             self.llm_client:ILLMCapability = get_capability("llm",ILLMCapability)
         
         self.logger.info("Dependencies (TreeManager, LLM) injected.")
@@ -114,8 +114,8 @@ class TreeContextResolver(IContextResolverCapbility):
                 }
 
                 # 初始化 Vanna 能力
-                from tasks.capabilities.registry import capability_registry
-                from tasks.capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
+                from ..registry import capability_registry
+                from ..text_to_sql.text_to_sql import ITextToSQLCapability
                 text_to_sql_cap: ITextToSQLCapability = capability_registry.get_capability(
                     "text_to_sql", expected_type=ITextToSQLCapability
                 )

@@ -3,7 +3,7 @@
 负责事件的持久化存储和查询
 """
 from typing import Dict, Any, List, Optional
-from tasks.common.messages.event_message import SystemEventMessage
+from ...common.messages.event_message import SystemEventMessage
 
 
 class EventRepository:
@@ -27,7 +27,7 @@ class EventRepository:
         # 初始化数据库连接
         global _global_mock_db
         try:
-            from tasks.external.database.mysql_client import MySQLClient
+            from ..database.mysql_client import MySQLClient
             self.db = MySQLClient()
         except ImportError:
             # 如果MySQL客户端不存在，使用模拟实现

@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict
 from datetime import datetime
-from tasks.common.types.task import Task, TaskStatus, TaskType
+from ...common.types.task import Task, TaskStatus, TaskType
 
 class TaskRepository:
     """Task repository for storing and retrieving tasks"""

@@ -1,7 +1,7 @@
 # vanna_factory.py
 
 from typing import Dict, Any
-from tasks.capabilities.text_to_sql.vanna.ivanna_service import IVannaService
+from .ivanna_service import IVannaService
 
 # 注册表：映射名称到构造函数
 _VANNA_REGISTRY: Dict[str, type] = {}

@@ -1,7 +1,7 @@
 import logging
 import thespian.actors as actors
-from tasks.agents.tree.tree_manager import treeManager
-from tasks.common.messages import (
+from ..agents.tree.tree_manager import treeManager
+from ..common.messages import (
     DataQueryRequest, DataQueryResponse, 
     InitDataQueryActor
 )
@@ -9,7 +9,7 @@ from tasks.common.messages import (
 
 
 # 引入刚刚拆分出来的 Capability
-from tasks.capabilities.registry import capability_registry
+from ..capabilities.registry import capability_registry
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +17,8 @@ class DataActor(actors.Actor):
     def __init__(self):
         super().__init__()
         # 实例化能力对象（工人）
-        from tasks.capabilities.registry import capability_registry
-        from tasks.capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
+        from ..capabilities.registry import capability_registry
+        from ..capabilities.text_to_sql.text_to_sql import ITextToSQLCapability
         self.analyst = capability_registry.get_capability("text_to_sql",expected_type=ITextToSQLCapability)
         
         # Actor 自身的状态

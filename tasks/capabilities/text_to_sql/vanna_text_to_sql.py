@@ -8,10 +8,10 @@ from .text_to_sql import ITextToSQLCapability
 import logging
 
 logger = logging.getLogger(__name__)
-from tasks.external.repositories.sql_metadata_repo import DatabaseMetadataRepositoryFactory
-from tasks.capabilities.text_to_sql.utils import is_safe_sql, should_learn
+from ...external.repositories.sql_metadata_repo import DatabaseMetadataRepositoryFactory
+from .utils import is_safe_sql, should_learn
 
-from tasks.capabilities.text_to_sql.vanna.vanna_factory import VannaFactory
+from .vanna.vanna_factory import VannaFactory
 from config import VANNA_TYPE
 
 
@@ -147,7 +147,7 @@ class VannaTextToSQL(ITextToSQLCapability):
             return self.connection_pool.get_connection()
         else:
             # 回退到原始的 mysql_pool（保持向后兼容）
-            from tasks.external.repositories.sql_metadata_repo import MySQLMetadataRepository
+            from ...external.repositories.sql_metadata_repo import MySQLMetadataRepository
             return MySQLMetadataRepository()
 
     def _enrich_query(self, query: str, context: dict) -> str:
