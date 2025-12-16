@@ -35,7 +35,7 @@ class CronGenerator:
         获取 CRON 表达式的下一次执行时间
         """
         if not base_time:
-            base_time = datetime.utcnow()
+            base_time = datetime.now(timezone.utc)
         return croniter.croniter(expr, base_time).get_next(datetime)
 
     @staticmethod
@@ -44,7 +44,7 @@ class CronGenerator:
         获取 CRON 表达式的接下来 n 次执行时间
         """
         if not base_time:
-            base_time = datetime.utcnow()
+            base_time = datetime.now(timezone.utc)
         iter = croniter.croniter(expr, base_time)
         return [iter.get_next(datetime) for _ in range(n)]
 
@@ -100,7 +100,7 @@ async def cron_scheduler(lifecycle_svc: LifecycleService, db_session: AsyncSessi
     CRON 调度器：每分钟运行一次，精确触发符合时间点的 CRON 任务
     """
     while True:
-        now = datetime.utcnow().replace(second=0, microsecond=0)  # 对齐到整分钟
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)  # 对齐到整分钟
         
         try:
             def_repo = SQLAlchemyTaskDefinitionRepo(db_session)
@@ -152,5 +152,5 @@ async def cron_scheduler(lifecycle_svc: LifecycleService, db_session: AsyncSessi
 
         # Sleep 到下一整分钟
         next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-        sleep_sec = (next_minute - datetime.utcnow()).total_seconds()
+        sleep_sec = (next_minute - datetime.now(timezone.utc)).total_seconds()
         await asyncio.sleep(max(1.0, sleep_sec))

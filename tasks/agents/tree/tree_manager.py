@@ -4,7 +4,7 @@ import logging
 from .node_service import NodeService
 from .relationship_service import RelationshipService
 from ...external.repositories.agent_structure_repo import AgentStructureRepository
-from ...common.config.config_manager import config_manager
+
 
 
 class TreeManager:

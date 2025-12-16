@@ -4,13 +4,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from thespian.actors import Actor, ActorAddress, ActorExitRequest,ChildActorExited
 import uuid
-from ..common.messages.agent_messages import (
-    AgentTaskMessage, ResumeTaskMessage, 
+from ..common.messages import (
+    AgentTaskMessage, TaskCompletedMessage, ResumeTaskMessage,
+     TaskGroupRequestMessage, 
 )
-from ..common.messages.types import MessageType
-from ..common.messages.task_messages import TaskCompletedMessage
-from ..common.messages.interact_messages import TaskResultMessage, TaskPausedMessage as InteractTaskPausedMessage
-
+from ..common.taskspec import TaskSpec
+from ..common.context.context_entry import ContextEntry
 # 导入新的能力管理模块
 from ..capabilities import init_capabilities, get_capability, get_capability_registry
 
@@ -21,8 +20,9 @@ from ..capabilities.llm_memory.interface import IMemoryCapability
 # 导入新的能力接口
 from ..capabilities.task_planning.interface import ITaskPlanningCapability
 
-# 导入事件总线
+# 导入事件总线和EventType
 from ..events.event_bus import event_bus
+from common.event import EventType
 
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,7 @@ class AgentActor(Actor):
                 self._handle_task(message, sender)
             elif isinstance(message, ResumeTaskMessage):
                 self._handle_resume_task(message, sender)
-            elif hasattr(message, "message_type") and message.message_type in [MessageType.TASK_PAUSED, "task_paused"]:
-                self._handle_task_paused_from_execution(message, sender)
+            # 不再直接处理 paused 消息，改为通过 TaskCompletedMessage 的 NEED_INPUT 状态处理
             elif isinstance(message, TaskCompletedMessage):
                 self._handle_task_result(message, sender)
             else:
@@ -115,8 +114,6 @@ class AgentActor(Actor):
         主任务处理入口（后台）：专注于任务执行
 
         流程说明:
-        0-是否是参数补完逻辑
-        ② 任务操作分类
         ③ 根据操作类型分发
         ④ 节点选择
         ⑤ 任务规划
@@ -128,205 +125,126 @@ class AgentActor(Actor):
             return
 
         # 获取任务信息
-        user_input = str(task.content) + str(task.description or "")
+        user_input = task.get_user_input()
         user_id = task.user_id
-        parent_task_id = task.task_id
+        task_id = task.task_id
         reply_to = task.reply_to or sender  # 前台要求回复的地址
 
-        if not parent_task_id:
+
+        if not task_id:
             self.log.error("Missing task_id in agent_task")
             return
 
-        self.task_id_to_sender[parent_task_id] = reply_to
+        # 记录回复地址和当前用户ID
+        self.task_id_to_sender[task_id] = reply_to
         self.current_user_id = user_id
 
-        self.log.info(f"[AgentActor] Handling task {parent_task_id}: {user_input[:50]}...")
-
-        # --- 流程 0: 参数补完检查 ---
-        # 如果是参数补完消息，直接分发给对应的ExecutionActor
-        if task.is_parameter_completion:
-            self.log.info(f"[AgentActor] Detected parameter completion for task {parent_task_id}")
-            # 直接调用恢复逻辑
-            parameters = task.parameters
-            self._resume_paused_task(parent_task_id, parameters, reply_to)
-            return
-
-        # --- 流程 ②: 任务操作分类 ---
-        operation_result = self._classify_task_operation(user_input, {})
-
-        # --- 流程 ③: 根据操作类型分发 ---
-        self._dispatch_operation(operation_result, task, reply_to)
-
-    def _dispatch_operation(self, operation_result: Dict[str, Any], task: AgentTaskMessage, sender: ActorAddress):
-        """
-        ③ 操作分发 - 根据操作类型执行不同的处理逻辑
-
-        Args:
-            operation_result: 操作分类结果
-            task: 任务信息
-            sender: 发送者地址
-        """
-        operation_type = operation_result["operation_type"]
-        category = operation_result["category"]
-        parent_task_id = task.task_id
-        user_input = str(task.content) + str(task.description or "")
-
-        self.log.info(f"[AgentActor] Dispatching operation: {operation_type.value}, category: {category.value}")
-
-        if category == TaskOperationCategory.CREATION:
-            # 创建类 → 继续任务执行流程
-            if operation_type == TaskOperationType.NEW_TASK:
-                self._handle_task_creation(task.__dict__, sender)
-            # 简化：移除其他创建类型的处理，只保留核心的NEW_TASK
-
-        elif category == TaskOperationCategory.EXECUTION:
-            # 执行控制类 → 执行对应操作
-            if operation_type == TaskOperationType.EXECUTE_TASK:
-                # 立即执行任务
-                self._handle_task_creation(task.__dict__, sender)
-            elif operation_type == TaskOperationType.RESUME_TASK:
-                # 恢复任务
-                self._resume_paused_task(parent_task_id, operation_result.get("parameters", {}), sender)
-
-        else:
-            # 未知类型或其他类型，暂时不处理
-            task_result = TaskResultMessage(
-                task_id=parent_task_id,
-                result=None,
-                error=f"不支持的操作类型: {operation_type.value}",
-                message=None
-            )
-            self.send(sender, task_result)
-
-    def _handle_task_creation(self, task: Dict[str, Any], sender: ActorAddress):
-        """
-        处理任务创建类操作
-
-        流程:
-        ④ 节点选择
-        ⑤ 任务规划
-        ⑥ 并行判断
-        ⑦ 构建TaskGroupRequest
-        ⑧ 发送并等待结果
-        """
-        parent_task_id = task.get("task_id")
-        user_input = task.get("content", "") + task.get("description", "")+ str(task.get("context", {}))
-
-        self.log.info(f"[AgentActor] Handling task creation: {user_input[:50]}...")
+        self.log.info(f"[AgentActor] Handling task {task_id}: {user_input[:50]}...")
 
         # 发布任务创建事件
         event_bus.publish_task_event(
-            task_id=parent_task_id,
+            task_id=task_id,
             event_type=EventType.TASK_CREATED.value,
+            trace_id=task.trace_id,
+            task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
             data={
                 "user_input": user_input[:100],
-                "user_id": self.current_user_id
-            }
+                "user_id": self.current_user_id+str(self.agent_id)
+            },
+            user_id=self.current_user_id
         )
 
-        decision_context = self.memory_cap.build_conversation_context(self.current_user_id)
+        # 构建对话上下文
+        conversation_context = self.memory_cap.build_conversation_context(self.current_user_id)
+        
         # --- 流程 ⑤: 任务规划 ---
         event_bus.publish_task_event(
-            task_id=parent_task_id,
+            task_id=task_id,
             event_type=EventType.TASK_PLANNING.value,
+            trace_id=task.trace_id,
+            task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
-            data={"message": "开始任务规划"}
+            data={
+                "message": "开始任务规划"
+            },
+            user_id=self.current_user_id
         )
         
-        plans = self._plan_task_execution(user_input, decision_context)  
+        # 生成执行计划
+        plans = self._plan_task_execution(user_input, conversation_context)  
         if plans:
             for plan in plans:
                 # 仅对 AGENT 类型的节点进行判断，MCP 通常是确定性工具
                 if plan.get('type') == 'AGENT':
-                    # 简化：直接使用默认策略，不调用LLM判断
-                    plan['is_parallel'] = False
-                    plan['strategy_reasoning'] = "Default strategy: sequential execution"
+                    self._llm_decide_should_execute_in_parallel(plan, conversation_context)
                 else:
                     # MCP 默认单次执行
                     plan['is_parallel'] = False      
 
+            logger.info(f"[AgentActor] Task planning result:\n{plans}")
             # --- 流程 ⑦: 构建TaskGroupRequest ---
-            task_group_request = self._build_task_group_request(plans, parent_task_id, user_input)
+            task_group_request = self._build_task_group_request(plans, task)
 
             # --- 流程 ⑧: 发送给TaskGroupAggregatorActor ---
-            self._send_to_task_group_aggregator(task_group_request, sender)
+            self._send_to_task_group_aggregator(task_group_request, reply_to)
             
             # 发布任务分发事件
             event_bus.publish_task_event(
-                task_id=parent_task_id,
+                task_id=task_id,
                 event_type=EventType.TASK_DISPATCHED.value,
+                trace_id=task.trace_id,
+                task_path=self._task_path or "",
                 source="AgentActor",
                 agent_id=self.agent_id,
                 data={
                     "plans_count": len(plans),
                     "message": "任务已分发给子Agent"
-                }
+                },
+                user_id=self.current_user_id
             )
 
-    def _classify_task_operation(self, user_input: str, context: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _handle_resume_task(self, message: ResumeTaskMessage, sender: ActorAddress):
         """
-        ② 任务操作分类 - 使用TaskOperationCapability分类任务操作
+        处理来自前台的resume_task消息并执行恢复任务链
 
         Args:
-            user_input: 用户输入
-            context: 上下文信息
-
-        Returns:
-            Dict containing:
-            - operation_type: TaskOperationType (操作类型)
-            - category: TaskOperationCategory (操作类别)
-            - target_task_id: Optional[str] (目标任务ID)
-            - parameters: Dict[str, Any] (提取的参数)
-            - confidence: float (置信度)
+            message: 包含task_id, parameters, user_id, reply_to, trace_id等
+            sender: 发送者
         """
-        try:
-            # 使用TaskOperationCapability进行分类
-            task_op_cap: ITaskOperationCapability = get_capability("task_operation", expected_type=ITaskOperationCapability)
+        # 从ResumeTaskMessage中提取所有参数（ResumeTaskMessage继承自TaskMessage，拥有trace_id等字段）
+        task_id = message.task_id
+        parameters = message.parameters
+        user_id = message.user_id
+        reply_to = message.reply_to or sender
+        trace_id = message.trace_id  # 使用ResumeTaskMessage的trace_id
+        task_path = message.task_path  # 使用ResumeTaskMessage的task_path
+        
+        # 更新当前用户ID
+        if user_id:
+            self.current_user_id = user_id
+        
+        self.log.info(f"Received resume task request for {task_id} from InteractionActor, trace_id: {trace_id}, task_path: {task_path}")
 
-            if task_op_cap:
-                return task_op_cap.classify_operation(user_input, context)
-                
-            else:
-                # Fallback: 默认为新任务
-                return {
-                    "operation_type": TaskOperationType.NEW_TASK,
-                    "category": TaskOperationCategory.CREATION,
-                    "target_task_id": None,
-                    "parameters": {},
-                    "confidence": 0.5
-                }
-        except Exception as e:
-            self.log.warning(f"Task operation classification failed: {e}. Falling back to NEW_TASK.")
-            return {
-                "operation_type": TaskOperationType.NEW_TASK,
-                "category": TaskOperationCategory.CREATION,
-                "target_task_id": None,
-                "parameters": {},
-                "confidence": 0.0,
-                "error": str(e)
-            }
-    
-    def _resume_paused_task(self, task_id: str, parameters: Dict[str, Any], sender: ActorAddress):
-        """
-        恢复暂停的任务链并继续执行
+        # 记录reply_to以便回复前台
+        self.task_id_to_sender[task_id] = reply_to
 
-        Args:
-            task_id: 任务ID
-            parameters: 补充完成的参数
-            sender: 发送者（前台InteractionActor）
-        """
-        self.log.info(f"Resuming paused task {task_id} with parameters: {list(parameters.keys())}")
-
-        # 发布任务恢复事件
+        # 发布任务恢复事件，使用ResumeTaskMessage的参数
         event_bus.publish_task_event(
             task_id=task_id,
             event_type=EventType.TASK_RESUMED.value,
+            trace_id=trace_id,  # 使用ResumeTaskMessage的trace_id
+            task_path=task_path,  # 使用ResumeTaskMessage的task_path
             source="AgentActor",
             agent_id=self.agent_id,
-            data={"parameters": list(parameters.keys())}
+            data={
+                "parameters": list(parameters.keys()),
+                "user_id": self.current_user_id
+            },
+            user_id=self.current_user_id
         )
 
         # 关键：从映射中获取原来的ExecutionActor地址
@@ -334,54 +252,40 @@ class AgentActor(Actor):
 
         if not exec_actor:
             self.log.error(f"Cannot find ExecutionActor for task {task_id}, task cannot be resumed")
-            # 通知前台恢复失败
-            task_result = TaskResultMessage(
+            # 通知前台恢复失败，使用ResumeTaskMessage的参数
+            task_result = TaskCompletedMessage(
                 task_id=task_id,
-                result=None,
-                error="Cannot find the ExecutionActor for this task",
-                message=None
+                trace_id=trace_id,
+                task_path=task_path,
+                result={"error": "Cannot find the ExecutionActor for this task"},
+                status="ERROR",
+                step=0
             )
-            self.send(sender, task_result)
+            self.send(reply_to, task_result)
             return
 
-        # 构建恢复消息，发送到原来的ExecutionActor
+        # 构建恢复消息，发送到原来的ExecutionActor，使用ResumeTaskMessage的参数
         exec_request = {
             "type": "resume_execution",
             "task_id": task_id,
+            "trace_id": trace_id,  # 使用ResumeTaskMessage的trace_id
+            "task_path": task_path,  # 使用ResumeTaskMessage的task_path
             "parameters": parameters,
-            "reply_to": self.myAddress
+            "reply_to": self.myAddress,
+            "user_id": self.current_user_id
         }
 
-        self.log.info(f"Sending resume request to original ExecutionActor for task {task_id}")
+        self.log.info(f"Sending resume request to original ExecutionActor for task {task_id}, trace_id: {trace_id}")
         self.send(exec_actor, exec_request)
 
         # 记录sender以便接收结果（更新，因为可能是新的前台请求）
-        self.task_id_to_sender[task_id] = sender
-
-    def _handle_resume_task(self, message: ResumeTaskMessage, sender: ActorAddress):
-        """
-        处理来自前台的resume_task消息
-
-        Args:
-            message: 包含task_id, parameters, user_id, reply_to
-            sender: 发送者
-        """
-        task_id = message.task_id
-        parameters = message.parameters
-        user_id = message.user_id
-        reply_to = message.reply_to or sender
-
-        self.log.info(f"Received resume task request for {task_id} from InteractionActor")
-
-        # 记录reply_to以便回复前台
         self.task_id_to_sender[task_id] = reply_to
 
-        # 调用恢复逻辑
-        self._resume_paused_task(task_id, parameters, reply_to)
+   
 
     def _handle_task_paused_from_execution(self, message: Any, sender: ActorAddress):
         """
-        处理来自ExecutionActor的task_paused消息，现在改为处理NEED_INPUT状态并使用TaskCompletedMessage向上报告
+        处理来自ExecutionActor的NEED_INPUT状态，使用TaskCompletedMessage向上报告
 
         Args:
             message: 包含task_id, missing_params, question, execution_actor_address
@@ -401,7 +305,7 @@ class AgentActor(Actor):
         else:
             self.log.warning(f"No execution_actor_address in need_input message for task {task_id}")
 
-        # 构建TaskCompletedMessage
+        # 构建TaskCompletedMessage，直接返回给调用者
         task_result = TaskCompletedMessage(
             task_id=task_id,
             status="NEED_INPUT",
@@ -419,13 +323,8 @@ class AgentActor(Actor):
             # 否则，直接返回给前台InteractionActor
             original_sender = self.task_id_to_sender.get(task_id, sender)
             if original_sender:
-                # 构建前台交互消息，使用InteractTaskPausedMessage
-                frontend_paused_msg = InteractTaskPausedMessage(
-                    task_id=task_id,
-                    missing_params=missing_params,
-                    question=question
-                )
-                self.send(original_sender, frontend_paused_msg)
+                # 直接发送TaskCompletedMessage，不再使用InteractTaskPausedMessage
+                self.send(original_sender, task_result)
             else:
                 self.log.warning(f"No reply_to address found for task {task_id}, cannot forward need_input message")
 
@@ -454,52 +353,51 @@ class AgentActor(Actor):
         return None
 
     def _build_task_group_request(
-        self, 
-        tasks: List[Dict[str, Any]], 
-        parent_task_id: str,
-        context: str,
-    ) :
+        self,
+        plans: List[Dict[str, Any]],
+        task: AgentTaskMessage
+    ) -> TaskGroupRequestMessage:
         """
         构建任务组请求
         """
-        from ..common.messages.task_messages import TaskSpec, TaskGroupRequestMessage
-
         task_specs = []
-        for task in tasks:
+        for plan in plans:
             # 防御性处理：确保必要字段存在
             task_clean = {
-                "step": int(task.get("step", 0)),
-                "type": task.get("type", "unknown"),
-                "executor": task.get("executor", "unknown"),
-                "description": task.get("description", ""),
-                "params": str(task.get("params", "")),
-                "is_parallel": bool(task.get("is_parallel", False)),
-                "strategy_reasoning": task.get("strategy_reasoning", ""),
-                "is_dependency_expanded": bool(task.get("is_dependency_expanded", False)),
-                "original_parent": task.get("original_parent"),
-                "user_id": self.current_user_id,
+                "step": int(plan.get("step", 0)),
+                "type": plan.get("type", "unknown"),
+                "executor": plan.get("executor", "unknown"),
+                "description": plan.get("description", ""),
+                "content": plan.get("content", ""),  # ← 现在用 content 替代 params
+                "is_parallel": bool(plan.get("is_parallel", False)),
+                "strategy_reasoning": plan.get("strategy_reasoning", ""),
+                "is_dependency_expanded": bool(plan.get("is_dependency_expanded", False)),
+                "original_parent": plan.get("original_parent"),
+                "user_id": getattr(self, 'current_user_id', task.user_id),  # 优先用 self.current_user_id
             }
 
-            # 如果你希望保留原始 task 中的其他字段到 extras
-            extra_keys = set(task.keys()) - set(task_clean.keys())
-            if extra_keys:
-                task_clean.update({k: task[k] for k in extra_keys})
+            # 允许 plan 中包含额外字段（因 TaskSpec.Config.extra='allow'）
+            known_keys = set(task_clean.keys())
+            extra_keys = set(plan.keys()) - known_keys
+            for k in extra_keys:
+                task_clean[k] = plan[k]
 
             task_spec = TaskSpec(**task_clean)
             task_specs.append(task_spec)
 
+        # 构建完整的 TaskGroupRequestMessage
         request = TaskGroupRequestMessage(
-            task_id=str(uuid.uuid4()),           # ← 唯一任务 ID
-            trace_id=str(uuid.uuid4()),          # ← 链路追踪 ID
-            task_path=self._task_path + self.agent_id,  # ← 任务路径
-            source=getattr(self, "myAddress", "unknown_address"),
-            destination="TaskGroupAggregator",
-            parent_task_id=parent_task_id,
+            task_id=task.task_id,
+            trace_id=task.trace_id,
+            task_path=task.add_task_path(self.agent_id),
+            content=task.content,               # 父任务内容
+            description=task.description,       # 父任务描述
+            global_context=task.global_context.copy(),
+            enriched_context=task.enriched_context.copy(),
+            user_id=getattr(self, 'current_user_id', task.user_id),
+            reply_to=task.reply_to,
             subtasks=task_specs,
-            strategy="standard",
-            original_sender=getattr(self, "myAddress", None),
-            context={"above_context": context},
-            user_id=self.current_user_id,
+            strategy="standard",  # 可根据需要从 task 或 plans 中提取策略
         )
         return request
 
@@ -529,6 +427,10 @@ class AgentActor(Actor):
         result_data = result_msg.result
         status = result_msg.status
 
+        if status=="NEED_INPUT":
+            self._handle_task_paused_from_execution(result_msg, sender)
+            return
+
         if self.current_aggregator:
             # 2. 如果有聚合器，通知聚合器
             self.send(self.current_aggregator, result_msg)
@@ -536,21 +438,22 @@ class AgentActor(Actor):
             # 3. 如果是根任务，直接返回给前台InteractionActor
             original_sender = self.task_id_to_sender.get(task_id, sender)
 
-            # 构建前台交互消息，使用TaskResultMessage
+            # 构建前台交互消息，使用TaskCompletedMessage代替TaskResultMessage
             error_str = None
             if isinstance(result_data, dict) and "error" in result_data:
                 error_str = str(result_data["error"])
             elif hasattr(result_msg, "error") and result_msg.error:
                 error_str = str(result_msg.error)
             
-            # 构建TaskResultMessage
-            task_result = TaskResultMessage(
+            # 构建TaskCompletedMessage，使用SUCCESS或FAILED状态
+            task_result = TaskCompletedMessage(
                 task_id=task_id,
                 trace_id=result_msg.trace_id,
                 task_path=result_msg.task_path,
                 result=result_data,
+                status=status,  # 使用传入的status，可能是SUCCESS、FAILED、NEED_INPUT等
                 error=error_str,
-                message=None
+                step=0  # 步骤号，根据实际情况调整
             )
 
             self.send(original_sender, task_result)
@@ -560,9 +463,13 @@ class AgentActor(Actor):
             event_bus.publish_task_event(
                 task_id=task_id,
                 event_type=event_type,
+                trace_id=result_msg.trace_id or task_id,  # 使用result_msg.trace_id或task_id作为trace_id
+                task_path=self._task_path or "",
                 source="AgentActor",
                 agent_id=self.agent_id,
-                data={"result": result_data}
+                data={"result": result_data},
+                user_id=self.current_user_id,
+                error=error_str
             )
 
             # 5. 清理映射

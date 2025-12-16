@@ -15,7 +15,10 @@ class ProceduralStore:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         self.procedures_dir = Path(PROCEDURES_DIR)
         self.procedures_dir.mkdir(exist_ok=True)
-        self.model = SentenceTransformer(model_name)
+        ##TODO:从本地加载模型，后续待调整
+        self.model = SentenceTransformer( "sentence-transformers/all-MiniLM-L6-v2",
+            local_files_only=True  # 👈 确保不联网
+        )
         self.procedures = []      # List[Dict]
         self.embeddings = None    # np.ndarray
         self._load_procedures()

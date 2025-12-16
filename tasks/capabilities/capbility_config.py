@@ -15,7 +15,7 @@ class CapabilityConfig:
     能力配置管理类，负责从 config.json 加载配置
     """
     
-    def __init__(self, config_path: str = "config.json"):
+    def __init__(self, config_path: str = "./tasks/config.json"):
         """
         初始化配置管理
         

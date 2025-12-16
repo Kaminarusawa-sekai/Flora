@@ -48,3 +48,13 @@ class IContextResolverCapbility(CapabilityBase):
         基于当前输入和基础参数描述，增强参数描述（保留原有功能）
         """
         pass
+
+    @abstractmethod
+    def pre_fill_known_params_with_llm(self,
+        base_param_descriptions: dict,
+        current_context_str: str
+        ) -> tuple[dict, dict]:
+        """
+        使用 LLM 填充已知参数（保留原有功能）
+        """
+        pass

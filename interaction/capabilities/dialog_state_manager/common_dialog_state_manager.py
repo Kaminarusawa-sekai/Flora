@@ -256,7 +256,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         state.current_intent = corrected_intent.value
 
         # 8. 更新最后更新时间
-        state.last_updated = datetime.utcnow()
+        state.last_updated = datetime.now(timezone.utc)
 
         # 9. 持久化
         self.update_dialog_state(state)
@@ -309,7 +309,7 @@ class CommonDialogState(IDialogStateManagerCapability):
             清理的会话数量
         """
         # 假设 DialogStateDTO 有 last_updated 字段
-        cutoff = datetime.utcnow() - timedelta(minutes=max_idle_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_idle_minutes)
         expired_ids = self.task_storage.find_expired_sessions(cutoff)
         for sid in expired_ids:
             self.task_storage.delete_dialog_state(sid)

@@ -125,7 +125,7 @@ def run_task(request: RunTaskRequest):
     启动一次性任务
     """
     # 生成唯一trace_id和root_task_id
-    trace_id = f"run_{datetime.utcnow().timestamp()}"
+    trace_id = f"run_{datetime.now(timezone.utc).timestamp()}"
     root_task_id = f"task_root_{trace_id}"
     
     # 实际应用中应调用lifecycle_manager.start_root_task()
@@ -142,7 +142,7 @@ def run_loop_task(request: LoopTaskRequest):
     启动循环任务（带退出条件）
     """
     # 生成唯一trace_id和root_task_id
-    trace_id = f"loop_{datetime.utcnow().timestamp()}"
+    trace_id = f"loop_{datetime.now(timezone.utc).timestamp()}"
     root_task_id = f"task_root_{trace_id}"
     
     # 实际应用中应调用lifecycle_manager.start_root_task()
@@ -312,7 +312,7 @@ def health_check():
     """
     健康检查
     """
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/metrics")
 def get_metrics():

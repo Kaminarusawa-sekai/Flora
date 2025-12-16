@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from .enums import ActorType, ScheduleType
@@ -23,4 +23,4 @@ class TaskDefinition(BaseModel):
     timeout_sec: int = 300
     max_retries: int = 3
     is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))

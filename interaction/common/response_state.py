@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 from .base import ActionType, TaskStatusSummary, TaskSummary
 from .task_draft import TaskDraftDTO
 
@@ -53,4 +53,4 @@ class DialogStateDTO(BaseModel):
     missing_required_slots: List[str] = Field(default_factory=list)
     
     # --- 新增字段：会话生命周期 ---
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    last_updated: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))

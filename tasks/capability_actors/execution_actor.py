@@ -15,7 +15,7 @@ from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultM
 from ..capabilities import get_capability
 from ..capabilities.excution import BaseExecution
 from ..events.event_bus import event_bus
-from ..events.event_types import EventType
+from common.event import EventType
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +36,9 @@ class ExecutionActor(Actor):
         self.task_id=None
         self.trace_id=None
         self.task_path=None
+        self.reply_to=None
+        self.global_context:Dict[str, Any] = {}
+        self.enriched_context:Dict[str, Any] = {}
 
     def receiveMessage(self, msg: Any, sender: str) -> None:
         """
@@ -70,13 +73,17 @@ class ExecutionActor(Actor):
         self.trace_id = msg.trace_id
         self.task_path = msg.task_path
         capability = msg.capability
-        parameters = msg.params
-        reply_to = msg.reply_to
-        
-        # 复用现有执行逻辑
-        self._execute(capability, self.task_id, parameters, reply_to)
+        running_config = msg.running_config or {}
+        self.reply_to = msg.reply_to
+        self.global_context = msg.global_context or {}
+        self.enriched_context = msg.enriched_context or {}
+
+
+
+        # 注意：不再使用 msg.params（已废弃）
+        self._execute(capability, self.task_id, running_config, self.reply_to)
     
-    def _execute(self, capability: str, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+    def _execute(self, capability: str, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
         """
         执行任务的核心逻辑
         
@@ -86,67 +93,82 @@ class ExecutionActor(Actor):
             parameters: 参数
             reply_to: 回复地址
         """
-        context = parameters.get("context", {})
-        key = context.get("key", "")
-
         self.logger.info(f"⑪ 具体执行: task={task_id}, capability={capability}")
 
-        # 保存请求信息
+        # 保存请求信息（用于重试或调试）
         self._pending_requests[task_id] = {
             "capability": capability,
-            "parameters": parameters,
+            "running_config": running_config,
             "reply_to": reply_to
         }
 
         # 发布执行开始事件
         event_bus.publish_task_event(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             event_type=EventType.CAPABILITY_EXECUTED.value,
             source="ExecutionActor",
-            agent_id="system",
+            agent_id="excution",
             data={"capability": capability, "status": "started"}
         )
 
-        # 根据能力类型选择执行方式
+        # 根据能力类型分发
         if capability == "dify" or capability == "dify_workflow":
-            self._execute_dify(task_id, parameters, reply_to)
+            self._execute_dify(task_id, running_config, reply_to)
         elif capability == "http" or capability.startswith("http_"):
-            self._execute_http(task_id, parameters, reply_to)
+            self._execute_http(task_id, running_config, reply_to)
         else:
-            self._send_error(task_id, f"Capability {capability} not found", reply_to)
+            self._send_error(task_id, f"Capability {capability} not supported", reply_to)
 
-    def _execute_dify(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+    def _execute_dify(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
         """
         执行 Dify 工作流
-
-        Args:
-            task_id: 任务ID
-            parameters: 参数
-            reply_to: 回复地址
         """
         self.logger.info(f"Executing Dify workflow for task {task_id}")
 
         try:
-            # 调用connector_manager执行Dify工作流
+            # 从 running_config 中提取必要参数
+            api_key = running_config.get("api_key")
+            inputs = running_config.get("inputs", {})
+            agent_id = running_config.get("agent_id")
+            user_id = running_config.get("user_id")
+            content = running_config.get("content", "")
+            description = running_config.get("description", "")
+
+            if not api_key:
+                raise ValueError("Missing 'api_key' in running_config for Dify execution")
+
+            # 构造传递给 connector 的 params（保持与旧接口兼容）
+            params = {
+                "api_key": api_key,
+                "inputs": inputs,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "content": content,
+                "description": description,
+                # 如果 connector 需要上下文，可在此加入：
+                "global_context": self.global_context,
+                "enriched_context": self.enriched_context,
+            }
+
             result = self._excution.execute(
                 connector_name="dify",
-                inputs=parameters.get("inputs", {}),
-                params=parameters
+                inputs=inputs,
+                params=params
             )
+
             status = result.get("status")
-            # 处理执行结果
             if status == "NEED_INPUT":
-                # 需要补充参数
                 missing_params = result["missing"]
                 missing_params_descriptions = [str({"name": k, "description": v}) for k, v in missing_params.items()]
-                self._send_missing_parameters(task_id, missing_params_descriptions, parameters, reply_to)
+                completed_params = result["completed"]
+                self._send_missing_parameters(task_id, missing_params_descriptions, completed_params, reply_to)
             elif status == "SUCCESS":
                 self._send_success(task_id, result["result"], reply_to)
             elif status == "FAILURE":
-                # 可重试的失败
                 self._send_failure(task_id, result["error"], reply_to)
             elif status == "ERROR":
-                # 不可重试的错误
                 self._send_error(task_id, result["error"], reply_to)
             else:
                 self._send_error(task_id, f"Unknown status from connector: {status}", reply_to)
@@ -155,34 +177,27 @@ class ExecutionActor(Actor):
             self.logger.exception(f"Dify execution failed: {e}")
             self._send_error(task_id, str(e), reply_to)
 
-    def _execute_http(self, task_id: str, parameters: Dict[str, Any], reply_to: str) -> None:
+    def _execute_http(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
         """
         执行 HTTP 请求
-
-        Args:
-            task_id: 任务ID
-            parameters: 参数，包含 url, method, headers, data等
-            reply_to: 回复地址
         """
         self.logger.info(f"Executing HTTP request for task {task_id}")
 
         try:
-            # 调用connector_manager执行HTTP请求
+            # HTTP 执行通常依赖 running_config 中的 url/method/headers/data 等
             result = self._excution.execute(
                 connector_name="http",
                 operation_name="execute",
-                inputs=parameters.get("data", {}),
-                params=parameters
+                inputs=running_config.get("data", {}),
+                params=running_config  # 整个 running_config 作为 params 传入
             )
-            
-            # 处理执行结果
-            if result["result"]["status"] == "NEED_INPUT":
-                # 需要补充参数
-                missing_params = result["result"]["missing"]
-                self._send_missing_parameters(task_id, missing_params, parameters, reply_to)
+
+            exec_result = result.get("result", {})
+            if exec_result.get("status") == "NEED_INPUT":
+                missing = exec_result.get("missing", [])
+                self._send_missing_parameters(task_id, missing, running_config, reply_to)
             else:
-                # 执行成功
-                self._send_success(task_id, result["result"], reply_to)
+                self._send_success(task_id, exec_result, reply_to)
 
         except Exception as e:
             self.logger.error(f"HTTP request failed: {e}")
@@ -190,7 +205,7 @@ class ExecutionActor(Actor):
     
     
     def _send_missing_parameters(self, task_id: str, missing_params: List[str],
-                                   parameters: Dict[str, Any], reply_to: str) -> None:
+                                   completed_params: Dict[str, Any], reply_to: str) -> None:
         """
         请求补充缺失的参数
 
@@ -209,7 +224,7 @@ class ExecutionActor(Actor):
             trace_id=self.trace_id,
             task_path=self.task_path,
             status="NEED_INPUT",
-            result=None,
+            result="yes, completed_params: " + str(completed_params),
             error=None,
             agent_id="system",
             missing_params=missing_params
@@ -220,6 +235,8 @@ class ExecutionActor(Actor):
         # 发布任务暂停事件
         event_bus.publish_task_event(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             event_type=EventType.TASK_PAUSED.value,
             source="ExecutionActor",
             agent_id="system",
@@ -247,6 +264,8 @@ class ExecutionActor(Actor):
         # 发布执行成功事件
         event_bus.publish_task_event(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             event_type=EventType.CAPABILITY_EXECUTED.value,
             source="ExecutionActor",
             agent_id="system",
@@ -298,6 +317,8 @@ class ExecutionActor(Actor):
         # 发布执行失败事件
         event_bus.publish_task_event(
             task_id=task_id,
+            trace_id=self.trace_id,
+            task_path=self.task_path,
             event_type=EventType.CAPABILITY_ERROR.value,
             source="ExecutionActor",
             agent_id="system",

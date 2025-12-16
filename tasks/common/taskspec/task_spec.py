@@ -75,7 +75,7 @@
 
 """任务规范定义"""
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class TaskSpec(BaseModel):
@@ -92,13 +92,7 @@ class TaskSpec(BaseModel):
 
     "description": "审核海报素材合规性（隐性依赖）",
 
-    "params": {
-
-      "check_rules": ["copyright", "sensitive_words"],
-
-      "strict_mode": true
-
-    },
+    "content": "审核海报素材合规性",
 
     "is_parallel": false,
 
@@ -128,15 +122,7 @@ class TaskSpec(BaseModel):
 
     "description": "归档海报文件",
 
-    "params": {
-
-      "action": "upload",
-
-      "destination": "//server/public/2025/CNY",
-
-      "source": "$step_1_output"
-
-    },
+    "content": "归档海报文件",
 
     "is_parallel": false,
 
@@ -146,11 +132,12 @@ class TaskSpec(BaseModel):
 
   }
     """
+    model_config = ConfigDict(extra='allow')
     step: int
     type: str
     executor: str
     description: str
-    params: str
+    content: str
     user_id: Optional[str] = None
 
     # 新增控制字段
@@ -159,6 +146,4 @@ class TaskSpec(BaseModel):
     is_dependency_expanded: bool = False
     original_parent: Optional[str] = None
 
-    class Config:
-        # 允许传入未声明的额外字段（对应原来的 **kwargs）
-        extra = 'allow'
+

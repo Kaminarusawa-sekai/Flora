@@ -2,6 +2,7 @@
 from .logic import Atom, HornClause
 from .categories import DataCategory, TheoryCategory
 from typing import Set, List
+
 def deduction(deduce_from: TheoryCategory) -> Set[Atom]:
     """D: T → Data，返回所有可推导的事实"""
     # 简化：只返回被规则头直接匹配的事实

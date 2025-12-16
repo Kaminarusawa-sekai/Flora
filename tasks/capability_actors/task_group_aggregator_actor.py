@@ -1,20 +1,25 @@
 # capability_actors/task_group_aggregator_actor.py
 from typing import Dict, Any, List, Optional
 from thespian.actors import Actor, ActorExitRequest,ChildActorExited
-from ..common.messages.task_messages import (
+import uuid
+import time
+
+from ..common.messages import (
     TaskGroupRequestMessage as TaskGroupRequest, 
     TaskCompletedMessage,
-    ExecuteTaskMessage, TaskSpec,
     ParallelTaskRequestMessage,
-    MCPTaskRequestMessage as MCPTaskMessage,
+    MCPTaskRequestMessage,
     ResultAggregatorTaskRequestMessage
 )
 from ..common.messages.types import MessageType
+
+from ..common.taskspec import TaskSpec
+from ..common.context.context_entry import ContextEntry
 import logging
 
 # 导入事件总线
 from ..events.event_bus import event_bus
-from ..events.event_types import EventType
+from common.event.event_type import EventType
 
 # 导入相关 Actor 类引用
 from .parallel_task_aggregator_actor import ParallelTaskAggregatorActor
@@ -48,10 +53,14 @@ class TaskGroupAggregatorActor(Actor):
         # 数据上下文 - 统一上下文传播与富集方案
         self.step_results: Dict[str, Any] = {}  # step_id -> result
         self.global_context: Dict[str, Any] = {}  # 【不变】全局上下文
-        self.enriched_context: Dict[str, Any] = {}  # 【动态】富上下文
+        self.enriched_context: Dict[str, ContextEntry] = {}  # 【动态】富上下文
         
         # 当前工作的 Worker (用于验证回复来源)
         self.current_worker: Optional[Actor] = None 
+
+        self.source=None
+
+        self._pending_tasks: Dict[str, Any] = {}
         
         # 保存任务 ID 信息
         self._task_id: Optional[str] = None
@@ -86,9 +95,41 @@ class TaskGroupAggregatorActor(Actor):
             logger.error(f"Workflow system error: {e}", exc_info=True)
             self._fail_workflow(f"System Error: {str(e)}")
 
+    def _get_merged_context(
+        self,
+        task_id: str,
+        global_ctx: Optional[Dict[str, Any]]=None,
+        enriched_ctx: Optional[Dict[str, Any]]=None
+    ) -> Dict[str, Any]:
+        """
+        获取或构建合并后的上下文（global + enriched），并自动缓存。
+        
+        用于首次执行和重试时保持上下文一致性。
+        """
+        # 检查是否已缓存（例如重试场景）
+        if task_id in self._pending_tasks:
+            cached = self._pending_tasks[task_id].get("context")
+            if cached is not None:
+                return cached
+
+        # 首次构建：合并 global + enriched（enriched 优先）
+        base = global_ctx or {}
+        enriched = enriched_ctx or {}
+        merged = {**base, **enriched}
+
+        # 缓存到任务信息中（供重试使用）
+        if task_id in self._pending_tasks:
+            self._pending_tasks[task_id]["context"] = merged
+        else:
+            # 安全兜底：即使未注册，也返回合并结果（不应发生）
+            logger.warning(f"_get_merged_context called before task {task_id} was registered")
+
+        return merged
+
+
     def _start_workflow(self, msg: TaskGroupRequest, sender: Actor) -> None:
         """启动工作流"""
-        logger.info(f"Starting TaskGroup Workflow: {msg.parent_task_id}")
+        logger.info(f"Starting TaskGroup Workflow: {msg.task_id}")
         self.current_user_id=msg.user_id
 
         self.request_msg = msg
@@ -96,54 +137,100 @@ class TaskGroupAggregatorActor(Actor):
         self.global_context = msg.global_context.copy() if msg.global_context else {}
         self.enriched_context = msg.enriched_context.copy() if msg.enriched_context else {}
         self.step_results = {}
+        self.source=sender
         
         # 保存任务 ID 信息
         self._task_id = msg.task_id
         self._trace_id = msg.trace_id
-        self._task_path = msg.task_path
+        self._task_path = msg.add_task_path("task_group")
+        
+        # 发布工作流启动事件
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(msg.subtasks),
+                "workflow_name": msg.description or "TaskGroupWorkflow"
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
         
         # 按 Step 排序
-        self.sorted_subtasks = sorted(msg.subtasks, key=lambda x: x.step)
+        self.sorted_subtasks = sorted(
+            [TaskSpec(**t) if isinstance(t, dict) else t for t in msg.subtasks],
+            key=lambda x: x.step
+        )
         self.current_step_index = 0
         
         # 执行第一步
         self._execute_next_step()
 
+
+    def _has_current_step(self) -> bool:
+        """判断是否还有未执行的步骤"""
+        return 0 <= self.current_step_index < len(self.sorted_subtasks)
+
+    def _get_current_step(self) -> TaskSpec:
+        """安全获取当前步骤的 TaskSpec"""
+        if not self._has_current_step():
+            raise IndexError("No current step available")
+        return self.sorted_subtasks[self.current_step_index]
+    
+
+
     def _execute_next_step(self) -> None:
-        """执行当前步骤"""
-        if self.current_step_index >= len(self.sorted_subtasks):
+        if not self._has_current_step():
             self._finish_workflow()
             return
 
-        current_task = self.sorted_subtasks[self.current_step_index]
-        logger.info(f"Executing Step {current_task.step}: {current_task.description}")
-
-        # === 核心修改点 1: 传入整个 task 对象进行智能解析 ===
-        # 解析依赖，构建综合上下文
-        resolved_params = self._resolve_dependencies(current_task)
-
+        current_task: TaskSpec = self._get_current_step()
+        logger.info(f"Executing Step {current_task.step}: '{current_task.description}' (type={current_task.type})")
+        
+        # 发布任务步骤执行事件
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step": current_task.step,
+                "step_description": current_task.description,
+                "step_type": current_task.type,
+                "is_parallel": current_task.is_parallel
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
+       
         # 2. 路由分发
         if current_task.is_parallel:
             # === 路由 A: 多样性/优化并行 ===
-            self._dispatch_to_parallel_optimizer(current_task, resolved_params)
+            self._dispatch_to_parallel_optimizer(current_task)
         else:
             # === 路由 B: 标准串行 ===
             task_type = current_task.type.upper()
             
             if task_type == "AGENT":
                 # Agent -> ResultAggregator (负责 ExecutionActor 的生命周期)
-                self._dispatch_to_result_aggregator(current_task, resolved_params)
+                self._dispatch_to_result_aggregator(current_task)
             
             elif task_type == "MCP":
                 # MCP -> 直接调用
-                self._dispatch_to_mcp_executor(current_task, resolved_params)
+                self._dispatch_to_mcp_executor(current_task)
                 
             else:
-                # 默认回落到 ResultAggregator
-                logger.warning(f"Unknown type {task_type}, utilizing ResultAggregator.")
-                self._dispatch_to_result_aggregator(current_task, resolved_params)
+                # 默认回落到 MCP
+                logger.warning(f"Unknown type {task_type}, defaulting to MCP.")
+                self._dispatch_to_mcp_executor(current_task)
 
-    def _dispatch_to_parallel_optimizer(self, task: TaskSpec, params: Dict[str, Any]) -> None:
+    def _dispatch_to_parallel_optimizer(self, task: TaskSpec) -> None:
         """
         分发给 ParallelTaskAggregatorActor
         场景：需要生成"几个方案"，或者进行参数优化
@@ -153,40 +240,25 @@ class TaskGroupAggregatorActor(Actor):
         parallel_aggregator = self.createActor(ParallelTaskAggregatorActor)
         self.current_worker = parallel_aggregator
         
-        # 1. 确定重复次数 (count)
-        # 优先从 params 读取 (如 "generate_n": 3), 否则默认 3
-        count = params.get("count", params.get("generate_n", 3))
-        
-        # 2. 准备 Spec
-        # 我们需要克隆一个 Spec 并设置 repeat_count，因为 ParallelActor 依赖 spec.repeat_count
-        # 注意：这里我们修改 spec 的 params 为解析后的 params
-        task.params = params
-        task.repeat_count = count 
-        
-        # 设置默认聚合策略，如果是创意生成，通常希望保留所有结果列表
-        if not hasattr(task, 'aggregation_strategy') or not task.aggregation_strategy:
-             # 动态添加属性或在 params 里设置，ParallelActor 会读取 spec.aggregation_strategy
-             # 这里假设 TaskSpec 类有这个字段，或者通过 params 传递
-             task.aggregation_strategy = "list" 
 
-        # 3. 发送 ParallelTaskRequestMessage - 统一上下文传播与富集方案
-        import uuid
-        task_id = str(uuid.uuid4())
-        request = ParallelTaskRequestMessage(
-            message_type=MessageType.PARALLEL_TASK_REQUEST,
-            source=str(self.myAddress),
-            destination=str(parallel_aggregator),
-            task_id=task_id,
-            trace_id=self._trace_id,  # 使用原始 trace_id 确保全链路追踪
-            task_path=self._task_path,  # 使用当前任务路径
-            spec=task,
-            reply_to=str(self.myAddress),
+        
+        msg = ParallelTaskRequestMessage(
+            task_id=str(uuid.uuid4()),
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            step=task.step,
+            content=task.content or "",
+            description=task.description or "",
+            spec=task,  # 注意：Parallel 需要完整 spec
+            reply_to=self.myAddress,
+            user_id=self.current_user_id,
             global_context=self.global_context.copy(),
-            enriched_context=self.enriched_context.copy()
+            enriched_context=self.enriched_context.copy(),
         )
-        self.send(parallel_aggregator, request)
+        self.send(parallel_aggregator, msg)
 
-    def _dispatch_to_result_aggregator(self, task: TaskSpec, params: Dict[str, Any]) -> None:
+
+    def _dispatch_to_result_aggregator(self, task: TaskSpec) -> None:
         """分发给 ResultAggregator (Agent 任务代理)"""
         logger.info(f"--> Route: ResultAggregator for Step {task.step} (Agent)")
         
@@ -194,39 +266,42 @@ class TaskGroupAggregatorActor(Actor):
         self.current_worker = aggregator
         
         # 发送 ResultAggregatorTaskRequestMessage - 统一上下文传播与富集方案
-        task_request = ResultAggregatorTaskRequestMessage(
+        msg = ResultAggregatorTaskRequestMessage(
+            task_id=str(uuid.uuid4()),
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            step=task.step,
+            content=task.content or "",
+            description=task.description or "",
             spec=task,
             reply_to=self.myAddress,
             user_id=self.current_user_id,
-            task_id=self._task_id,
-            trace_id=self._trace_id,
-            task_path=self._task_path,
-            params=params,
             global_context=self.global_context.copy(),
-            enriched_context=self.enriched_context.copy()
+            enriched_context=self.enriched_context.copy(),
         )
-        
-        self.send(aggregator, task_request)
+        self.send(aggregator, msg)
 
-    def _dispatch_to_mcp_executor(self, task: TaskSpec, params: Dict[str, Any]) -> None:
+
+    def _dispatch_to_mcp_executor(self, task: TaskSpec) -> None:
         """分发给 MCP Actor (工具调用)"""
         logger.info(f"--> Route: MCP Executor for Step {task.step}")
         
         mcp_worker = self.createActor(MCPCapabilityActor)
         self.current_worker = mcp_worker
 
-        # 使用 MCPTaskMessage 替代 ExecuteTaskMessage - 统一上下文传播与富集方案
-        msg = MCPTaskMessage(
-            task_id=self._task_id,
+        # 使用 MCPTaskRequestMessage 替代 ExecuteTaskMessage - 统一上下文传播与富集方案
+        msg = MCPTaskRequestMessage(
+            task_id=str(uuid.uuid4()),
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
-            description=task.description,  # 假设 TaskSpec 有 description 字段
-            params=params,
-            executor=task.executor if hasattr(task, 'executor') else None,  # 可选：如果 TaskSpec 有指定执行器
-            reply_to=self.myAddress,  # MCPTaskMessage 有 reply_to 字段
+            content=task.content or "",
+            description=task.description or "",
+            executor=task.executor,  # ← 关键：MCP 消息需要 executor 字段
+            reply_to=self.myAddress,
+            user_id=self.current_user_id,
             global_context=self.global_context.copy(),
-            enriched_context=self.enriched_context.copy()
+            enriched_context=self.enriched_context.copy(),
         )
         self.send(mcp_worker, msg)
 
@@ -234,147 +309,93 @@ class TaskGroupAggregatorActor(Actor):
 
     def _handle_step_success(self, result: Any, sender: Actor) -> None:
         """通用步骤成功回调"""
-        current_task = self.sorted_subtasks[self.current_step_index]
-        step_key = f"step_{current_task.step}_output"
-        
-        logger.info(f"Step {current_task.step} completed successfully.")
-        
+        current_task = self._get_current_step()
+        step = current_task.step
+        logger.info(f"Step {step} succeeded.")
+
+        # 发布任务步骤成功事件
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_PROGRESS.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step": step,
+                "step_description": current_task.description,
+                "step_result": result,
+                "completed_steps": self.current_step_index + 1,
+                "total_steps": len(self.sorted_subtasks)
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
+
+        # 存储结果
+        step_key = f"step_{step}_output"
         # 1. 存储结果 (Specific Key)
         self.step_results[step_key] = result
         
         # 2. 上下文富集 - 统一上下文传播与富集方案
         # 2.1 存储到富上下文中
-        self.enriched_context[step_key] = result
+        # self.enriched_context[step_key] = result
         
         # 2.2 存储通用 key 用于隐式传递 (默认把上一步结果传给下一步)
-        self.enriched_context["prev_step_output"] = result
+        # self.enriched_context["prev_step_output"] = result
         
         # 2.3 添加上下文富集逻辑：从结果中提取有用信息
         # 生成安全键名，包含任务路径前缀
         task_path_key = f"{self._task_path.replace('/', '_')}.step_{current_task.step}"
         
-        # 示例：从 result 中提取结构化字段
-        if isinstance(result, dict):
-            for key, value in result.items():
-                # 自定义过滤逻辑：只保留基本类型和非空值
-                if value is not None and isinstance(value, (str, int, float, bool, list, dict)):
-                    safe_key = f"{task_path_key}.{key}"
-                    self.enriched_context[safe_key] = value
-        elif isinstance(result, (list, tuple)):
-            # 处理列表结果，添加索引
-            for i, item in enumerate(result[:10]):  # 最多取前10个元素
-                if isinstance(item, dict):
-                    for key, value in item.items():
-                        if value is not None and isinstance(value, (str, int, float, bool)):
-                            safe_key = f"{task_path_key}.item_{i}.{key}"
-                            self.enriched_context[safe_key] = value
-        elif isinstance(result, (str, int, float, bool)):
-            # 处理单个基本类型结果
-            safe_key = f"{task_path_key}.result"
-            self.enriched_context[safe_key] = result
+        self._enrich_context_from_result(result, task_path_key,source=str(sender),task_path=self._task_path)
         
         # 3. 推进
         self.current_step_index += 1
         self._execute_next_step()
 
+    def _enrich_context_from_result(self, result: Any, prefix: str, source: str = "tool_output", task_path: str = "") -> None:
+        """
+        将 result 整体作为 value 封装进 ContextEntry，存入 enriched_context[prefix]
+        
+        Args:
+            result: 要保存的任意结果（支持 dict/list/str/int 等）
+            prefix: 上下文中的键名（如 "profile"、"search_results"）
+            source: 数据来源（默认 "tool_output"）
+            task_path: 任务路径（用于追踪）
+        """
+        # 只有当 result 不是 None 时才记录（可选：也可保留 None）
+        if result is None:
+            return
+
+        entry = ContextEntry(
+            value=result,
+            source=source,
+            task_path=task_path,
+            timestamp=time.time(),  # 或用 default_factory 自动填充
+            confidence=1.0
+        )
+        self.enriched_context[prefix] = entry
+
+
     def _handle_step_failure(self, msg: TaskCompletedMessage, sender: Actor) -> None:
         """通用步骤失败回调"""
-        current_task = self.sorted_subtasks[self.current_step_index]
-        # 从 TaskCompletedMessage 中提取错误信息
-        error_msg = f"Step {current_task.step} failed with status: {msg.status}"
-        if hasattr(msg, 'error') and msg.error:
-            error_msg += f": {msg.error}"
-        elif hasattr(msg, 'result') and msg.result:
-            # 如果 result 包含错误信息，也提取出来
-            error_msg += f": {str(msg.result)}"
-        logger.error(error_msg)
-        self._fail_workflow(error_msg)
-
-    def _resolve_dependencies(self, task: TaskSpec) -> Dict[str, Any]:
-        """
-        依赖解析与上下文构建
-        
-        逻辑：
-        1. 获取上一步的输出 (prev_step_output)
-        2. 获取当前任务的描述 (description)
-        3. 获取当前参数 (params)
-        4. 如果 params 是字符串，或者存在上一步结果，则构建一个"综合指导性文本"
-        """
-        # 从富上下文中获取上一步输出
-        prev_output = self.enriched_context.get("prev_step_output")
-        raw_params = task.params
-        
-        # === 情况 A: 参数是字符串 (如 "时间范围：上个月") ===
-        # 用户的意图是：把这段话 + 上一步的结果 合并成一个 Prompt 发给 Agent/MCP
-        if isinstance(raw_params, str):
-            # 构建综合上下文文本
-            combined_prompt = self._build_comprehensive_prompt(
-                prev_output=prev_output,
-                description=task.description,
-                current_instruction=raw_params
-            )
-            
-            logger.info(f"Converted string params to comprehensive context for Step {task.step}")
-            
-            # 返回标准字典，使用通用 key (如 input/query) 适配下游 Actor
-            return {
-                "input": combined_prompt,
-                "query": combined_prompt,  # 冗余字段以适配不同类型的 Tool
-                "instruction": raw_params, # 保留原始指令
-                "_is_context_expanded": True
-            }
-
-        # === 情况 B: 参数是字典 (标准结构) ===
-        elif isinstance(raw_params, dict):
-            resolved = raw_params.copy()
-            
-            # 1. [新增逻辑] 自动合并上一步的字典结果到当前参数
-            # 这样 activity_id 就会直接出现在 resolved 字典的根目录下
-            if isinstance(prev_output, dict):
-                for k, v in prev_output.items():
-                    # 只有当当前参数里没有同名 Key 时才覆盖，避免覆盖用户手动传的参
-                    if k not in resolved:
-                        resolved[k] = v
-                        logger.info(f"Auto-injecting param '{k}' from prev_step_output")
-
-            # 2. 传统的显式替换逻辑 ($key)
-            # 先检查富上下文，再检查全局上下文
-            all_context = {**self.global_context, **self.enriched_context}
-            for k, v in resolved.items():
-                if isinstance(v, str) and v.startswith("$"):
-                    key_ref = v[1:]
-                    if key_ref in all_context:
-                        logger.info(f"Injecting dependency '{k}' <- context['{key_ref}']")
-                        resolved[k] = all_context[key_ref]
-            
-            # 3. 隐式上下文注入
-            # 即使参数是字典，我们也把"上一步结果"整理好放入一个保留字段
-            # 这样 Agent 如果需要参考上一步，可以直接读取 _full_context
-            if prev_output:
-                combined_prompt = self._build_comprehensive_prompt(
-                    prev_output=prev_output,
-                    description=task.description,
-                    current_instruction=str(raw_params)
-                )
-                resolved["_full_context"] = combined_prompt
-                
-                # 如果字典里没有任何显式依赖引用，且这是个 Agent 任务，
-                # 有时我们希望把 input 字段自动填充为综合文本
-                if "input" not in resolved and "query" not in resolved:
-                     resolved["input"] = combined_prompt
-
-            return resolved
-            
-        # === 情况 C: 无参数 ===
+        if self._has_current_step():
+            current_task = self._get_current_step()
+            # 从 TaskCompletedMessage 中提取错误信息
+            error_msg = f"Step {current_task} failed with status: {msg.status}"
+            if hasattr(msg, 'error') and msg.error:
+                error_msg += f": {msg.error}"
+            elif hasattr(msg, 'result') and msg.result:
+                # 如果 result 包含错误信息，也提取出来
+                error_msg += f": {str(msg.result)}"
+            logger.error(error_msg)
+            self._fail_workflow(error_msg)
         else:
-            if prev_output:
-                combined_prompt = self._build_comprehensive_prompt(
-                    prev_output=prev_output,
-                    description=task.description,
-                    current_instruction="Analyze the context provided."
-                )
-                return {"input": combined_prompt}
-            return {}
+            logger.error("Workflow failed with no current step context.")
+            self._fail_workflow("Workflow failed during finalization or invalid state.")
+
+   
 
     def _build_comprehensive_prompt(self, prev_output: Any, description: str, current_instruction: str) -> str:
         """
@@ -402,44 +423,72 @@ class TaskGroupAggregatorActor(Actor):
 
     def _finish_workflow(self) -> None:
         """完成"""
-        logger.info(f"Workflow {self.request_msg.parent_task_id} Completed.")
+        logger.info(f"Workflow {self.request_msg.task_id} Completed.")
         
-        # 构造最终结果，使用TaskCompletedMessage
-        final_result = TaskCompletedMessage(
-            message_type=MessageType.TASK_COMPLETED,
-            result={
-                "step_results": self.step_results,  # 返回所有步骤的详细结果
-                "group_id": self.request_msg.parent_task_id
-            },
-            status="SUCCESS",
-            agent_id=None,
+        # 发布工作流完成事件
+        event_bus.publish_task_event(
             task_id=self._task_id,
+            event_type=EventType.TASK_COMPLETED.value,
             trace_id=self._trace_id,
-            task_path=self._task_path
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(self.sorted_subtasks),
+                "completed_steps": self.current_step_index,
+                "workflow_result": {"step_results": self.step_results}
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
         )
         
-        target = self.request_msg.original_sender or self.request_msg.source
-        self.send(target, final_result)
+        # 构造最终结果，使用TaskCompletedMessage
+        final_msg = TaskCompletedMessage(
+            message_type=MessageType.TASK_COMPLETED,
+            status="SUCCESS",
+            result={"step_results": self.step_results},
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            step=None,
+        )
+        
+        target = self.source 
+        self.send(target, final_msg)
         self.send(self.myAddress, ActorExitRequest())
 
     def _fail_workflow(self, error_msg: str) -> None:
         """失败"""
         logger.error(f"Workflow Terminated: {error_msg}")
         
-        fail_result = TaskCompletedMessage(
-            message_type=MessageType.TASK_COMPLETED,
-            result={
-                "step_results": self.step_results,  # 返回已经成功的部分
-                "error": error_msg,
-                "failed_step_index": self.current_step_index + 1
-            },
-            status="FAILED",
-            agent_id=None,
+        # 发布工作流失败事件
+        event_bus.publish_task_event(
             task_id=self._task_id,
+            event_type=EventType.TASK_FAILED.value,
             trace_id=self._trace_id,
-            task_path=self._task_path
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(self.sorted_subtasks),
+                "completed_steps": self.current_step_index,
+                "step_results": self.step_results
+            },
+            enriched_context_snapshot=self.enriched_context.copy(),
+            error=error_msg
         )
         
-        target = self.request_msg.original_sender or self.request_msg.source
-        self.send(target, fail_result)
+        current_step = self._get_current_step().step if self._has_current_step() else None
+        fail_msg = TaskCompletedMessage(
+            message_type=MessageType.TASK_COMPLETED,
+            status="FAILED",
+            result={"error": error_msg, "step_results": self.step_results},
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            step=current_step,
+        )
+        target = self.source
+        self.send(target, fail_msg)
         self.send(self.myAddress, ActorExitRequest())

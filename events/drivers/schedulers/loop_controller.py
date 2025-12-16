@@ -102,8 +102,8 @@ class LoopController:
             error_msg=None,
             started_at=None,
             finished_at=None,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
         
         await self.inst_repo.create(next_task)

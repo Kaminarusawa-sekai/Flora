@@ -93,7 +93,7 @@ class TaskObserver:
             悬挂任务列表
         """
         # 计算超时时间点
-        timeout_time = datetime.utcnow() - timedelta(hours=timeout_hours)
+        timeout_time = datetime.now(timezone.utc) - timedelta(hours=timeout_hours)
         
         return self.db.query("""
             SELECT * FROM task_instances

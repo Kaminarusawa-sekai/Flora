@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
@@ -66,8 +66,8 @@ class TaskDefinition(BaseModel):
     max_retries: int = 0
     resource_profile: str = "default"
     strategy_tags: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class TaskInstance(BaseModel):
@@ -92,8 +92,8 @@ class TaskInstance(BaseModel):
     strategy_tags: List[str] = Field(default_factory=list)
     completed_children: int = 0
     split_count: int = 1
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     max_retries: int = 0
@@ -117,4 +117,4 @@ class LoopRoundContext(BaseModel):
     input_params: Dict[str, Any]
     output_summary: Optional[Dict[str, Any]] = None
     should_continue: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -13,7 +13,10 @@ class FileBasedProceduralRepository:
     def __init__(self, procedures_dir: str):
         self.dir = Path(procedures_dir)
         self.dir.mkdir(exist_ok=True)
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        ##TODO:从本地加载模型，后续待调整
+        self.model = SentenceTransformer( "sentence-transformers/all-MiniLM-L6-v2",
+            local_files_only=True  # 👈 确保不联网
+        )
         self._load()
 
     def _load(self):

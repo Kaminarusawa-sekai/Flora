@@ -12,7 +12,7 @@ async def health_checker(db_session: AsyncSession):
     健康检查器，定期扫描并处理异常任务
     """
     while True:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # 初始化任务实例存储库
         inst_repo = SQLAlchemyTaskInstanceRepo(db_session)

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from ...external.repositories.agent_structure_repo import AgentStructureRepository
-from ...common.config.config_manager import config_manager
+
 
 
 class NodeService:

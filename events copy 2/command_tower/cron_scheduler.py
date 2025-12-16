@@ -65,12 +65,12 @@ class CronScheduler:
             cron = croniter(definition.cron_expr, last_run.triggered_at)
         else:
             # 从当前时间开始计算
-            cron = croniter(definition.cron_expr, datetime.utcnow())
+            cron = croniter(definition.cron_expr, datetime.now(timezone.utc))
         
         next_run_time = cron.get_next(datetime)
         
         # 检查是否需要触发
-        if next_run_time <= datetime.utcnow():
+        if next_run_time <= datetime.now(timezone.utc):
             # 触发任务执行
             trace_id = self.lifecycle_manager.start_root_task(
                 definition_id=definition.id
@@ -82,7 +82,7 @@ class CronScheduler:
                 definition_id=definition.id,
                 trace_id=trace_id,
                 scheduled_at=next_run_time,
-                triggered_at=datetime.utcnow(),
+                triggered_at=datetime.now(timezone.utc),
                 status="SUCCESS"
             )
             

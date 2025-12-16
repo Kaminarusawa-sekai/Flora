@@ -70,7 +70,7 @@ class Task:
         self.task_id = task_id
         self.description = description
         self.type = task_type
-        self.created_at = created_at or datetime.utcnow()
+        self.created_at = created_at or datetime.now(timezone.utc)
         self.updated_at = self.created_at  # Update time
         self.status = status
         self.result = result
@@ -127,7 +127,7 @@ class Task:
             metadata=data.get("metadata", {}),
             original_task_id=data.get("original_task_id"),
             created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.utcnow(),
+            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(timezone.utc),
             user_id=data.get("user_id"),
             goal=data.get("goal"),
             original_input=data.get("original_input"),

@@ -41,9 +41,9 @@ __all__ = [
 
 # 创建全局能力管理器实例
 _global_manager = None
+CONFIG_PATH = "./tasks/config.json"
 
-
-def get_capability_manager(config_path: str = "config.json") -> CapabilityManager:
+def get_capability_manager(config_path: str = CONFIG_PATH) -> CapabilityManager:
     """
     获取全局能力管理器实例
     
@@ -59,7 +59,7 @@ def get_capability_manager(config_path: str = "config.json") -> CapabilityManage
     return _global_manager
 
 
-def init_capabilities(config_path: str = "config.json") -> CapabilityManager:
+def init_capabilities(config_path: str = CONFIG_PATH) -> CapabilityManager:
     """
     初始化所有能力
     

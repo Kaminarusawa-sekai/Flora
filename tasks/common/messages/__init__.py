@@ -1,21 +1,19 @@
 """消息模块"""
+from .base_message import BaseMessage
 from .event_message import SystemEventMessage
-from .base_message import BaseMessage, TaskMessage
 from .task_messages import (
+    TaskMessage,
     TaskCompletedMessage,
     MCPTaskRequestMessage,
     TaskGroupRequestMessage,
     ParallelTaskRequestMessage,
     ResultAggregatorTaskRequestMessage,
     ExecuteTaskMessage,
-    ExecutionResultMessage
+    ExecutionResultMessage,
+    AgentTaskMessage,
+    ResumeTaskMessage
 )
-from .interact_messages import (
-    UserRequestMessage,
-    InitConfigMessage,
-    TaskPausedMessage,
-    TaskResultMessage
-)
+
 from .optimization_messages import (
     OptimizationMessage,
     OptimizationStartedMessage,
@@ -24,10 +22,6 @@ from .optimization_messages import (
     ParameterUpdatedMessage,
     OptimizationProgressMessage,
     OptimizationConvergedMessage
-)
-from .agent_messages import (
-    AgentTaskMessage,
-    ResumeTaskMessage
 )
 from .types import MessageType
 
@@ -46,6 +40,10 @@ __all__ = [
     "ExecuteTaskMessage",
     "ExecutionResultMessage",
     
+    # 代理相关消息
+    "AgentTaskMessage",
+    "ResumeTaskMessage",
+    
     # 交互相关消息
     "UserRequestMessage",
     "InitConfigMessage",
@@ -60,10 +58,6 @@ __all__ = [
     "ParameterUpdatedMessage",
     "OptimizationProgressMessage",
     "OptimizationConvergedMessage",
-    
-    # 代理相关消息
-    "AgentTaskMessage",
-    "ResumeTaskMessage",
     
     # 类型定义
     "MessageType"

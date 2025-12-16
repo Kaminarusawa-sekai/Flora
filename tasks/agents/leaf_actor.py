@@ -1,12 +1,11 @@
 import logging
 from typing import Dict, Any, Optional
 from thespian.actors import ActorAddress, Actor, ActorExitRequest,ChildActorExited
-from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage
-from ..common.messages.agent_messages import AgentTaskMessage
+from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage, AgentTaskMessage
 from ..capabilities import get_capability
 from ..capabilities.llm_memory.interface import IMemoryCapability
 from ..events.event_bus import event_bus
-from ..events.event_types import EventType
+from common.event.event_type import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class LeafActor(Actor):
         self.original_spec = task
 
         # 获取任务信息
-        user_input = str(task.content) + str(task.description or "")
+        user_input = task.get_user_input()
         user_id = task.user_id
         parent_task_id = task.task_id
         reply_to = task.reply_to or sender
@@ -110,8 +109,11 @@ class LeafActor(Actor):
             event_bus.publish_task_event(
                 task_id=parent_task_id,
                 event_type=EventType.TASK_FAILED.value,
+                trace_id=task.trace_id,
+                task_path=task.task_path,
                 source="LeafActor",
                 agent_id=self.agent_id,
+                user_id=self.current_user_id,
                 data={"error": "Agent meta not found", "status": "ERROR"}
             )
             
@@ -126,8 +128,20 @@ class LeafActor(Actor):
         # 获取 ExecutionActor
         from ..capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
-        
-        
+
+        # 构建 running_config（原 params 内容）
+        running_config = {
+            "api_key": self.meta["dify"],
+            "inputs": task.parameters,
+            "agent_id": self.agent_id,
+            "user_id": self.current_user_id,
+            # 如果执行器仍需要原始内容/描述，可显式传入
+            "content": str(task.content or ""),
+            "description": str(task.description or ""),
+            # 注意：task.context 可能已通过 enriched_context 或 global_context 传递，
+            # 若仍需在此透传，可加一行：
+            # "context": task.context,
+        }
 
         # 构建执行请求消息
         exec_request = ExecuteTaskMessage(
@@ -135,23 +149,26 @@ class LeafActor(Actor):
             task_path=task.task_path,
             trace_id=task.trace_id,
             capability="dify",
-            params={
-                "api_key": self.meta["dify"],
-                "inputs": task.parameters,
-                "agent_id": self.agent_id,
-                "user_id": self.current_user_id,
-                "content": str(task.description or "") + task.content + str(task.context or ""),
-            },
+            running_config=running_config,
+            content=task.content,          # 来自 TaskMessage
+            description=task.description,  # 来自 TaskMessage
+            global_context=task.global_context,
+            enriched_context=task.enriched_context,
+            user_id=self.current_user_id,
             sender=str(self.myAddress),
             reply_to=self.myAddress
         )
+
         
         # 发布任务开始事件
         event_bus.publish_task_event(
             task_id=task.task_id,
             event_type=EventType.TASK_CREATED.value,
+            trace_id=task.trace_id,
+            task_path=task.task_path,
             source="LeafActor",
             agent_id=self.agent_id,
+            user_id=self.current_user_id,
             data={"node_id": self.agent_id, "type": "leaf_execution"}
         )
         
@@ -185,8 +202,11 @@ class LeafActor(Actor):
             event_bus.publish_task_event(
                 task_id=task_id,
                 event_type=EventType.TASK_PAUSED.value,
+                trace_id=result_msg.trace_id,
+                task_path=result_msg.task_path,
                 source="LeafActor",
                 agent_id=self.agent_id,
+                user_id=self.current_user_id,
                 data={"result": result_data, "status": status, "missing_params": missing_params}
             )
             
@@ -206,8 +226,11 @@ class LeafActor(Actor):
         event_bus.publish_task_event(
             task_id=task_id,
             event_type=event_type,
+            trace_id=result_msg.trace_id,
+            task_path=result_msg.task_path,
             source="LeafActor",
             agent_id=self.agent_id,
+            user_id=self.current_user_id,
             data={"result": result_data, "status": status}
         )
 

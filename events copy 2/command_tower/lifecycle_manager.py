@@ -58,8 +58,8 @@ class LifecycleManager:
             resource_profile=definition.resource_profile,
             strategy_tags=definition.strategy_tags,
             max_retries=definition.max_retries,
-            created_at=datetime.utcnow(),
-            started_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc)
         )
         
         # 写入数据库
@@ -74,7 +74,7 @@ class LifecycleManager:
         Args:
             days: 过期天数，默认为30天
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         # 归档或删除旧任务
         self.db.archive_old_tasks(cutoff_date)
@@ -95,7 +95,7 @@ class LifecycleManager:
             # 重新设置为PENDING状态，增加重试计数
             task.status = "PENDING"
             task.retry_count += 1
-            task.updated_at = datetime.utcnow()
+            task.updated_at = datetime.now(timezone.utc)
             
             self.db.update_task(task)
     
@@ -158,8 +158,8 @@ class LifecycleManager:
             resource_profile=definition.resource_profile,
             strategy_tags=definition.strategy_tags,
             max_retries=definition.max_retries,
-            created_at=datetime.utcnow(),
-            started_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc)
         )
         
         # 写入数据库

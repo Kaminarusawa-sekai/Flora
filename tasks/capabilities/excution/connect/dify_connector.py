@@ -142,11 +142,16 @@ class DifyConnector(BaseConnector):
             
             # 2. 解析最终使用的配置
             api_key = self._resolve_param("api_key", params)
-            base_url = self._resolve_param("base_url", params).rstrip('/') # 去除末尾斜杠以防万一
+            base_url = self._resolve_param("base_url", params).rstrip('/')
             user = self._resolve_param("user", params) or "default_user"
             agent_id = self._resolve_param("agent_id", params)
-            # content=self._resolve_param("content", params) or {}
-            
+            user_id = self._resolve_param("user_id", params)
+            content = self._resolve_param("content", params) or ""
+            description = self._resolve_param("description", params) or ""
+
+            # 3. 提取上下文（关键！）
+            global_context = params.get("global_context", {})
+            enriched_context = params.get("enriched_context", {})
 
             # 3. 检查输入参数 - 去掉params参数
             missing_inputs = self._check_missing_inputs(inputs)
@@ -156,9 +161,29 @@ class DifyConnector(BaseConnector):
                 from ... import get_capability
                 from ...context_resolver.interface import IContextResolverCapbility
                 context_resolver:IContextResolverCapbility = get_capability("context_resolver", IContextResolverCapbility)
-                filled_inputs,remaining_inputs = context_resolver.pre_fill_known_params_with_llm(missing_inputs, str(params))
+                
+                 # 构造结构化上下文
+                full_context = {
+                    "global_context": global_context,
+                    "enriched_context": enriched_context,
+                    "content": content,
+                    "description": description,
+                    "agent_id": agent_id,
+                    "user_id": user_id,
+                    "original_inputs": inputs,
+                }
+                
+                logger.info(f"Full context: {full_context}")
+                
+                filled_inputs, remaining_inputs = context_resolver.pre_fill_known_params_with_llm(
+                    base_param_descriptions=missing_inputs,
+                    current_context_str=full_context
+                )
                 logger.info(f"params will be used: {params}")
-                enhanced_inputs = context_resolver.enhance_param_descriptions_with_context(remaining_inputs, params)
+                enhanced_inputs = context_resolver.enhance_param_descriptions_with_context(
+                    base_param_descriptions=remaining_inputs,
+                    current_inputs=full_context
+                )
                 logger.info(f"Enhanced inputs: {enhanced_inputs}")
                 completed_inputs = context_resolver.resolve_context(enhanced_inputs,agent_id)
                 completed_inputs.update(filled_inputs)
@@ -173,6 +198,7 @@ class DifyConnector(BaseConnector):
                     return {
                         "status": "NEED_INPUT",
                         "missing": also_missing_inputs,
+                        "completed": completed_inputs,
                         "tool_schema": self._get_required_inputs()
                     }
             

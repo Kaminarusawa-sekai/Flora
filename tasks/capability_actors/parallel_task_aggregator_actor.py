@@ -11,7 +11,7 @@ from collections import Counter
 
 # 导入事件总线
 from ..events.event_bus import event_bus
-from ..events.event_types import EventType
+from common.event import EventType
 
 # 导入优化相关组件
 from ..capabilities.parallel import OptimizationOrchestrator

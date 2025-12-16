@@ -39,7 +39,7 @@ class LoopController:
             round_index=round_index,
             input_params=input_params,
             should_continue=True,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         
         # 保存上下文到数据库

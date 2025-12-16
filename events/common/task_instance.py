@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from .enums import ActorType, ScheduleType, TaskInstanceStatus
@@ -33,5 +33,5 @@ class TaskInstance(BaseModel):
 
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))

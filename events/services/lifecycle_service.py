@@ -47,7 +47,7 @@ class LifecycleService:
             is_leaf_agent=(definition.actor_type == "AGENT" and not definition.role),  # 简化判断
             schedule_type=definition.schedule_type,
             round_index=0 if definition.schedule_type == ScheduleType.LOOP else None,
-            cron_trigger_time=datetime.utcnow() if definition.schedule_type == ScheduleType.CRON else None,
+            cron_trigger_time=datetime.now(timezone.utc) if definition.schedule_type == ScheduleType.CRON else None,
             status=TaskInstanceStatus.PENDING,
             node_path="/",
             depth=0,
@@ -55,8 +55,8 @@ class LifecycleService:
             split_count=0,
             completed_children=0,
             input_params={**definition.default_params, **input_params},
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
         await self.inst_repo.create(root)
         await self._schedule_task(root)
@@ -73,7 +73,7 @@ class LifecycleService:
             task_id,
             TaskInstanceStatus.SUCCESS,
             output_ref=output_ref,
-            finished_at=datetime.utcnow()
+            finished_at=datetime.now(timezone.utc)
         )
 
         # 通知父节点计数
@@ -98,7 +98,7 @@ class LifecycleService:
                     round_index=current_round + 1,
                     started_at=None,
                     finished_at=None,
-                    updated_at=datetime.utcnow()
+                    updated_at=datetime.now(timezone.utc)
                 )
                 # 延时派发下一轮任务
                 interval = 10  # 默认值，实际应从任务定义获取
@@ -119,7 +119,7 @@ class LifecycleService:
             task_id,
             TaskInstanceStatus.FAILED,
             error_msg=error_msg,
-            finished_at=datetime.utcnow()
+            finished_at=datetime.now(timezone.utc)
         )
         
         # 级联失败：将同 trace 下所有 PENDING 任务标记为 SKIPPED
@@ -136,7 +136,7 @@ class LifecycleService:
         await self.inst_repo.update_status(
             parent.id,
             TaskInstanceStatus.RUNNING,
-            started_at=datetime.utcnow()
+            started_at=datetime.now(timezone.utc)
         )
         await self.broker.publish_delayed("task.execute", {"instance_id": parent.id}, delay_sec=0)
 

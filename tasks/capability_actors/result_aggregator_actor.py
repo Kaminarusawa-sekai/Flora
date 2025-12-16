@@ -3,10 +3,10 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from thespian.actors import Actor, ActorExitRequest,ChildActorExited
 from ..common.messages.task_messages import (
-    TaskCompletedMessage, ExecuteTaskMessage, TaskSpec, TaskMessage,
+    TaskCompletedMessage, TaskSpec,AgentTaskMessage,
     ResultAggregatorTaskRequestMessage
 )
-from ..common.messages.agent_messages import AgentTaskMessage
+
 from ..common.messages.types import MessageType
 
 # 引入 AgentActor
@@ -17,6 +17,10 @@ import logging
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 导入事件总线
+from ..events.event_bus import event_bus
+from common.event.event_type import EventType
 
 
 class ResultAggregatorActor(Actor):
@@ -50,6 +54,7 @@ class ResultAggregatorActor(Actor):
         self._root_task_id: Optional[str] = None
         self._trace_id: Optional[str] = None
         self._base_task_path: Optional[str] = None
+        self.task_spec: Optional[TaskSpec] = None
 
     def receiveMessage(self, message: Any, sender: Any) -> None:
 
@@ -98,9 +103,32 @@ class ResultAggregatorActor(Actor):
         self.current_user_id = msg.user_id
 
         task_spec = msg.spec
+        self.task_spec = task_spec
         agent_id = task_spec.executor
 
-        params = msg.params
+        task_id = f"step_{task_spec.step}"
+        merged_context = self._get_merged_context(
+            task_id=task_id,
+            global_ctx=msg.global_context,
+            enriched_ctx=msg.enriched_context
+        )
+
+        # 发布任务开始事件
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "task_spec": task_spec.__dict__,
+                "agent_id": agent_id,
+                "merged_context": merged_context
+            },
+            enriched_context_snapshot=msg.enriched_context.copy()
+        )
 
         if not agent_id:
             self._process_failure(self._root_task_id, "Missing 'executor' in task spec", sender)
@@ -108,12 +136,11 @@ class ResultAggregatorActor(Actor):
 
         logger.info(f"ResultAggregator: Received task request for AgentActor: {agent_id}")
 
-        task_id = f"step_{task_spec.step}"
         if task_id not in self._pending_tasks:
             self._pending_tasks[task_id] = {
                 "spec": task_spec,
                 "executor": agent_id,
-                "parameters": task_spec.params
+                 "input_content": f"内容：{task_spec.content} 描述：{task_spec.description}",
             }
             self._retries[task_id] = 0
 
@@ -125,13 +152,14 @@ class ResultAggregatorActor(Actor):
                 task_id=task_id,
                 trace_id=self._trace_id,
                 task_path=msg.task_path,
-                content=task_spec.params,
-                description=task_spec.description,
+                content=task_spec.content,              # ← 主输入
+                description=task_spec.description,      # ← 辅助说明
                 user_id=self.current_user_id,
                 reply_to=self.myAddress,
-                context=params,
+                global_context=msg.global_context,       # ← 从消息继承全局上下文
+                enriched_context=msg.enriched_context,
                 is_parameter_completion=False,
-                parameters={}
+                parameters={}                           # ← 留空或后续扩展
             )
 
             self.send(agent_ref, task_msg)
@@ -185,7 +213,7 @@ class ResultAggregatorActor(Actor):
             message_type=MessageType.TASK_COMPLETED,
             result=msg.result,
             status="NEED_INPUT",
-            agent_id=msg.agent_id
+            
         ))
         logger.info(f"Task {msg.task_id} execution blocked, waiting for input")
 
@@ -196,6 +224,25 @@ class ResultAggregatorActor(Actor):
         self._pending_tasks.pop(task_id, None)
         self._failed_tasks.pop(task_id, None)
         self._completed_tasks[task_id] = result
+
+        # 发布任务成功事件
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_PROGRESS.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "sub_task_id": task_id,
+                "result": result,
+                "completed_tasks": len(self._completed_tasks),
+                "failed_tasks": len(self._failed_tasks),
+                "pending_tasks": len(self._pending_tasks)
+            },
+            enriched_context_snapshot={}
+        )
 
         self._check_completion()
 
@@ -208,8 +255,30 @@ class ResultAggregatorActor(Actor):
         if current_retry < self._max_retries:
             self._retries[task_id] = current_retry + 1
             logger.warning(f"Task {task_id} failed. Retrying ({self._retries[task_id]}/{self._max_retries}). Error: {error}")
+            
+            # 发布任务重试事件
+            event_bus.publish_task_event(
+                task_id=self._root_task_id,
+                event_type=EventType.TASK_RUNNING.value,
+                trace_id=self._trace_id,
+                task_path=self._base_task_path,
+                source="ResultAggregatorActor",
+                agent_id="result_aggregator",
+                user_id=self.current_user_id,
+                data={
+                    "sub_task_id": task_id,
+                    "status": "RETRYING",
+                    "retry_count": self._retries[task_id],
+                    "max_retries": self._max_retries,
+                    "error": error
+                },
+                enriched_context_snapshot={}
+            )
 
             task_info = self._pending_tasks.get(task_id)
+            merged_context = self._get_merged_context(
+                task_id=task_id,
+            )
             if task_info:
                 agent_id = task_info.get("executor")
                 try:
@@ -219,11 +288,11 @@ class ResultAggregatorActor(Actor):
                         task_id=task_id,
                         trace_id=self._trace_id,
                         task_path=self._base_task_path,
-                        content=task_info["parameters"],
-                        description=task_info["spec"].description,
+                        content=self.task_spec.content,               # ✅ 修正：原来是 task_info["parameters"]
+                        description=self.task_spec.description,
                         user_id=self.current_user_id,
                         reply_to=self.myAddress,
-                        context={},
+                        context=merged_context,                         # 或从原消息恢复
                         is_parameter_completion=False,
                         parameters={}
                     )
@@ -237,6 +306,26 @@ class ResultAggregatorActor(Actor):
 
     def _mark_final_failure(self, task_id: str, error: str) -> None:
         logger.error(f"Task {task_id} finally failed: {error}")
+        
+        # 发布任务最终失败事件
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_FAILED.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "sub_task_id": task_id,
+                "error": error,
+                "retry_count": self._retries.get(task_id, 0),
+                "max_retries": self._max_retries
+            },
+            enriched_context_snapshot={},
+            error=error
+        )
+        
         self._failed_tasks[task_id] = error
         self._pending_tasks.pop(task_id, None)
         self._check_completion()
@@ -254,6 +343,25 @@ class ResultAggregatorActor(Actor):
                 # 有失败任务 → 整体失败
                 first_failed = next(iter(self._failed_tasks))
                 error_msg = self._failed_tasks[first_failed]
+                
+                # 发布最终失败事件
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_FAILED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "failed_tasks": self._failed_tasks,
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks) + len(self._failed_tasks)
+                    },
+                    enriched_context_snapshot={},
+                    error=error_msg
+                )
+                
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,
                     trace_id=self._trace_id,
@@ -266,6 +374,24 @@ class ResultAggregatorActor(Actor):
             elif len(self._completed_tasks) == 1:
                 # 单个成功
                 result = next(iter(self._completed_tasks.values()))
+                
+                # 发布最终成功事件
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "result": result,
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks)
+                    },
+                    enriched_context_snapshot={}
+                )
+                
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,
                     trace_id=self._trace_id,
@@ -277,6 +403,23 @@ class ResultAggregatorActor(Actor):
                 ))
             else:
                 # 多个结果（batch）
+                
+                # 发布最终成功事件
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks)
+                    },
+                    enriched_context_snapshot={}
+                )
+                
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,
                     trace_id=self._trace_id,
@@ -320,3 +463,34 @@ class ResultAggregatorActor(Actor):
         children = tree_manager.get_children(agent_id)
         return len(children) == 0
 
+
+    def _get_merged_context(
+        self,
+        task_id: str,
+        global_ctx: Optional[Dict[str, Any]]=None,
+        enriched_ctx: Optional[Dict[str, Any]]=None
+    ) -> Dict[str, Any]:
+        """
+        获取或构建合并后的上下文（global + enriched），并自动缓存。
+        
+        用于首次执行和重试时保持上下文一致性。
+        """
+        # 检查是否已缓存（例如重试场景）
+        if task_id in self._pending_tasks:
+            cached = self._pending_tasks[task_id].get("context")
+            if cached is not None:
+                return cached
+
+        # 首次构建：合并 global + enriched（enriched 优先）
+        base = global_ctx or {}
+        enriched = enriched_ctx or {}
+        merged = {**base, **enriched}
+
+        # 缓存到任务信息中（供重试使用）
+        if task_id in self._pending_tasks:
+            self._pending_tasks[task_id]["context"] = merged
+        else:
+            # 安全兜底：即使未注册，也返回合并结果（不应发生）
+            logger.warning(f"_get_merged_context called before task {task_id} was registered")
+
+        return merged

@@ -35,7 +35,7 @@ class ObserverService:
             status=task.status.value,
             output_ref=task.output_ref,
             error_msg=task.error_msg,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         
         # 发布到事件总线
@@ -59,7 +59,7 @@ class ObserverService:
             task_id=task.id,
             trace_id=task.trace_id,
             worker_id=task.job_id,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.event_publisher.publish("task.started", event.model_dump())
 
@@ -69,7 +69,7 @@ class ObserverService:
             task_id=task.id,
             trace_id=task.trace_id,
             output_ref=task.output_ref or "",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.event_publisher.publish("task.completed", event.model_dump())
 
@@ -79,7 +79,7 @@ class ObserverService:
             task_id=task.id,
             trace_id=task.trace_id,
             error_msg=task.error_msg or "Unknown error",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.event_publisher.publish("task.failed", event.model_dump())
 
@@ -88,7 +88,7 @@ class ObserverService:
         event = TraceCancelledEvent(
             trace_id=trace_id,
             reason=reason,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.event_publisher.publish("trace.cancelled", event.model_dump())
 
@@ -98,7 +98,7 @@ class ObserverService:
             task_id=task.id,
             trace_id=task.trace_id,
             round_index=task.round_index or 0,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.event_publisher.publish("loop.round_started", event.model_dump())
 

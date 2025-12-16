@@ -15,7 +15,7 @@ class CapabilityManager:
     负责动态扫描目录、自动化注册和统一初始化所有能力。
     """
     
-    def __init__(self, config_path: str = "config.json"):
+    def __init__(self, config_path: str = "./tasks/config.json"):
         # self.registry = CapabilityRegistry()
         self.registry = capability_registry
         self.config = CapabilityConfig(config_path)
@@ -143,6 +143,8 @@ class CapabilityManager:
                 if not target_class:
                     self.logger.warning(f"Class not found for capability: {cap_name}")
                     continue
+
+                self.logger.info(f"[{cap_type}] Initializing: {cap_name}")
 
                 try:
                     # 1. 实例化 & 初始化

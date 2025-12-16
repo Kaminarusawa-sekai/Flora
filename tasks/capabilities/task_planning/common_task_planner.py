@@ -94,7 +94,9 @@ class CommonTaskPlanning(ITaskPlanningCapability):
         prompt = self._build_enhanced_planning_prompt(user_input, memory_context, candidates)
         
         response = self._call_llm(prompt)
-        return self._parse_llm_json(response)
+        plans = self._parse_llm_json(response)
+        self.logger.info(f"[CommonTaskPlanner] LLM response:\n{plans}")
+        return plans
 
 
     def _build_enhanced_planning_prompt(self, user_input, memory, agents):
@@ -111,22 +113,38 @@ class CommonTaskPlanning(ITaskPlanningCapability):
         return (
             f"""你是一个智能任务编排专家。请结合【用户指令】和【长期记忆】制定执行计划。
 
-### 可用内部节点 (Agents)
+### 🤖 可用内部节点 (Agents)
 {agents_str}
-{memory_section}
 
-### 用户指令
+### 📥 用户指令
 "{user_input}"
 
-### 规划要求
-1. **记忆增强**：如果用户指令模糊（如"老样子"、"发给那个人"），请根据【长期记忆】推断具体参数。
-2. **节点选择**：内部能力能覆盖的选 "AGENT"，否则选 "MCP"。
-3. **输出格式**：纯 JSON 列表。
+### 📋 规划要求
+1. **记忆增强**：如果用户指令模糊（如"老样子"、"发给那个人"），请根据【长期记忆】推断具体参数，并写入 `content`。
+2. **节点选择**：
+   - 若任务可由内部 Agent 完成（如写作、分析、规划），选 `"type": "AGENT"`；
+   - 若需调用外部工具（如钉钉、邮件、数据库），选 `"type": "MCP"`。
+3. **字段定义**：
+   - `content`：**面向执行 Agent 的自然语言指令**，应完整、自包含，无需额外上下文即可理解。
+   - `description`：**面向系统的简洁任务摘要**，说明“做什么”，不包含细节或引用。
+4. **输出格式**：纯 JSON 列表，不要任何额外文本。
 
-### 示例输出
+### ✅ 示例输出
 [
-  {{ "step": 1, "type": "AGENT", "executor": "doc_writer", "params": "格式：Markdown (基于记忆偏好),"description": "写一份用户文档" }},
-  {{ "step": 2, "type": "MCP", "executor": "dingtalk_bot", "params": "接收人：小张 (基于记忆推断)", "description": "发送钉钉消息给小张" }}
+  {{
+    "step": 1,
+    "type": "AGENT",
+    "executor": "doc_writer",
+    "content": "根据用户历史偏好，撰写一份关于新功能的 Markdown 格式用户文档。",
+    "description": "生成用户文档"
+  }},
+  {{
+    "step": 2,
+    "type": "MCP",
+    "executor": "dingtalk_bot",
+    "content": "将上一步生成的 Markdown 文档通过钉钉发送给小张（用户常联系人）。",
+    "description": "钉钉通知"
+  }}
 ]
 """
         )

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any
 from thespian.actors import ActorAddress
 
+from tasks.common.context.context_entry import ContextEntry
 class BaseMessage(BaseModel):
     message_type: str
     source: str = Field(default="")
@@ -31,24 +32,5 @@ class BaseMessage(BaseModel):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(id={self.id}, type={self.message_type}, source={self.source}, dest={self.destination}, ts={self.timestamp})"
 
-
-class TaskMessage(BaseMessage):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    task_id: str
-    trace_id: str  # ← 全链路唯一根 ID
-    task_path: str  # ← 如 "/0", "/0/2", "/0/2/1"
-    
-    # 【不变】全局上下文：从根任务一路透传，不可变
-    global_context: Dict[str, Any] = Field(default_factory=dict)
-    
-    # 【动态】富上下文：不断累积的“可能有用”信息（关键！）
-    enriched_context: Dict[str, Any] = Field(default_factory=dict)
-    
-    # 用户身份（用于权限/计费）
-    user_id: Optional[str] = None
-    
-    # 回调地址
-    reply_to: Optional[ActorAddress] = None
 
 
