@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Query, HTTPException, Depends
+from fastapi import APIRouter, Query, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from pydantic import BaseModel
 
 # 导入依赖注入
-from ..deps import get_observer_service, get_db_session
+from ..deps import get_observer_service, get_db_session, get_connection_manager
 from ....services.observer_service import ObserverService
+from ....services.websocket_manager import ConnectionManager
 from ....common.event_instance import EventInstance
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -160,3 +161,28 @@ async def get_ready_tasks(
         "count": len(ready_events),
         "tasks": [event.model_dump() for event in ready_events]
     }
+
+
+@router.websocket("/ws/{trace_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    trace_id: str,
+    connection_manager: ConnectionManager = Depends(get_connection_manager)
+):
+    """
+    WebSocket端点，用于前端实时接收trace的动态事件
+    前端可以通过此连接获取：
+    1. 拓扑结构动态扩展
+    2. 任务状态实时变更
+    3. 链路取消通知等
+    """
+    # 建立WebSocket连接
+    await connection_manager.connect(websocket, trace_id)
+    try:
+        # 保持连接，处理心跳或前端指令
+        while True:
+            # 可选：处理前端发送的消息（当前只读）
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        # 连接断开，清理资源
+        connection_manager.disconnect(websocket, trace_id)

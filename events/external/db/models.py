@@ -38,7 +38,7 @@ class EventDefinitionDB(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("idx_active_cron", "is_active", "cron_expr"),
+        Index("idx_active_cron", "is_active", "cron_expr", if_not_exists=True),
     )
 
 
@@ -92,5 +92,5 @@ class EventInstanceDB(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("idx_trace_status", "trace_id", "status"),
+        Index("idx_trace_status", "trace_id", "status", if_not_exists=True),
     )

@@ -4,8 +4,9 @@ import json
 import os
 import sys
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -73,17 +74,31 @@ def get_current_user(x_user_id: Optional[str] = Header(None)):
     return x_user_id
 
 
-@app.post("/conversations/{session_id}/messages", response_model=SystemResponseDTO, tags=["对话"])
+# 记忆沉淀函数
+def trigger_memory_extraction(session_id: str, user_id: str):
+    """触发记忆沉淀
+    
+    在会话结束后，将对话内容沉淀为结构化记忆
+    """
+    print(f"[后台任务] 开始为用户 {user_id} 的会话 {session_id} 沉淀记忆...")
+    # 这里应该调用记忆管理模块的API来实现记忆沉淀
+    # 例如：memory_manager.extract_and_store_memory(session_id, user_id)
+    print(f"[后台任务] 会话 {session_id} 的记忆沉淀完成")
+
+
+@app.post("/conversations/{session_id}/messages", tags=["对话"])
 async def send_message(
     session_id: str,
     request: UserMessageRequest,
+    background_tasks: BackgroundTasks,
     x_user_id: str = Depends(get_current_user)
 ):
     """主对话接口（核心入口）
     
-    用户发送消息，系统返回响应（同步轮询模式）
+    用户发送消息，系统返回SSE流式响应
     """
-    try:
+    # 创建生成器
+    async def event_generator():
         # 创建用户输入DTO
         user_input = UserInputDTO(
             session_id=session_id,
@@ -93,12 +108,18 @@ async def send_message(
             metadata=request.metadata
         )
         
-        # 调用对话编排器处理用户输入
-        response = _orchestrator.handle_user_input(user_input)
+        # 调用编排器的流式方法
+        async for event_type, data in _orchestrator.stream_handle_user_input(user_input):
+            # 格式化为 SSE 协议
+            yield {
+                "event": event_type,
+                "data": json.dumps(data, ensure_ascii=False)
+            }
         
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+        # 流结束前，添加后台任务用于触发记忆沉淀
+        background_tasks.add_task(trigger_memory_extraction, session_id, x_user_id)
+    
+    return EventSourceResponse(event_generator())
 
 
 @app.post("/tasks/{task_id}/resume-with-input", response_model=ResumeTaskResponse, tags=["任务"])

@@ -8,6 +8,10 @@ from ..external.db.impl import create_event_instance_repo
 class SignalService:
     def __init__(self, cache: CacheClient):
         self.cache = cache
+    
+    def _get_cache_key(self, trace_id: str) -> str:
+        """获取缓存键，确保与 LifecycleService 保持一致"""
+        return f"trace_signal:{trace_id}"
 
     async def send_signal(
         self,
@@ -65,7 +69,8 @@ class SignalService:
             )
         
         # 4. 同时发送缓存信号
-        await self.cache.set(f"trace_signal:{trace_id}", signal, ttl=3600)
+        cache_key = self._get_cache_key(trace_id)
+        await self.cache.set(cache_key, signal, ttl=3600)
     
     # 兼容旧接口
     async def cancel_trace(self, session: AsyncSession, trace_id: str):
@@ -81,7 +86,7 @@ class SignalService:
 
     async def check_signal(self, trace_id: str, session: Optional[AsyncSession] = None) -> Optional[str]:
         """供内部服务调用（如调度器预检）"""
-        key = f"trace_signal:{trace_id}"
+        key = self._get_cache_key(trace_id)
         signal = await self.cache.get(key)
         
         if signal is not None:

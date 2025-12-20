@@ -17,22 +17,29 @@ from ..common.events import (
 )
 
 # 导入外部依赖
-from ..external.events.base import EventPublisher
+
 from ..external.cache.base import CacheClient  # 需要 Cache 来读取大字段
 from ..external.db.session import dialect
 from ..external.db.impl import create_event_instance_repo
+from ..external.events.bus import EventBus
+
+# 导入WebSocket管理器
+from .websocket_manager import ConnectionManager
 
 
 class ObserverService:
     def __init__(
         self,
-        event_publisher: EventPublisher,
-        cache: Optional[CacheClient] = None,  # 新增：用于读取 payload
+        event_bus: EventBus,
+        connection_manager: ConnectionManager,
+        cache: Optional[CacheClient] = None,  # 用于读取 payload
         webhook_registry: Optional[Any] = None
     ):
-        self.event_publisher = event_publisher
+        self.event_bus = event_bus
+        self.connection_manager = connection_manager
         self.cache = cache
         self.webhook_registry = webhook_registry
+        self.topic_name = "job_event_stream"
 
     async def on_task_status_changed(self, task: EventInstance) -> None:
         """
@@ -323,3 +330,80 @@ class ObserverService:
                 for status, count in status_counts.items() if count > 0
             )
         }
+    
+    async def start_listening(self) -> None:
+        """
+        订阅事件总线，监听任务事件并通过WebSocket推送给前端
+        这是ObserverService的核心方法，实现了系统的实时能力
+        """
+        async for message in self.event_bus.subscribe(self.topic_name):
+            try:
+                # 解析消息
+                trace_id = message.get("key")
+                event_type = message.get("event_type")
+                payload = message.get("payload", {})
+                
+                if not trace_id:
+                    continue
+                
+                # 根据事件类型，构造推送消息
+                if event_type == "TRACE_CREATED":
+                    # 新链路创建
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "trace_created",
+                        "data": payload
+                    })
+                
+                elif event_type == "TOPOLOGY_EXPANDED":
+                    # 拓扑结构动态扩展
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "graph_updated",
+                        "data": payload
+                    })
+                
+                elif event_type == "TASK_STATUS_CHANGED":
+                    # 任务状态变更
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "node_status_changed",
+                        "data": payload
+                    })
+                
+                elif event_type == "TASK_STARTED":
+                    # 任务开始执行
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "node_active",
+                        "node_id": payload.get("task_id")
+                    })
+                
+                elif event_type == "TASK_COMPLETED":
+                    # 任务执行成功
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "node_success",
+                        "node_id": payload.get("task_id")
+                    })
+                
+                elif event_type == "TASK_FAILED":
+                    # 任务执行失败
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "node_failed",
+                        "node_id": payload.get("task_id"),
+                        "error_msg": payload.get("error_msg")
+                    })
+                
+                elif event_type == "TRACE_CANCELLED":
+                    # 链路被取消
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "trace_stop",
+                        "reason": payload.get("reason")
+                    })
+                
+                elif event_type == "LOOP_ROUND_STARTED":
+                    # 循环任务开始新的一轮
+                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                        "event": "loop_round_started",
+                        "data": payload
+                    })
+            
+            except Exception as e:
+                print(f"Error processing event: {e}")
+                continue

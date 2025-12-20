@@ -27,14 +27,14 @@ async def lifespan(app: FastAPI):
     logger.info("应用启动中,lifespan上下文管理器...")
     # 导入依赖
     from .entry.api.deps import (
-        create_tables,
         get_lifecycle_service,
-        get_task_dispatcher,
+        get_observer_service,
         get_broker,
-        get_cache
+        get_cache,
+        connection_manager_instance
     )
-    # 从session.py导入会话相关功能
-    from .external.db.session import async_session, get_db_session
+    # 从session.py导入会话相关功能和建表函数
+    from .external.db.session import async_session, get_db_session, create_tables
     # 导入调度器
 
     
@@ -101,14 +101,19 @@ async def lifespan(app: FastAPI):
     # 3. 初始化服务实例
     cache = get_cache()
     broker = get_broker()
+    connection_manager = connection_manager_instance
+    
     lifecycle_svc = get_lifecycle_service(broker, cache)
+    observer_svc = get_observer_service(broker, connection_manager, cache)
     
     # 启动后台任务
     tasks = []
     
-
-    
-
+    # 启动ObserverService的事件监听任务
+    observer_task = asyncio.create_task(
+        observer_svc.start_listening()
+    )
+    tasks.append(observer_task)
     
     yield
     

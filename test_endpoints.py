@@ -65,17 +65,20 @@ def test_commands_endpoints(client):
     # 测试启动跟踪端点
     print("\n1. 测试启动跟踪端点")
     try:
+        # 生成一个测试用的trace_id（外部传入）
+        test_trace_id = "test-trace-" + str(os.urandom(4).hex())
         response = client.post("/api/v1/traces/start", json={
             "root_def_id": "DEFAULT_ROOT_AGENT",
+            "trace_id": test_trace_id,
             "input_params": {"test": "value"}
         })
         print(f"POST /api/v1/traces/start -> 状态码: {response.status_code}")
         print(f"响应: {response.json()}")
         # 保存trace_id用于后续测试
-        trace_id = response.json().get("trace_id", "test_trace")
+        trace_id = response.json().get("trace_id", test_trace_id)
     except Exception as e:
         print(f"POST /api/v1/traces/start -> 发生错误: {traceback.format_exc()}")
-        trace_id = "test_trace"
+        trace_id = "test-trace-" + str(os.urandom(4).hex())
     
     # 测试取消跟踪端点
     print("\n2. 测试取消跟踪端点")
@@ -101,8 +104,8 @@ def test_commands_endpoints(client):
         response = client.post(f"/api/v1/traces/{trace_id}/split", json={
             "parent_id": "test_parent",
             "subtasks_meta": [
-                {"def_id": "DEFAULT_CHILD_AGENT", "name": "测试子任务1", "params": {"test": "value1"}},
-                {"def_id": "DEFAULT_CHILD_AGENT", "name": "测试子任务2", "params": {"test": "value2"}}
+                {"id": "child-1-" + str(os.urandom(4).hex()), "def_id": "DEFAULT_CHILD_AGENT", "name": "测试子任务1", "params": {"test": "value1"}},
+                {"id": "child-2-" + str(os.urandom(4).hex()), "def_id": "DEFAULT_CHILD_AGENT", "name": "测试子任务2", "params": {"test": "value2"}}
             ]
         })
         print(f"POST /api/v1/traces/{trace_id}/split -> 状态码: {response.status_code}")

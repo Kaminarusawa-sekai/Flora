@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     
     # Redis 配置
     redis_url: str
+    use_redis: bool = False
     
     # RabbitMQ 配置
     rabbitmq_url: str
@@ -93,6 +94,7 @@ class Settings(BaseSettings):
         default_config = {
             "db_url": "postgresql+asyncpg://user:pass@localhost/command_tower",
             "redis_url": "redis://localhost:6379/0",
+            "use_redis": False,
             "rabbitmq_url": "amqp://guest:guest@localhost:5672/",
             "worker_callback_url": "http://worker-svc:8000",
             "host": "0.0.0.0",

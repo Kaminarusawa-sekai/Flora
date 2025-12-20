@@ -19,6 +19,13 @@ class RedisCacheClient(CacheClient):
 
     async def exists(self, key: str) -> bool:
         return await self.redis.exists(key) > 0
+    
+    async def xadd(self, stream_key: str, data: dict, maxlen: Optional[int] = None) -> None:
+        kwargs = {}
+        if maxlen is not None:
+            kwargs['maxlen'] = maxlen
+            kwargs['approximate'] = True  # 使用近似截断，提高性能
+        await self.redis.xadd(stream_key, data, **kwargs)
 
 
 # 创建全局 redis 客户端实例

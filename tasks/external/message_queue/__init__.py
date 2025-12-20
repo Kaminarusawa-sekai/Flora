@@ -1,7 +1,4 @@
-"""消息队列模块"""
+from .message_queue_factory import MessageQueueFactory
+from .message_queue_base import MessageQueueListener
 
-from .rabbitmq_client import RabbitMQClient
-
-__all__ = [
-    'RabbitMQClient'
-]
+__all__ = ['MessageQueueFactory', 'MessageQueueListener']

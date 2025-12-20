@@ -27,7 +27,8 @@ async def start_trace(
         trace_id = await lifecycle_svc.start_trace(
             session,
             request.root_def_id,
-            request.input_params
+            request.input_params,
+            request.trace_id
         )
         return {"trace_id": trace_id}
     except ValueError as e:

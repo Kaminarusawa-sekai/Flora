@@ -3,9 +3,11 @@ from typing import List, Dict, Any, Optional
 
 class StartTraceRequest(BaseModel):
     root_def_id: str = Field(..., description="根节点定义ID")
+    trace_id: str = Field(..., description="跟踪ID，由外部传入")
     input_params: Dict[str, Any] = Field(default_factory=dict, description="启动参数")
 
 class SubTaskMeta(BaseModel):
+    id: str = Field(..., description="子任务ID，由外部传入")
     def_id: str
     name: Optional[str] = None
     params: Dict[str, Any] = Field(default_factory=dict)

@@ -1,7 +1,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..common.event_instance import EventInstance
 from ..common.enums import EventInstanceStatus
@@ -9,15 +9,18 @@ from ..common.enums import EventInstanceStatus
 from ..external.cache.base import CacheClient
 from ..external.db.session import dialect
 from ..external.db.impl import create_event_definition_repo, create_event_instance_repo
+from ..external.events.bus import EventBus
 
-
+##TODO:这里有双写一致性问题，后期再解决
 class LifecycleService:
     def __init__(
         self,
-
+        event_bus: EventBus,
         cache: Optional[CacheClient] = None
     ):
+        self.event_bus = event_bus
         self.cache = cache
+        self.topic_name = "job_event_stream"
 
     async def _save_payload(self, payload: dict) -> str:
         """
@@ -32,7 +35,9 @@ class LifecycleService:
         self,
         session: AsyncSession,
         root_def_id: str,
-        input_params: dict
+        input_params: dict,
+        trace_id: str,
+
     ) -> str:
         """
         启动链路，创建根节点并触发执行
@@ -44,9 +49,7 @@ class LifecycleService:
              raise ValueError(f"Definition {root_def_id} not found")
 
         # 2. 创建根节点
-        trace_id = str(uuid.uuid4())
         root_id = str(uuid.uuid4())
-        
         root = EventInstance(
             id=root_id,
             trace_id=trace_id,
@@ -66,6 +69,17 @@ class LifecycleService:
         inst_repo = create_event_instance_repo(session, dialect)
         await inst_repo.create(root)
         
+        # 【使用抽象】发送 TRACE_CREATED 事件
+        # 告诉外界：有一个新链路开始了，根节点是 root_id
+        await self.event_bus.publish(
+            topic=self.topic_name,
+            event_type="TRACE_CREATED",
+            key=trace_id,
+            payload={
+                "root_instance_id": root_id,
+                "def_id": root_def_id
+            }
+        )
 
         return trace_id
 
@@ -80,10 +94,18 @@ class LifecycleService:
         动态拓扑扩展
         Agent 调用此方法：我在 parent_id 下生成了 DAG。
         subtasks_meta 示例: [
-           {"def_id": "AGG_GROUP", "name": "Group A", "params": {...}},
-           {"def_id": "AGG_GROUP", "name": "Group B", "params": {...}}
+           {"id": "external-id-1", "def_id": "AGG_GROUP", "name": "Group A", "params": {...}},
+           {"id": "external-id-2", "def_id": "AGG_GROUP", "name": "Group B", "params": {...}}
         ]
         """
+        # 【修改点 1】: 快速失败 (Fast Fail)
+        # 在查数据库之前，先查缓存。如果整个 Trace 已经被杀掉，直接抛异常，省一次 DB 查询。
+        if trace_id and self.cache:
+            # 这里的 key 必须和 SignalService 里的 key 保持绝对一致
+            cached_signal = await self.cache.get(f"trace_signal:{trace_id}")
+            if cached_signal == "CANCEL":
+                raise ValueError(f"Trace {trace_id} has been cancelled (Cache Hit)")
+
         inst_repo = create_event_instance_repo(session, dialect)
         parent = await inst_repo.get(parent_id)
         
@@ -94,7 +116,8 @@ class LifecycleService:
         if trace_id and parent.trace_id != trace_id:
             raise ValueError(f"Parent node {parent_id} does not belong to trace {trace_id}")
         
-        # 1. 检查父节点状态：如果父节点已经被取消，禁止裂变！
+        # 【修改点 2】: 数据库层面的二次确认 (Double Check)
+        # 防止缓存过期或未命中的情况
         if parent.control_signal == "CANCEL":
             raise ValueError("Parent event is cancelled")
 
@@ -102,7 +125,10 @@ class LifecycleService:
         new_ids = []
         
         for meta in subtasks_meta:
-            child_id = str(uuid.uuid4())
+            # 从外部输入获取id
+            if "id" not in meta:
+                raise ValueError(f"Missing required 'id' field in subtask meta: {meta}")
+            child_id = meta["id"]
             new_ids.append(child_id)
             
             # 获取子任务定义
@@ -128,11 +154,28 @@ class LifecycleService:
                 status=EventInstanceStatus.PENDING, # 初始为 PENDING，等待调度
                 input_params={**child_def.default_params, **meta.get("params", {})},
                 input_ref=await self._save_payload(meta.get("params", {})),
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
+                # 【修改点 3】: 状态继承 (Inheritance)
+                # 关键！如果父节点有信号（比如 PAUSE），子节点必须继承。
+                control_signal=parent.control_signal
             )
             new_instances.append(child)
             
         await inst_repo.bulk_create(new_instances)
+        
+        # 【使用抽象】发送 TOPOLOGY_EXPANDED 事件
+        # 告诉外界：parent_id 下面裂变出了 new_ids 这些新任务
+        if new_ids:
+            await self.event_bus.publish(
+                topic=self.topic_name,
+                event_type="TOPOLOGY_EXPANDED",
+                key=parent.trace_id,
+                payload={
+                    "parent_id": parent_id,
+                    "new_instance_ids": new_ids,
+                    "count": len(new_ids)
+                }
+            )
         
         return new_ids
 

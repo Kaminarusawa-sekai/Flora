@@ -2,373 +2,159 @@
 """
 Flora多智能体协作系统 - API服务器实现（基于FastAPI）
 
-负责接收外部HTTP请求，提供RESTful API接口，集成认证中间件，并将请求转发给请求处理器
+FastAPI作为AgentActor的“翻译官”，将HTTP JSON请求转换为Python对象消息，
+发送给Thespian ActorSystem，并将结果返回给用户。
 """
 
 import logging
 import uvicorn
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from typing import Dict, Any, Optional, Annotated, List
 from pydantic import BaseModel
+from thespian.actors import ActorSystem
+import uuid
 
-# 定义请求模型
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
-    stream: bool = False
-
-class CommandRequest(BaseModel):
-    command: str
-    params: Optional[Dict[str, Any]] = None
-
-class FeedbackRequest(BaseModel):
-    content: str
-    rating: Optional[int] = None
-
-# 定义认证信息模型
-class AuthInfo(BaseModel):
-    user_id: str
-    tenant_id: str
-    role: Optional[str] = None
-
-# 导入入口层其他组件
-from .auth_middleware import AuthMiddleware, get_current_auth_info
-from .request_handler import RequestHandler
-from .tenant_router import TenantRouter
+# 导入Actor和消息定义
+from tasks.agents.agent_actor import AgentActor
+from tasks.common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
 
 logger = logging.getLogger(__name__)
 
+app = FastAPI(
+    title="Flora 多智能体协作系统 API",
+    description="Flora系统的RESTful API接口",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-class APIServer:
+# 配置CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 在生产环境中应该设置具体的域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 1. 启动Actor系统（单例）
+actor_system = ActorSystem('multiprocTCPBase')
+
+# 2. 获取AgentActor的引用
+agent_actor_ref = actor_system.createActor(AgentActor)
+
+# --- 定义请求体模型 (Pydantic) ---
+class TaskRequest(BaseModel):
+    user_input: str
+    user_id: str
+
+class ResumeRequest(BaseModel):
+    task_id: str
+    parameters: dict
+    user_id: str
+
+# --- 核心接口 1: 执行任务 ---
+@app.post("/tasks/execute")
+def execute_task(req: TaskRequest):
     """
-    API服务器类，封装FastAPI应用，提供系统的HTTP接口
+    执行新任务
+    
+    Args:
+        req: 任务请求，包含用户输入和用户ID
+        
+    Returns:
+        任务执行结果
     """
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """
-        初始化API服务器
+    try:
+        # 1. 生成唯一task_id
+        task_id = str(uuid.uuid4())
         
-        Args:
-            config: 服务器配置字典
-        """
-        self.config = config or {}
-        # 认证配置
-        self.config.setdefault("auth", {
-            "default_auth_type": "jwt",
-            "jwt_secret_key": "default_secret_key",
-            "jwt_algorithm": "HS256",
-            "jwt_expiration_minutes": 30
-        })
-        self.app = FastAPI(
-            title="Flora 多智能体协作系统 API",
-            description="Flora系统的RESTful API接口",
-            version="1.0.0",
-            docs_url="/docs",
-            redoc_url="/redoc"
-        )
-        self._setup_app()
-        
-        # 初始化组件
-        self.auth_middleware = AuthMiddleware(self.config.get('auth', {}))
-        self.tenant_router = TenantRouter(self.config.get('tenant', {}))
-        
-        # 将认证中间件实例存储到app.state中
-        self.app.state.auth_middleware = self.auth_middleware
-        
-        # 注册EventActor服务
-        from ..events.event_actor import EventActor
-        self.tenant_router.register_service_factory('event_actor', EventActor)
-        
-        self.request_handler = RequestHandler(
-            tenant_router=self.tenant_router,
-            config=self.config.get('handler', {})
+        # 2. 构造Thespian消息
+        msg = AgentTaskMessage(
+            user_input=req.user_input,
+            user_id=req.user_id,
+            task_id=task_id
         )
         
-        self._register_routes()
-    
-    def _setup_app(self):
-        """
-        配置FastAPI应用
-        """
-        # 启用CORS支持
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],  # 在生产环境中应该设置具体的域名
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # 3. 发送给Actor并等待回复（同步阻塞）
+        # timeout设为60秒，因为LLM处理可能较慢
+        response = actor_system.ask(agent_actor_ref, msg, timeout=60)
         
-        # 设置日志级别
-        if self.config.get('debug', False):
-            logging_level = logging.DEBUG
-        else:
-            logging_level = logging.INFO
+        if response is None:
+            raise HTTPException(status_code=504, detail="Agent processing timeout")
         
-        # 配置日志
-        logging.basicConfig(
-            level=logging_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        
-        # 全局异常处理
-        @self.app.exception_handler(Exception)
-        async def global_exception_handler(request: Request, exc: Exception):
-            logger.error(f"Global exception: {str(exc)}", exc_info=True)
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "data": None,
-                    "error": "Internal server error"
-                }
-            )
-    
-    def _register_routes(self):
-        """
-        注册API路由
-        """
-        # 获取当前认证信息的依赖项
-        AuthInfoDep = Annotated[Dict[str, Any], Depends(get_current_auth_info)]
-        
-        @self.app.get("/health")
-        async def health_check():
-            """健康检查端点"""
-            return {
-                "status": "healthy",
-                "service": "flora-api-server"
+        # 4. 返回结果给前端
+        return {
+            "success": True,
+            "data": response,
+            "error": None
+        }
+    except Exception as e:
+        logger.error(f"Error executing task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "data": None,
+                "error": str(e)
             }
-        
-        # === 对话路由 (Command) ===
-        @self.app.post("/api/v1/chat/completions")
-        async def chat_completions(
-            request: Request,
-            chat_request: ChatRequest,
-            auth_info: AuthInfoDep
-        ):
-            """发送对话消息（兼容 OpenAI 格式）"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_chat_request",
-                data={
-                    "messages": [msg.dict() for msg in chat_request.messages],
-                    "stream": chat_request.stream
-                },
-                auth_info=auth_info
-            )
-        
-        @self.app.post("/api/v1/chat/clear")
-        async def clear_chat(
-            request: Request,
-            auth_info: AuthInfoDep
-        ):
-            """清空当前会话/草稿"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_clear_chat",
-                data={},
-                auth_info=auth_info
-            )
-        
-        # === 任务查询路由 (Query) ===
-        @self.app.get("/api/v1/tasks")
-        async def get_task_list(
-            request: Request,
-            auth_info: AuthInfoDep,
-            page: int = 1,
-            size: int = 20
-        ):
-            """获取任务列表"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_get_task_list",
-                data={"page": page, "size": size},
-                auth_info=auth_info
-            )
-        
-        @self.app.get("/api/v1/tasks/{task_id}")
-        async def get_task_detail(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfoDep
-        ):
-            """获取任务详情"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_get_task_detail",
-                data={}, 
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/tasks/{task_id}/timeline")
-        async def get_task_timeline(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfoDep
-        ):
-            """获取执行路径/进度"""
-            return await self._handle_request(
-                request=request,
-                operation="get_task_execution_path",
-                data={},
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.get("/api/v1/tasks/{task_id}/artifacts")
-        async def get_task_artifacts(
-            request: Request,
-            task_id: str,
-            auth_info: AuthInfoDep
-        ):
-            """获取任务生成的产物（文件、图表）"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_get_task_artifacts",
-                data={},
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        # === 控制服务 (Control Service) ===
-        @self.app.post("/api/v1/tasks/{task_id}/command")
-        async def send_task_command(
-            request: Request,
-            task_id: str,
-            command_request: CommandRequest,
-            auth_info: AuthInfoDep
-        ):
-            """发送控制指令（暂停/恢复/取消）"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_task_command",
-                data={
-                    "command": command_request.command,
-                    "params": command_request.params
-                },
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        @self.app.post("/api/v1/tasks/{task_id}/feedback")
-        async def send_task_feedback(
-            request: Request,
-            task_id: str,
-            feedback_request: FeedbackRequest,
-            auth_info: AuthInfoDep
-        ):
-            """人工反馈/评论（用于 Human-in-the-loop）"""
-            return await self._handle_request(
-                request=request,
-                operation="handle_add_task_comment",
-                data={
-                    "content": feedback_request.content,
-                    "rating": feedback_request.rating
-                },
-                auth_info=auth_info,
-                task_id=task_id
-            )
-        
-        # === 保留的其他路由 ===
-        @self.app.get("/api/v1/agent/{agent_id}")
-        async def get_agent(
-            request: Request,
-            agent_id: str,
-            auth_info: AuthInfoDep
-        ):
-            """获取智能体信息"""
-            return await self._handle_request(
-                request=request,
-                operation="get_agent",
-                data={},
-                auth_info=auth_info,
-                agent_id=agent_id
-            )
-    
-    async def _handle_request(
-        self,
-        request: Request,
-        operation: str,
-        auth_info: Dict[str, Any],
-        data: Optional[Dict[str, Any]] = None,
-        **kwargs
-    ):
-        """
-        统一请求处理入口
-        
-        Args:
-            request: FastAPI请求对象
-            operation: 操作类型
-            auth_info: 认证信息
-            data: 请求数据
-            **kwargs: 额外参数
-            
-        Returns:
-            处理结果
-        """
-        try:
-            # 构建请求上下文
-            context = {
-                'tenant_id': auth_info.get('tenant_id'),
-                'user_id': auth_info.get('user_id'),
-                'request_id': request.headers.get('X-Request-ID'),
-                'client_ip': request.client.host
-            }
-            
-            # 调用请求处理器
-            result = await self.request_handler.handle(
-                operation=operation,
-                data=data or {},
-                context=context,
-                **kwargs
-            )
-            
-            # 返回成功响应
-            return {
-                "success": True,
-                "data": result,
-                "error": None
-            }
-            
-        except HTTPException:
-            # 重新抛出HTTPException，让FastAPI处理
-            raise
-        except Exception as e:
-            logger.error(f"Request handling error: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "success": False,
-                    "data": None,
-                    "error": str(e)
-                }
-            )
-    
-    def run(self, host: str = '0.0.0.0', port: int = 8000):
-        """
-        启动API服务器
-        
-        Args:
-            host: 主机地址
-            port: 端口号
-        """
-        logger.info(f"Starting API server on {host}:{port}")
-        uvicorn.run(
-            self.app,
-            host=host,
-            port=port,
-            reload=self.config.get('debug', False)
         )
+
+# --- 核心接口 2: 补充参数/恢复任务 ---
+@app.post("/tasks/resume")
+def resume_task(req: ResumeRequest):
+    """
+    恢复任务并补充参数
+    
+    Args:
+        req: 恢复请求，包含任务ID、补充参数和用户ID
+        
+    Returns:
+        任务执行结果
+    """
+    try:
+        # 1. 构造Thespian消息
+        msg = ResumeTaskMessage(
+            task_id=req.task_id,
+            parameters=req.parameters,
+            user_id=req.user_id
+        )
+        
+        # 2. 发送给Actor并等待回复
+        response = actor_system.ask(agent_actor_ref, msg, timeout=60)
+        
+        if response is None:
+            raise HTTPException(status_code=504, detail="Agent processing timeout")
+        
+        # 3. 返回结果给前端
+        return {
+            "success": True,
+            "data": response,
+            "error": None
+        }
+    except Exception as e:
+        logger.error(f"Error resuming task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "data": None,
+                "error": str(e)
+            }
+        )
+
+# --- 健康检查端点 ---
+@app.get("/health")
+def health_check():
+    """健康检查端点"""
+    return {
+        "status": "healthy",
+        "service": "flora-api-server"
+    }
 
 
 # 工厂函数，用于创建API服务器实例
-def create_api_server(config: Optional[Dict[str, Any]] = None) -> FastAPI:
+def create_api_server(config: dict = None) -> FastAPI:
     """
     创建API服务器实例
     
@@ -378,8 +164,7 @@ def create_api_server(config: Optional[Dict[str, Any]] = None) -> FastAPI:
     Returns:
         FastAPI应用实例
     """
-    api_server = APIServer(config)
-    return api_server.app
+    return app
 
 
 # 如果直接运行此文件，则启动服务器
@@ -393,9 +178,16 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    config = {
-        'debug': args.debug
-    }
+    # 配置日志
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     
-    server = create_api_server(config)
-    server.run(host=args.host, port=args.port)
+    logger.info(f"Starting API server on {args.host}:{args.port}")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        reload=args.debug
+    )
