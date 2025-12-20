@@ -9,8 +9,7 @@ from ...common import (
     EntityDTO
 )
 from ...external.client import TaskStorage
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
+from ..llm.interface import ILLMCapability
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +20,17 @@ class CommonTaskQuery(ITaskQueryManagerCapability):
         """初始化任务查询管理器"""
         self.config = config
         # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
+        self._llm = None
         # 初始化任务存储
         self.task_storage = TaskStorage()
+    
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         """关闭任务查询管理器"""

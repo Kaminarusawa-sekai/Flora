@@ -9,9 +9,8 @@ from ...common import (
 class ITaskQueryManagerCapability(BaseManager):
     """任务查询管理器接口"""
     
-    def __init__(self, task_storage: TaskStorage, context: dict = None):
-        super().__init__(context)
-        self.task_storage = task_storage
+    def __init__(self):
+        super().__init__()
     
     @abstractmethod
     def process_query_intent(self, intent_result: IntentRecognitionResultDTO, user_id: str, last_mentioned_task_id: Optional[str] = None) -> Dict[str, Any]:

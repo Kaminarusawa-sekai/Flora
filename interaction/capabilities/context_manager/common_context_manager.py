@@ -3,7 +3,7 @@ from interaction.common.dialog import DialogTurn
 from interaction.capabilities.context_manager.interface import IContextManagerCapability
 from interaction.external.database import SQLiteConnectionPool, DialogRepository
 
-class CommonContext(IContextManagerCapability):
+class CommonContextManager(IContextManagerCapability):
     """
     通用上下文管理器实现，使用SQLite存储对话历史
     """

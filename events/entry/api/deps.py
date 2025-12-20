@@ -1,81 +1,67 @@
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from fastapi import Depends
+from ...config.settings import settings
 from ...external.cache.redis_impl import RedisCacheClient
-from ...external.messaging.rabbitmq_delayed import RabbitMQDelayedMessageBroker
-from ...external.db.sqlalchemy_impl import SQLAlchemyTaskDefinitionRepo, SQLAlchemyTaskInstanceRepo
+
+from ...external.db.base import EventDefinitionRepository, EventInstanceRepository
+from ...external.db.impl import create_event_instance_repo, create_event_definition_repo
+from ...external.db.session import get_db_session, dialect
 from ...services.lifecycle_service import LifecycleService
 from ...services.signal_service import SignalService
 from ...services.observer_service import ObserverService
-from ...config.settings import settings
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-
-# 创建数据库引擎和会话工厂
-engine = create_async_engine(settings.db_url)
-async_session = sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
-
-# 单例服务实例
-_lifecycle_svc: LifecycleService = None
-_signal_svc: SignalService = None
-_observer_svc: ObserverService = None
 
 
-async def get_db_session() -> AsyncSession:
-    """获取数据库会话"""
-    async with async_session() as session:
-        yield session
+def get_cache() -> RedisCacheClient:
+    """
+    返回 Redis 缓存客户端实例（无状态，可安全复用）。
+    如果未来需要异步初始化，可改为 async def + startup event。
+    """
+    return RedisCacheClient()
 
 
-def init_services():
-    """初始化所有服务"""
-    global _lifecycle_svc, _signal_svc, _observer_svc
+
+# ==============================
+# 3. Repository 依赖（动态选择实现）
+# ==============================
+
+def get_event_definition_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> EventDefinitionRepository:
+    return create_event_definition_repo(session, dialect)
+
+
+def get_event_instance_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> EventInstanceRepository:
+    return create_event_instance_repo(session, dialect)
+
+
+# ==============================
+# 4. Service 依赖（无状态，按需创建）
+# ==============================
+
+def get_lifecycle_service(
     
-    # 初始化 L2 组件
-    cache = RedisCacheClient()
-    broker = RabbitMQDelayedMessageBroker(settings.rabbitmq_url)
-    
-    # 创建数据库会话
-    async def get_session():
-        return async_session()
-    
-    # 初始化存储库
-    session = async_session()
-    def_repo = SQLAlchemyTaskDefinitionRepo(session)
-    inst_repo = SQLAlchemyTaskInstanceRepo(session)
-    
-    # 初始化事件发布器（复用消息队列）
-    event_publisher = broker
-    
-    # 初始化 L3 服务
-    _lifecycle_svc = LifecycleService(
-        def_repo=def_repo,
-        inst_repo=inst_repo,
-        broker=broker,
-        cache=cache
-    )
-    
-    _signal_svc = SignalService(
+    cache: RedisCacheClient = Depends(get_cache),
+) -> LifecycleService:
+    return LifecycleService(
         cache=cache,
-        inst_repo=inst_repo
-    )
-    
-    _observer_svc = ObserverService(
-        inst_repo=inst_repo,
-        event_publisher=event_publisher
     )
 
 
-def get_lifecycle_service() -> LifecycleService:
-    """获取生命周期服务"""
-    return _lifecycle_svc
+def get_signal_service(
+    cache: RedisCacheClient = Depends(get_cache),
+) -> SignalService:
+    return SignalService(cache=cache)
 
 
-def get_signal_service() -> SignalService:
-    """获取信号服务"""
-    return _signal_svc
+def get_observer_service(
+    event_publisher: RabbitMQDelayedMessageBroker = Depends(get_broker),
+) -> ObserverService:
+    return ObserverService(
+        event_publisher=event_publisher,
+        # webhook_registry 可在此处注入，如果需要
+    )
 
-
-def get_observer_service() -> ObserverService:
-    """获取观察者服务"""
-    return _observer_svc

@@ -1,19 +1,23 @@
-from .actor_dto import (
-    ActorType,
-    ActorReferenceDto,
-    ActorEventDto,
-    ActorStatus,
-    ActorStatusDto,
-    ScheduledRun,
-    LoopRoundContext
+from .enums import ActorType
+from .events import (
+    TaskStatusEvent,
+    TraceCancelledEvent,
+    LoopRoundStartedEvent,
+    TaskStartedEvent,
+    TaskFailedEvent,
+    TaskCompletedEvent
 )
+from .event_definition import EventDefinition
+from .event_instance import EventInstance
 
 __all__ = [
     'ActorType',
-    'ActorReferenceDto',
-    'ActorEventDto',
-    'ActorStatus',
-    'ActorStatusDto',
-    'ScheduledRun',
-    'LoopRoundContext'
+    'TaskStatusEvent',
+    'TraceCancelledEvent',
+    'LoopRoundStartedEvent',
+    'TaskStartedEvent',
+    'TaskFailedEvent',
+    'TaskCompletedEvent',
+    'EventDefinition',
+    'EventInstance'
 ]

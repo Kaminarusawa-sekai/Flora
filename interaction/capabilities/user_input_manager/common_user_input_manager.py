@@ -3,7 +3,7 @@ from .interface import IUserInputManagerCapability
 from ...common import UserInputDTO
 from interaction.capabilities.registry import capability_registry
 from interaction.capabilities.llm.interface import ILLMCapability
-from interaction.capabilities.memory.interface import IMemoryService
+from interaction.capabilities.memory.interface import IMemoryCapability
 from interaction.capabilities.context_manager.interface import IContextManagerCapability
 
 class CommonUserInput(IUserInputManagerCapability):
@@ -12,14 +12,32 @@ class CommonUserInput(IUserInputManagerCapability):
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化用户输入管理器"""
         self.config = config
-        # 获取LLM能力
-        self.llm = capability_registry.get_capability("llm", ILLMCapability)
-        # 获取内存服务
-        self.memory = capability_registry.get_capability("memory", IMemoryService)
-        # 获取对话历史存储
-        self.history_store = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        self._llm = None
+        self._memory = None
+        self._history_store = None
         # 上下文窗口大小
         self.context_window = config.get("context_window", 5)
+        
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            self._llm = capability_registry.get_capability("llm", ILLMCapability)
+        return self._llm
+        
+    @property
+    def memory(self):
+        """懒加载内存服务"""
+        if self._memory is None:
+            self._memory = capability_registry.get_capability("memory", IMemoryCapability)
+        return self._memory
+        
+    @property
+    def history_store(self):
+        """懒加载对话历史存储"""
+        if self._history_store is None:
+            self._history_store = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        return self._history_store
     
     def shutdown(self) -> None:
         """关闭用户输入管理器"""

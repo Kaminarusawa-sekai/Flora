@@ -1,23 +1,21 @@
 import asyncio
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+import logging
 
 # 导入 API 路由
-from entry.api.v1.commands import router as commands_router
-from entry.api.v1.queries import router as queries_router
+from .entry.api.v1.commands import router as commands_router
+from .entry.api.v1.queries import router as queries_router
 
-# 导入依赖初始化
-from entry.api.deps import init_services, get_lifecycle_service, get_db_session
+# 导入配置
+from .config.settings import settings
 
-# 导入调度器
-from drivers.schedulers.cron_generator import cron_scheduler
-from drivers.schedulers.dispatcher import TaskDispatcher
-from drivers.schedulers.health_checker import health_checker
-
-# 导入外部组件
-from external.messaging.rabbitmq_delayed import RabbitMQDelayedMessageBroker
-from external.db.sqlalchemy_impl import SQLAlchemyTaskInstanceRepo
-from config.settings import settings
+# 配置日志记录
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -25,36 +23,92 @@ async def lifespan(app: FastAPI):
     """
     应用生命周期管理，用于启动和关闭后台任务
     """
-    # 初始化服务
-    init_services()
-    
-    # 获取服务实例
-    lifecycle_svc = get_lifecycle_service()
-    
-    # 获取数据库会话
-    db_session = await anext(get_db_session())
-    
-    # 初始化任务分发器
-    broker = RabbitMQDelayedMessageBroker(settings.rabbitmq_url)
-    inst_repo = SQLAlchemyTaskInstanceRepo(db_session)
-    dispatcher = TaskDispatcher(
-        broker=broker,
-        inst_repo=inst_repo,
-        lifecycle_service=lifecycle_svc,
-        worker_url=settings.worker_callback_url
+
+    logger.info("应用启动中,lifespan上下文管理器...")
+    # 导入依赖
+    from .entry.api.deps import (
+        create_tables,
+        get_lifecycle_service,
+        get_task_dispatcher,
+        get_broker,
+        get_cache
     )
+    # 从session.py导入会话相关功能
+    from .external.db.session import async_session, get_db_session
+    # 导入调度器
+
+    
+    # 1. 自动创建数据库表
+    await create_tables()
+    
+    # 2. 初始化默认任务定义（新增部分）
+    from .common.enums import ActorType, NodeType
+    from datetime import datetime, timezone
+    from .external.db.impl import create_event_definition_repo
+    from .common.event_definition import EventDefinition
+    from .external.db.session import dialect
+    
+    DEFAULT_DEFINITIONS = [
+        {
+            "id": "DEFAULT_ROOT_AGENT",
+            "name": "默认根代理",
+            "node_type": NodeType.AGENT_ACTOR,
+            "actor_type": ActorType.AGENT,
+            "code_ref": "local://default/root_agent",
+            "entrypoint": "main.run",
+            "default_params": {},
+            "is_active": True
+        },
+        {
+            "id": "DEFAULT_CHILD_AGENT",
+            "name": "默认子代理",
+            "node_type": NodeType.AGENT_ACTOR,
+            "actor_type": ActorType.AGENT,
+            "code_ref": "local://default/child_agent",
+            "entrypoint": "main.run",
+            "default_params": {},
+            "is_active": True
+        }
+    ]
+    
+    session_gen = get_db_session()
+    session = await anext(session_gen)
+    try:
+        repo = create_event_definition_repo(session, dialect)
+        for def_data in DEFAULT_DEFINITIONS:
+            existing = await repo.get(def_data["id"])
+            if not existing:
+                event_def = EventDefinition(
+                    id=def_data["id"],
+                    name=def_data["name"],
+                    node_type=def_data["node_type"],
+                    actor_type=def_data["actor_type"],
+                    code_ref=def_data["code_ref"],
+                    entrypoint=def_data["entrypoint"],
+                    default_params=def_data["default_params"],
+                    is_active=def_data["is_active"],
+                    created_at=datetime.now(timezone.utc)
+                )
+                await repo.create(event_def)
+                print(f"✅ 初始化事件定义: {event_def.id}")
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        print(f"⚠️ 初始化默认事件定义失败: {e}")
+    finally:
+        await session.close()
+    
+    # 3. 初始化服务实例
+    cache = get_cache()
+    broker = get_broker()
+    lifecycle_svc = get_lifecycle_service(broker, cache)
     
     # 启动后台任务
     tasks = []
     
-    # 1. 启动 CRON 调度器
-    tasks.append(asyncio.create_task(cron_scheduler(lifecycle_svc, db_session)))
+
     
-    # 2. 启动任务分发器
-    tasks.append(asyncio.create_task(dispatcher.start()))
-    
-    # 3. 启动健康检查器
-    tasks.append(asyncio.create_task(health_checker(db_session)))
+
     
     yield
     
@@ -97,4 +151,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.host, port=settings.port)

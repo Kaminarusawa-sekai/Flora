@@ -1,17 +1,28 @@
 from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from external.db.base import TaskInstanceRepository
-from external.db.impl.sqlite_impl import SQLiteTaskInstanceRepository
-from external.db.impl.postgres_impl import PostgreSQLTaskInstanceRepository
+from ..base import EventInstanceRepository, EventDefinitionRepository
+from .sqlite_impl import SQLiteEventInstanceRepository, SQLiteEventDefinitionRepository
+from .postgres_impl import PostgreSQLEventInstanceRepository, PostgreSQLEventDefinitionRepository
 
-def create_task_instance_repo(
+def create_event_instance_repo(
     session: AsyncSession,
     dialect: Literal["sqlite", "postgresql"]
-) -> TaskInstanceRepository:
+) -> EventInstanceRepository:
     if dialect == "sqlite":
-        return SQLiteTaskInstanceRepository(session)
+        return SQLiteEventInstanceRepository(session)
     elif dialect == "postgresql":
-        return PostgreSQLTaskInstanceRepository(session)
+        return PostgreSQLEventInstanceRepository(session)
+    else:
+        raise ValueError(f"Unsupported dialect: {dialect}")
+
+def create_event_definition_repo(
+    session: AsyncSession,
+    dialect: Literal["sqlite", "postgresql"]
+) -> EventDefinitionRepository:
+    if dialect == "sqlite":
+        return SQLiteEventDefinitionRepository(session)
+    elif dialect == "postgresql":
+        return PostgreSQLEventDefinitionRepository(session)
     else:
         raise ValueError(f"Unsupported dialect: {dialect}")

@@ -45,3 +45,42 @@ class TaskExecutionContextDTO(BaseModel):
     
     # 外部执行系统关联
     external_job_id: Optional[str] = None # 外部执行系统的任务ID
+
+class TaskControlResponseDTO(BaseModel):
+    """任务控制操作的统一响应对象"""
+    success: bool
+    message: str
+    task_id: Optional[str] = None
+    operation: Optional[str] = None  # 例如: "PAUSE", "CANCEL", "RETRY"
+    data: Dict[str, Any] = Field(default_factory=dict)  # 承载外部客户端返回的原始数据
+
+    @classmethod
+    def success_result(cls, message: str, task_id: str, operation: str, data: Dict[str, Any] = None) -> 'TaskControlResponseDTO':
+        """快速构建成功响应"""
+        return cls(
+            success=True,
+            message=message,
+            task_id=task_id,
+            operation=operation,
+            data=data or {}
+        )
+
+    @classmethod
+    def error_result(cls, message: str, task_id: Optional[str] = None, operation: Optional[str] = None) -> 'TaskControlResponseDTO':
+        """快速构建失败响应"""
+        return cls(
+            success=False,
+            message=message,
+            task_id=task_id,
+            operation=operation
+        )
+        
+    def to_dict(self) -> Dict[str, Any]:
+        """兼容旧版接口，转换为字典"""
+        return {
+            "success": self.success,
+            "message": self.message,
+            "task_id": self.task_id,
+            "operation": self.operation,
+            "data": self.data
+        }

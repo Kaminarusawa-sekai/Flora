@@ -1,11 +1,13 @@
-from .base import TaskDefinitionRepository, TaskInstanceRepository
-from .models import TaskInstanceDB, Base
-from .impl import create_task_instance_repo
+from .base import EventDefinitionRepository, EventInstanceRepository
+from .models import EventInstanceDB, EventDefinitionDB, Base
+from .impl import create_event_instance_repo, create_event_definition_repo
 
 __all__ = [
-    'TaskDefinitionRepository',
-    'TaskInstanceRepository',
-    'TaskInstanceDB',
+    'EventDefinitionRepository',
+    'EventInstanceRepository',
+    'EventInstanceDB',
+    'EventDefinitionDB',
     'Base',
-    'create_task_instance_repo'
+    'create_event_instance_repo',
+    'create_event_definition_repo'
 ]

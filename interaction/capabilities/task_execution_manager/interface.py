@@ -10,9 +10,8 @@ from ...common import (
 class ITaskExecutionManagerCapability(BaseManager):
     """任务执行管理器接口"""
     
-    def __init__(self, task_storage: TaskStorage, context: Dict[str, Any] = None):
-        super().__init__(context)
-        self.task_storage = task_storage
+    def __init__(self):
+        super().__init__()
         self.running_tasks: Dict[str, Any] = {}  # 存储正在运行的任务实例
     
     @abstractmethod

@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from ..capability_base import CapabilityBase
 
 
-class IMemoryService(CapabilityBase):
+class IMemoryCapability(CapabilityBase):
     """
     记忆服务接口：负责存取，不关心底层是 Mem0 还是向量数据库
     """
@@ -20,7 +20,7 @@ class IMemoryService(CapabilityBase):
         """
         返回能力类型，如 'llm', 'memory', 'data_access'
         """
-        pass
+        return "memory"
 
     @abstractmethod
     def search_memories(self, user_id: str, query: str, limit: int = 5) -> str:

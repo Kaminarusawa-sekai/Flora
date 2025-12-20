@@ -6,8 +6,7 @@ from ...common import (
     ActionType,
     TaskStatusSummary
 )
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
+from ..llm.interface import ILLMCapability
 
 class CommonSystemResponse(ISystemResponseManagerCapability):
     """系统响应管理器 - 统一生成系统响应，包括文本和结构化数据"""
@@ -15,8 +14,15 @@ class CommonSystemResponse(ISystemResponseManagerCapability):
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化系统响应管理器"""
         self.config = config
-        # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
+        self._llm = None
+        
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         """关闭系统响应管理器"""

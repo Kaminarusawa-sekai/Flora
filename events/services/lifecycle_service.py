@@ -1,145 +1,138 @@
+
 import uuid
-from datetime import datetime
-from typing import Optional
-from ..common.task_instance import TaskInstance
-from ..common.enums import TaskInstanceStatus, ScheduleType
-from ..external.db.base import TaskDefinitionRepository, TaskInstanceRepository
-from ..external.messaging.base import MessageBroker
+from datetime import datetime, timezone
+from typing import Optional, List
+from sqlalchemy.ext.asyncio import AsyncSession
+from ..common.event_instance import EventInstance
+from ..common.enums import EventInstanceStatus
+
 from ..external.cache.base import CacheClient
+from ..external.db.session import dialect
+from ..external.db.impl import create_event_definition_repo, create_event_instance_repo
 
 
 class LifecycleService:
     def __init__(
         self,
-        def_repo: TaskDefinitionRepository,
-        inst_repo: TaskInstanceRepository,
-        broker: MessageBroker,
+
         cache: Optional[CacheClient] = None
     ):
-        self.def_repo = def_repo
-        self.inst_repo = inst_repo
-        self.broker = broker
         self.cache = cache
 
-    async def start_new_trace(
-        self,
-        def_id: str,
-        input_params: dict,
-        trigger_type: str = "MANUAL"
-    ) -> str:
-        # 输入校验：检查 def_id 是否 active
-        definition = await self.def_repo.get(def_id)
-        if not definition.is_active:
-            raise ValueError(f"Task definition {def_id} is not active")
-        
-        trace_id = str(uuid.uuid4())
-        job_id = f"job-{trace_id[:8]}"
-        root_id = str(uuid.uuid4())
+    async def _save_payload(self, payload: dict) -> str:
+        """
+        保存大字段到外部存储（如 OSS/S3 或 Redis）
+        目前简化实现，直接返回一个模拟的 key
+        """
+        # 实际实现中，这里应该将 payload 保存到外部存储
+        # 并返回对应的引用 key
+        return f"payload-{str(uuid.uuid4())[:8]}"
 
-        root = TaskInstance(
+    async def start_trace(
+        self,
+        session: AsyncSession,
+        root_def_id: str,
+        input_params: dict
+    ) -> str:
+        """
+        启动链路，创建根节点并触发执行
+        """
+        # 1. 校验定义是否存在
+        def_repo = create_event_definition_repo(session, dialect)
+        definition = await def_repo.get(root_def_id)
+        if not definition:
+             raise ValueError(f"Definition {root_def_id} not found")
+
+        # 2. 创建根节点
+        trace_id = str(uuid.uuid4())
+        root_id = str(uuid.uuid4())
+        
+        root = EventInstance(
             id=root_id,
             trace_id=trace_id,
-            job_id=job_id,
             parent_id=None,
+            job_id=f"job-{trace_id[:8]}",
+            def_id=root_def_id,
+            node_path="/",  # 根路径
+            depth=0,
             actor_type=definition.actor_type,
             role=definition.role,
-            layer=0,
-            is_leaf_agent=(definition.actor_type == "AGENT" and not definition.role),  # 简化判断
-            schedule_type=definition.schedule_type,
-            round_index=0 if definition.schedule_type == ScheduleType.LOOP else None,
-            cron_trigger_time=datetime.now(timezone.utc) if definition.schedule_type == ScheduleType.CRON else None,
-            status=TaskInstanceStatus.PENDING,
-            node_path="/",
-            depth=0,
-            depends_on=None,
-            split_count=0,
-            completed_children=0,
+            status=EventInstanceStatus.RUNNING, # 根节点直接开始
             input_params={**definition.default_params, **input_params},
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc)
+            input_ref=await self._save_payload(input_params), # 抽离大字段存储
+            created_at=datetime.now(timezone.utc)
         )
-        await self.inst_repo.create(root)
-        await self._schedule_task(root)
+        
+        inst_repo = create_event_instance_repo(session, dialect)
+        await inst_repo.create(root)
+        
+
         return trace_id
 
-    async def handle_task_completed(self, task_id: str, output_ref: str):
-        # 幂等性检查：任务已完成则直接返回
-        task = await self.inst_repo.get(task_id)
-        if task.status != TaskInstanceStatus.RUNNING:
-            return
+    async def expand_topology(
+        self,
+        session: AsyncSession,
+        parent_id: str,
+        subtasks_meta: list[dict],
+        trace_id: str = None
+    ) -> List[str]:
+        """
+        动态拓扑扩展
+        Agent 调用此方法：我在 parent_id 下生成了 DAG。
+        subtasks_meta 示例: [
+           {"def_id": "AGG_GROUP", "name": "Group A", "params": {...}},
+           {"def_id": "AGG_GROUP", "name": "Group B", "params": {...}}
+        ]
+        """
+        inst_repo = create_event_instance_repo(session, dialect)
+        parent = await inst_repo.get(parent_id)
         
-        # 更新任务状态为成功
-        await self.inst_repo.update_status(
-            task_id,
-            TaskInstanceStatus.SUCCESS,
-            output_ref=output_ref,
-            finished_at=datetime.now(timezone.utc)
-        )
-
-        # 通知父节点计数
-        if task.parent_id:
-            new_count = await self.inst_repo.increment_completed_children(task.parent_id)
-            parent = await self.inst_repo.get(task.parent_id)
-            # 检查是否需要激活聚合器
-            if parent.status == TaskInstanceStatus.PENDING and new_count >= parent.split_count:
-                await self._activate_aggregator(parent)
-
-        # LOOP 任务处理：检查是否需要下一轮
-        if task.schedule_type == ScheduleType.LOOP:
-            # 简化实现：假设 max_rounds 和 interval_sec 是配置项
-            # 在实际实现中，应该从任务定义中获取这些配置
-            max_rounds = 5  # 默认值，实际应从任务定义获取
-            current_round = task.round_index or 0
-            if current_round + 1 < max_rounds:
-                # 重置任务状态为 PENDING，准备下一轮
-                await self.inst_repo.update_fields(
-                    task_id,
-                    status=TaskInstanceStatus.PENDING,
-                    round_index=current_round + 1,
-                    started_at=None,
-                    finished_at=None,
-                    updated_at=datetime.now(timezone.utc)
-                )
-                # 延时派发下一轮任务
-                interval = 10  # 默认值，实际应从任务定义获取
-                await self.broker.publish_delayed(
-                    "task.execute",
-                    {"instance_id": task.id},
-                    delay_sec=interval
-                )
-
-    async def handle_task_failed(self, task_id: str, error_msg: str):
-        # 获取任务
-        task = await self.inst_repo.get(task_id)
-        if task.status != TaskInstanceStatus.RUNNING:
-            return  # 幂等性检查
+        if not parent:
+            raise ValueError(f"Parent {parent_id} not found")
         
-        # 更新任务状态为失败
-        await self.inst_repo.update_status(
-            task_id,
-            TaskInstanceStatus.FAILED,
-            error_msg=error_msg,
-            finished_at=datetime.now(timezone.utc)
-        )
+        # 【新增校验】确保父节点属于当前 URL 指定的 trace
+        if trace_id and parent.trace_id != trace_id:
+            raise ValueError(f"Parent node {parent_id} does not belong to trace {trace_id}")
         
-        # 级联失败：将同 trace 下所有 PENDING 任务标记为 SKIPPED
-        await self.inst_repo.bulk_update_status_by_trace(
-            task.trace_id,
-            TaskInstanceStatus.SKIPPED
-        )
+        # 1. 检查父节点状态：如果父节点已经被取消，禁止裂变！
+        if parent.control_signal == "CANCEL":
+            raise ValueError("Parent event is cancelled")
+
+        new_instances = []
+        new_ids = []
         
-        # TODO: 触发告警事件（通过 ObserverService）
-        # await self.observer_svc.on_task_status_changed(task)
+        for meta in subtasks_meta:
+            child_id = str(uuid.uuid4())
+            new_ids.append(child_id)
+            
+            # 获取子任务定义
+            def_repo = create_event_definition_repo(session, dialect)
+            child_def = await def_repo.get(meta["def_id"])
+            if not child_def:
+                raise ValueError(f"Definition {meta['def_id']} not found")
+            
+            child = EventInstance(
+                id=child_id,
+                trace_id=parent.trace_id,
+                parent_id=parent.id,
+                job_id=parent.job_id,
+                def_id=meta["def_id"], # 必须关联到具体的 Definition
+                
+                # 【关键】构建物化路径
+                node_path=f"{parent.node_path}{parent.id}/",
+                depth=parent.depth + 1,
+                
+                actor_type=child_def.actor_type,
+                role=child_def.role,
+                name=meta.get("name"),
+                status=EventInstanceStatus.PENDING, # 初始为 PENDING，等待调度
+                input_params={**child_def.default_params, **meta.get("params", {})},
+                input_ref=await self._save_payload(meta.get("params", {})),
+                created_at=datetime.now(timezone.utc)
+            )
+            new_instances.append(child)
+            
+        await inst_repo.bulk_create(new_instances)
+        
+        return new_ids
 
-    async def _activate_aggregator(self, parent: TaskInstance):
-        # 激活聚合器：更新状态为 RUNNING 并派发执行
-        await self.inst_repo.update_status(
-            parent.id,
-            TaskInstanceStatus.RUNNING,
-            started_at=datetime.now(timezone.utc)
-        )
-        await self.broker.publish_delayed("task.execute", {"instance_id": parent.id}, delay_sec=0)
-
-    async def _schedule_task(self, task: TaskInstance):
-        # 统一入口：所有任务派发走 broker.publish_delayed，支持延时和重试
-        await self.broker.publish_delayed("task.execute", {"instance_id": task.id}, delay_sec=0)

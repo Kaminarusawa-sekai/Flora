@@ -4,6 +4,8 @@ config.json
 market_tree.csv
 test5.py
 interaction_config.json
+event_config.json
+trigger_config.json
 # Python
 __pycache__/
 *.pyc

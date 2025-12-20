@@ -10,8 +10,9 @@ from ...common import (
     EntityDTO,
     UserInputDTO
 )
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
+from time import timezone
+from ..llm.interface import ILLMCapability
+from interaction.external.database.dialog_state_repo import DialogStateRepository
 
 class CommonDialogState(IDialogStateManagerCapability):
     """对话状态管理器 - 维护全局对话状态"""
@@ -20,7 +21,16 @@ class CommonDialogState(IDialogStateManagerCapability):
         """初始化对话状态管理器"""
         self.config = config
         # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
+        self._llm = None
+        self.dialog_repo = DialogStateRepository()
+    
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         """关闭对话状态管理器"""
@@ -40,7 +50,7 @@ class CommonDialogState(IDialogStateManagerCapability):
             对话状态DTO
         """
         # 从存储中获取对话状态
-        state = self.task_storage.get_dialog_state(session_id)
+        state = self.dialog_repo.get_dialog_state(session_id)
         
         # 如果不存在，创建新的对话状态
         if not state:
@@ -54,7 +64,7 @@ class CommonDialogState(IDialogStateManagerCapability):
                 last_mentioned_task_id=None,
                 is_in_idle_mode=False
             )
-            self.task_storage.save_dialog_state(state)
+            self.dialog_repo.save_dialog_state(state)
         
         return state
     
@@ -67,7 +77,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             是否更新成功
         """
-        return self.task_storage.update_dialog_state(state)
+        return self.dialog_repo.update_dialog_state(state)
     
     def set_active_draft(self, session_id: str, draft: Optional[TaskDraftDTO]) -> DialogStateDTO:
         """设置活跃的任务草稿
@@ -310,9 +320,9 @@ class CommonDialogState(IDialogStateManagerCapability):
         """
         # 假设 DialogStateDTO 有 last_updated 字段
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_idle_minutes)
-        expired_ids = self.task_storage.find_expired_sessions(cutoff)
+        expired_ids = self.dialog_repo.find_expired_sessions(cutoff)
         for sid in expired_ids:
-            self.task_storage.delete_dialog_state(sid)
+            self.dialog_repo.delete_dialog_state(sid)
         return len(expired_ids)
     
     def _has_pronouns(self, utterance: str) -> bool:

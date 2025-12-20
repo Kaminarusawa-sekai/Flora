@@ -5,9 +5,8 @@ from ...common import (
     ExecutionStatus,
     ExecutionLogEntry
 )
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
-from interaction.external.client.external_executor_client import ExternalExecutorClient
+from ..llm.interface import ILLMCapability
+from interaction.external.client.task_client import TaskClient
 
 class CommonTaskExecution(ITaskExecutionManagerCapability):
     """任务执行管理器 - 负责任务的生命周期协调、外部执行系统交互和状态同步"""
@@ -15,10 +14,23 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化任务执行管理器"""
         self.config = config
-        # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
-        # 初始化外部任务执行客户端
-        self.external_executor = ExternalExecutorClient()
+        self._llm = None
+        self._external_executor = None
+    
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
+    
+    @property
+    def external_executor(self):
+        """懒加载外部任务执行客户端"""
+        if self._external_executor is None:
+            self._external_executor = TaskClient()
+        return self._external_executor
     
     def shutdown(self) -> None:
         """关闭任务执行管理器"""

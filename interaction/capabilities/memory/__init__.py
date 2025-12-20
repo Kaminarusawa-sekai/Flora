@@ -1,8 +1,7 @@
-from .interface import IMemoryService, IFrontDeskService
-from .mem0_adapter import Mem0MemoryService
+from .interface import IMemoryCapability
+from .mem0_memory import Mem0Memory
 
 __all__ = [
-    'IMemoryService',
-    'IFrontDeskService',
-    'Mem0MemoryService'
+    'IMemoryCapability',
+    'Mem0Memory'
 ]

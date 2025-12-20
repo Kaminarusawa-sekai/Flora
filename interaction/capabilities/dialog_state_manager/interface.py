@@ -12,9 +12,8 @@ from ...common import (
 class IDialogStateManagerCapability(BaseManager):
     """对话状态管理器接口"""
     
-    def __init__(self, task_storage: TaskStorage, context: dict = None):
-        super().__init__(context)
-        self.task_storage = task_storage
+    def __init__(self):
+        super().__init__()
     
     @abstractmethod
     def get_or_create_dialog_state(self, session_id: str) -> DialogStateDTO:

@@ -3,9 +3,8 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from collections import Counter
 
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
 from .interface import IIntentRecognitionManagerCapability
+from ..llm.interface import ILLMCapability
 from ...common import (
     IntentRecognitionResultDTO,
     IntentType,
@@ -24,13 +23,20 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
 
     def __init__(self):
         self.config = None
-        self.llm = None
+        self._llm = None
         self.ambiguity_threshold = 0.2
 
     def initialize(self, config: Dict[str, Any]) -> None:
         self.config = config
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
         self.ambiguity_threshold = config.get("ambiguity_threshold", 0.2)  # top1 - top2 < 此值则视为歧义
+        
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         pass

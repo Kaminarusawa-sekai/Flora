@@ -12,9 +12,8 @@ from ...common import (
 class ITaskDraftManagerCapability(BaseManager):
     """任务草稿管理器接口"""
     
-    def __init__(self, task_storage: TaskStorage, context: Dict[str, Any] = None):
-        super().__init__(context)
-        self.task_storage = task_storage
+    def __init__(self):
+        super().__init__()
     
     @abstractmethod
     def create_draft(self, task_type: str, session_id: str, user_id: str) -> TaskDraftDTO:

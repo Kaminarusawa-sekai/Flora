@@ -4,9 +4,8 @@ from ...common import (
     ScheduleDTO,
     TaskDraftDTO
 )
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
-from interaction.external.client.task_execution_client import TaskExecutionClient
+from ..llm.interface import ILLMCapability
+from interaction.external.client.task_client import TaskClient
 
 class CommonSchedule(IScheduleManagerCapability):
     """调度管理器 - 处理任务的调度"""
@@ -14,10 +13,17 @@ class CommonSchedule(IScheduleManagerCapability):
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化调度管理器"""
         self.config = config
-        # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
+        self._llm = None
         # 初始化外部任务执行客户端
-        self.external_task_client = TaskExecutionClient()
+        self.external_task_client = TaskClient()
+    
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         """关闭调度管理器"""
@@ -62,7 +68,7 @@ class CommonSchedule(IScheduleManagerCapability):
             cron_expression: cron表达式（如果是ONCE则为None）
             只输出上述格式，不要解释。
             """
-            llm_result = self.llm.generate_text(prompt).strip()
+            llm_result = self.llm.generate(prompt).strip()
             
             # 解析LLM输出
             schedule_type = "ONCE"

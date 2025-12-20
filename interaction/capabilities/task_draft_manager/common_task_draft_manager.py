@@ -9,8 +9,7 @@ from ...common import (
     IntentRecognitionResultDTO
 )
 from ...external.database.task_draft_repo import TaskDraftRepository
-from tasks.capabilities import get_capability
-from tasks.capabilities.llm.interface import ILLMCapability
+from ..llm.interface import ILLMCapability
 
 class CommonTaskDraft(ITaskDraftManagerCapability):
     """任务草稿管理器 - 维护未完成的任务草稿，管理多轮填槽过程"""
@@ -18,13 +17,19 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化任务草稿管理器"""
         self.config = config
-        # 获取LLM能力
-        self.llm = get_capability("llm", expected_type=ILLMCapability)
+        self._llm = None
         # 初始化 storage
-        self.draft_storage = config.get("task_storage")
-        if self.draft_storage is None:
+        
             # 如果没有提供storage，创建一个默认的TaskDraftRepository实例
-            self.draft_storage = TaskDraftRepository()
+        self.draft_storage = TaskDraftRepository()
+        
+    @property
+    def llm(self):
+        """懒加载LLM能力"""
+        if self._llm is None:
+            from .. import get_capability
+            self._llm = get_capability("llm", expected_type=ILLMCapability)
+        return self._llm
     
     def shutdown(self) -> None:
         """关闭任务草稿管理器"""
