@@ -1,9 +1,9 @@
 <template>
-  <div class="flex h-screen w-screen bg-void text-gray-200 overflow-hidden font-sans selection:bg-sci-blue/30">
+  <div class="flex h-screen w-screen text-gray-200 overflow-hidden font-sans selection:bg-sci-blue/30 relative">
     
     <!-- 区域 A: 任务导航栏 -->
     <aside class="
-      w-[260px] flex-shrink-0 p-4 z-20
+      w-[460px] h-full flex-shrink-0 p-4 z-20
       transition-all duration-300 ease-in-out
     ">
       <slot name="sidebar"></slot>
@@ -12,7 +12,7 @@
     <!-- 区域 B: 智能对话流 -->
     <transition name="slide-fade">
       <section v-if="!appStore.isChatCollapsed" class="
-        w-[340px] flex-shrink-0 p-4 pl-0 z-20
+        w-[440px] h-full flex-shrink-0 p-4 pl-0 z-20
         transition-all duration-300 ease-in-out
       ">
         <slot name="chat"></slot>
@@ -21,13 +21,12 @@
 
     <!-- 区域 C: DAG 执行画布 -->
     <main class="flex-grow relative z-10">
-      <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.03),transparent_70%)] pointer-events-none"></div>
       <slot name="canvas"></slot>
     </main>
 
     <!-- 区域 D: 资源与控制 -->
     <aside class="
-      w-[300px] flex-shrink-0 p-4 z-20
+      w-[300px] h-full flex-shrink-0 p-4 z-20
       transition-all duration-300 ease-in-out
     ">
       <slot name="resources"></slot>

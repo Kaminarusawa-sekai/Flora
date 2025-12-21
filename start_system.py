@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-系统启动脚本
-用于同时启动系统的四个主要服务：
+系统启动脚本（带实时日志）
+用于同时启动系统的四个主要服务，并实时显示各服务的日志输出：
 1. events/main.py
 2. interaction/main.py
 3. tasks/main.py
@@ -11,8 +11,8 @@ import os
 import sys
 import time
 import subprocess
-import signal
-from typing import List, Dict
+import threading
+from typing import Dict
 
 # 系统服务配置
 SERVICES = [
@@ -42,26 +42,45 @@ SERVICES = [
     }
 ]
 
+def _log_reader(name: str, pipe):
+    """从子进程管道读取日志并打印，带服务前缀"""
+    try:
+        for line in iter(pipe.readline, ''):
+            if line:
+                print(f"[{name}] {line.rstrip()}")
+    except Exception as e:
+        print(f"[{name}] 日志读取异常: {e}", file=sys.stderr)
+    finally:
+        pipe.close()
+
 def start_service(service: Dict) -> None:
-    """启动单个服务"""
+    """启动单个服务，并开启日志监听线程"""
     print(f"\n=== 启动 {service['name']} ===")
     print(f"脚本路径: {service['script']}")
     print(f"工作目录: {service['cwd']}")
     
-    # 构建启动命令
     command = [sys.executable, service['script']]
     
-    # 启动服务
+    # 启动子进程，捕获 stdout/stderr
     process = subprocess.Popen(
         command,
         cwd=service['cwd'],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True
+        text=True,
+        bufsize=1,               # 行缓冲
+        universal_newlines=True  # 文本模式
     )
     
-    # 存储进程对象
     service['process'] = process
+    
+    # 启动日志读取线程（daemon 线程，主程序退出时自动结束）
+    log_thread = threading.Thread(
+        target=_log_reader,
+        args=(service['name'], process.stdout),
+        daemon=True
+    )
+    log_thread.start()
     
     print(f"服务已启动，PID: {process.pid}")
 
@@ -75,15 +94,11 @@ def stop_service(service: Dict) -> None:
     print(f"PID: {service['process'].pid}")
     
     try:
-        # 发送 SIGTERM 信号
         service['process'].terminate()
-        
-        # 等待 5 秒
         try:
             service['process'].wait(timeout=5)
             print(f"服务已成功停止")
         except subprocess.TimeoutExpired:
-            # 如果超时，发送 SIGKILL 信号
             print(f"服务停止超时，强制终止")
             service['process'].kill()
             service['process'].wait()
@@ -100,36 +115,29 @@ def monitor_services() -> None:
     try:
         while True:
             time.sleep(1)
-            # 检查每个服务的状态
             for service in SERVICES:
-                if service['process'] is not None:
-                    # 检查进程是否仍在运行
-                    if service['process'].poll() is not None:
-                        print(f"\n⚠️  {service['name']} 已退出，退出码: {service['process'].returncode}")
-                        # 可以选择重启服务
-                        # start_service(service)
+                if service['process'] is not None and service['process'].poll() is not None:
+                    print(f"\n⚠️  {service['name']} 已意外退出，退出码: {service['process'].returncode}")
+                    # 可选：自动重启（取消注释下一行）
+                    # start_service(service)
     except KeyboardInterrupt:
         print("\n\n=== 收到终止信号 ===")
 
 def main() -> None:
     """主函数"""
-    print("=== 系统启动脚本 ===")
-    print("用于同时启动系统的四个主要服务")
+    print("=== 系统启动脚本（带日志）===")
+    print("用于同时启动系统的四个主要服务，并实时显示日志")
     print(f"当前目录: {os.getcwd()}")
     
     try:
-        # 启动所有服务
         for service in SERVICES:
             start_service(service)
         
-        # 监控服务
         monitor_services()
     finally:
-        # 停止所有服务
-        print("\n=== 停止所有服务 ===")
+        print("\n=== 正在停止所有服务 ===")
         for service in SERVICES:
             stop_service(service)
-        
         print("\n=== 所有服务已停止 ===")
 
 if __name__ == "__main__":

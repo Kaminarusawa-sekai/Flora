@@ -1,46 +1,41 @@
 #!/usr/bin/env python3
 """
-SSE 客户端测试脚本
+系统服务启动脚本
 功能：
 1. 启动系统的四个主要服务
-2. 测试 send_message API 的 SSE 流式响应功能
+2. 监控服务运行状态
+3. 支持优雅停止服务
 """
 import sys
-import json
 import time
 import subprocess
-import requests
+import os
 from typing import List, Dict
-
-# API 配置
-BASE_URL = "http://localhost:8000"
-SESSION_ID = "test_session_123"
-USER_ID = "test_user_456"
 
 # 系统服务配置
 SERVICES = [
     {
         "name": "Events Service",
         "script": "events/main.py",
-        "cwd": "e:\\Data\\Flora",
+        "cwd": "e:\Data\Flora",
         "process": None
     },
     {
         "name": "Interaction Service",
         "script": "interaction/main.py",
-        "cwd": "e:\\Data\\Flora",
+        "cwd": "e:\Data\Flora",
         "process": None
     },
     {
         "name": "Tasks Service",
         "script": "tasks/main.py",
-        "cwd": "e:\\Data\\Flora",
+        "cwd": "e:\Data\Flora",
         "process": None
     },
     {
         "name": "Trigger Service",
         "script": "trigger/main.py",
-        "cwd": "e:\\Data\\Flora",
+        "cwd": "e:\Data\Flora",
         "process": None
     }
 ]
@@ -95,129 +90,57 @@ def stop_service(service: Dict) -> None:
     finally:
         service['process'] = None
 
-def start_all_services() -> None:
-    """启动所有服务"""
-    print("=== 启动系统服务 ===")
-    for service in SERVICES:
-        start_service(service)
-    print("\n=== 所有服务已启动 ===")
-
-def stop_all_services() -> None:
-    """停止所有服务"""
-    print("=== 停止系统服务 ===")
-    for service in SERVICES:
-        stop_service(service)
-    print("\n=== 所有服务已停止 ===")
-
-def send_message(message: str):
-    """发送消息到 SSE API 并处理流式响应"""
-    # 构建请求 URL
-    url = f"{BASE_URL}/conversations/{SESSION_ID}/messages"
-    
-    # 构建请求数据
-    data = {
-        "utterance": message,
-        "timestamp": int(time.time() * 1000),
-        "metadata": {}
-    }
-    
-    # 构建请求头
-    headers = {
-        "X-User-ID": USER_ID,
-        "Content-Type": "application/json"
-    }
-    
-    print(f"\n=== 发送消息: {message} ===")
-    print("\n服务器响应:")
-    
-    # 发送请求并获取 SSE 客户端
-    response = requests.post(url, json=data, headers=headers, stream=True)
-    client = SSEClient(response)
-    
-    # 存储最终回复
-    final_reply = ""
-    
-    # 处理 SSE 事件
-    for event in client.events():
-        if event.event == "thought":
-            # 处理思考过程
-            data = json.loads(event.data)
-            print(f"💭 {data['message']}")
-            if "intent" in data:
-                print(f"   意图: {data['intent']}")
-        elif event.event == "message":
-            # 处理消息内容
-            data = json.loads(event.data)
-            content = data["content"]
-            final_reply += content
-            print(content, end="", flush=True)
-        elif event.event == "meta":
-            # 处理元数据
-            data = json.loads(event.data)
-            print(f"\n\n📋 元数据: {json.dumps(data, ensure_ascii=False)}")
-        elif event.event == "error":
-            # 处理错误
-            data = json.loads(event.data)
-            print(f"\n❌ 错误: {data['message']}")
-        else:
-            # 处理其他事件类型
-            print(f"\n📌 其他事件 {event.event}: {event.data}")
-    
-    print(f"\n=== 对话结束 ===")
-    return final_reply
-
-def main():
-    """主函数"""
-    print("=== SSE 客户端测试 ===")
-    print(f"服务器地址: {BASE_URL}")
-    print(f"会话 ID: {SESSION_ID}")
-    print(f"用户 ID: {USER_ID}")
-    print("\n输入 'exit' 或 'quit' 退出程序")
-    print("输入 'start' 启动所有系统服务")
-    print("输入 'stop' 停止所有系统服务\n")
+def monitor_services() -> None:
+    """监控服务状态"""
+    print("\n=== 监控服务状态 ===")
+    print("按 Ctrl+C 停止所有服务")
+    print("\n💡 使用提示：")
+    print("   1. 打开另一个终端窗口")
+    print("   2. 运行: python watch_sse.py")
+    print("   3. 查看实时 SSE 事件流\n")
     
     try:
         while True:
-            # 获取用户输入
-            message = input("你: ")
-            
-            # 检查退出条件
-            if message.lower() in ["exit", "quit"]:
-                print("\n=== 退出程序 ===")
-                break
-            
-            # 启动所有服务
-            elif message.lower() == "start":
-                start_all_services()
-            
-            # 停止所有服务
-            elif message.lower() == "stop":
-                stop_all_services()
-            
-            # 发送消息
-            else:
-                try:
-                    # 尝试导入 SSEClient
-                    from sseclient import SSEClient
-                    
-                    # 发送消息并处理响应
-                    send_message(message)
-                except ImportError:
-                    print("\n❌ 未安装 sseclient 库，请先安装: pip install sseclient-py")
-                except Exception as e:
-                    print(f"\n❌ 发送消息失败: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
+            time.sleep(1)
+            # 检查每个服务的状态
+            for service in SERVICES:
+                if service['process'] is not None:
+                    # 检查进程是否仍在运行
+                    if service['process'].poll() is not None:
+                        print(f"\n⚠️  {service['name']} 已退出，退出码: {service['process'].returncode}")
+                        # 读取服务日志
+                        if service['process'].stdout is not None:
+                            print("\n服务日志:")
+                            for line in service['process'].stdout:
+                                print(f"   {line.rstrip()}")
     except KeyboardInterrupt:
-        print("\n\n=== 程序中断 ===")
-    except Exception as e:
-        print(f"\n\n❌ 程序错误: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print("\n\n=== 收到终止信号 ===")
+
+def main() -> None:
+    """主函数"""
+    print("=== 系统服务启动脚本 ===")
+    print("用于同时启动系统的四个主要服务")
+    print(f"当前目录: {os.getcwd()}")
+    
+    try:
+        # 启动所有服务
+        for service in SERVICES:
+            start_service(service)
+        
+        # 等待服务初始化
+        print("\n=== 等待服务初始化 ===")
+        print("服务正在启动中...")
+        time.sleep(5)  # 给服务5秒时间初始化
+        
+        # 监控服务
+        monitor_services()
     finally:
-        # 退出前停止所有服务
-        print("\n=== 清理资源 ===")
-        stop_all_services()
+        # 停止所有服务
+        print("\n=== 停止所有服务 ===")
+        for service in SERVICES:
+            stop_service(service)
+        
+        print("\n=== 所有服务已停止 ===")
 
 if __name__ == "__main__":
     main()

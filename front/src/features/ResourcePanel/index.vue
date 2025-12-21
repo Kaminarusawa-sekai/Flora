@@ -1,163 +1,106 @@
 <template>
-  <div class="h-full flex flex-col">
-    <!-- 顶部：标签切换 -->
-    <div class="p-3 border-b border-white/10">
-      <div class="flex gap-1">
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          class="
-            px-3 py-1 rounded-xl text-sm font-medium
-            transition-all duration-300
-            flex-grow text-center
-          "
-          :class="{
-            'bg-sci-blue/20 text-sci-blue border border-sci-blue/30': activeTab === tab.id,
-            'bg-white/5 text-gray-400 border border-transparent hover:bg-white/10 hover:text-gray-300': activeTab !== tab.id,
-          }"
-          @click="activeTab = tab.id"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
+  <GlassCard class="h-full flex flex-col">
+    <div class="flex p-1 bg-black/20 rounded-xl mb-4 border border-white/5">
+      <button 
+        v-for="tab in tabs" 
+        :key="tab.id"
+        class="flex-1 py-1.5 text-xs font-medium rounded-lg transition"
+        :class="{
+          'bg-white/10 text-white shadow-sm': activeTab === tab.id,
+          'text-gray-500 hover:text-gray-300': activeTab !== tab.id
+        }"
+        @click="activeTab = tab.id"
+      >{{ tab.label }}</button>
     </div>
 
-    <!-- 中部：标签内容 -->
-    <div class="flex-grow overflow-y-auto p-3">
-      <!-- 文件库 -->
-      <div v-if="activeTab === 'assets'" class="space-y-4">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase">File Library</h3>
-        
-        <!-- 文件树 -->
-        <div class="space-y-2">
-          <!-- 目录项 -->
-          <div class="space-y-1">
-            <div class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-              </svg>
-              <span>data</span>
-            </div>
-            <!-- 文件项 -->
-            <div class="ml-6 space-y-1">
-              <div class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>dataset.csv</span>
-                <span class="text-xs text-gray-500 ml-auto">2.3 MB</span>
-              </div>
-              <div class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>metadata.json</span>
-                <span class="text-xs text-gray-500 ml-auto">1.2 KB</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 目录项 -->
-          <div class="space-y-1">
-            <div class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-              </svg>
-              <span>models</span>
-            </div>
-            <!-- 文件项 -->
-            <div class="ml-6 space-y-1">
-              <div class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>model-v1.pth</span>
-                <span class="text-xs text-gray-500 ml-auto">128 MB</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 待办/参数 -->
-      <div v-else-if="activeTab === 'pending'" class="space-y-4">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase">Pending Parameters</h3>
-        
-        <!-- 参数表单 -->
-        <div class="space-y-4">
-          <div>
-            <label class="block text-xs text-gray-400 mb-1">Batch Size</label>
-            <input 
-              type="number" 
-              class="w-full hud-input" 
-              placeholder="Enter batch size"
-              value="32"
-            />
-          </div>
-          
-          <div>
-            <label class="block text-xs text-gray-400 mb-1">Learning Rate</label>
-            <input 
-              type="number" 
-              step="0.0001" 
-              class="w-full hud-input" 
-              placeholder="Enter learning rate"
-              value="0.001"
-            />
-          </div>
-          
-          <div>
-            <label class="block text-xs text-gray-400 mb-1">Epoch Count</label>
-            <input 
-              type="number" 
-              class="w-full hud-input" 
-              placeholder="Enter epoch count"
-              value="100"
-            />
-          </div>
-
-          <h3 class="text-xs font-semibold text-gray-500 uppercase mt-6 mb-2">Task Checklist</h3>
-          
-          <div class="space-y-2">
-            <div class="flex items-center gap-2">
-              <input type="checkbox" id="check1" class="w-4 h-4 rounded bg-white/10 border-white/20 text-sci-blue focus:ring-0" checked />
-              <label for="check1" class="text-sm text-gray-300">Data validation complete</label>
-            </div>
-            <div class="flex items-center gap-2">
-              <input type="checkbox" id="check2" class="w-4 h-4 rounded bg-white/10 border-white/20 text-sci-blue focus:ring-0" checked />
-              <label for="check2" class="text-sm text-gray-300">Model architecture defined</label>
-            </div>
-            <div class="flex items-center gap-2">
-              <input type="checkbox" id="check3" class="w-4 h-4 rounded bg-white/10 border-white/20 text-sci-blue focus:ring-0" />
-              <label for="check3" class="text-sm text-gray-300">Hyperparameters tuned</label>
-            </div>
-          </div>
+    <div class="flex-grow space-y-2 overflow-y-auto">
+      <div 
+        v-for="file in files" 
+        :key="file.id" 
+        class="flex items-center p-2 rounded-lg hover:bg-white/5 transition group cursor-pointer border border-transparent hover:border-white/5"
+        @click="selectFile(file)"
+      >
+        <svg class="w-5 h-5 text-sci-blue opacity-70 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+        </svg>
+        <div class="flex-grow">
+          <div class="text-xs text-gray-300 group-hover:text-white">{{ file.name }}</div>
+          <div class="text-[10px] text-gray-600 font-mono">{{ file.size }} • {{ file.updated }}</div>
         </div>
       </div>
     </div>
 
-    <!-- 底部：操作按钮 -->
-    <div class="mt-3 p-3 border-t border-white/10">
-      <GlowButton class="w-full">
-        Save Changes
+    <div class="pt-4 mt-auto border-t border-white/5 space-y-3">
+      <div class="flex justify-between text-xs text-gray-400 mb-2">
+        <span>Memory Usage</span>
+        <span class="text-sci-blue">{{ memoryUsage }}%</span>
+      </div>
+      <div class="h-1 w-full bg-gray-800 rounded-full overflow-hidden mb-4">
+        <div class="h-full bg-sci-blue w-[42%] shadow-[0_0_10px_#3b82f6] transition-all duration-500"></div>
+      </div>
+
+      <GlowButton variant="primary" class="w-full shadow-lg" @click="deployChanges">
+        Deploy Changes
+      </GlowButton>
+      
+      <GlowButton variant="ghost" size="sm" class="w-full" @click="exportLogs">
+        Export Logs
       </GlowButton>
     </div>
-  </div>
+  </GlassCard>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue';
+import GlassCard from '@/components/ui/GlassCard.vue';
 import GlowButton from '@/components/ui/GlowButton.vue';
 
+// 标签类型定义
 interface Tab {
   id: string;
   label: string;
 }
 
+// 文件类型定义
+interface File {
+  id: string;
+  name: string;
+  size: string;
+  updated: string;
+}
+
+// 状态管理
 const tabs = ref<Tab[]>([
-  { id: 'assets', label: 'Files' },
-  { id: 'pending', label: 'Params' },
+  { id: 'files', label: 'Files' },
+  { id: 'params', label: 'Params' },
+  { id: 'logs', label: 'Logs' }
 ]);
 
-const activeTab = ref('assets');
+const activeTab = ref('files');
+const memoryUsage = ref(42);
+
+// 数据模拟
+const files = ref<File[]>([
+  { id: 'file-1', name: 'dataset_v1.csv', size: '24MB', updated: 'Just now' },
+  { id: 'file-2', name: 'dataset_v2.csv', size: '32MB', updated: '5m ago' },
+  { id: 'file-3', name: 'model_weights.pth', size: '1.2GB', updated: '1h ago' },
+  { id: 'file-4', name: 'config.json', size: '12KB', updated: '2h ago' },
+  { id: 'file-5', name: 'training_logs.txt', size: '8MB', updated: 'Yesterday' }
+]);
+
+// 事件处理
+const selectFile = (file: File) => {
+  console.log('Selected file:', file);
+  // 这里可以添加文件选择逻辑
+};
+
+const deployChanges = () => {
+  console.log('Deploying changes...');
+  // 这里可以添加部署逻辑
+};
+
+const exportLogs = () => {
+  console.log('Exporting logs...');
+  // 这里可以添加导出日志逻辑
+};
 </script>

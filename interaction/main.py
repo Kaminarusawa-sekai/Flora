@@ -6,8 +6,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# 添加项目根目录到Python路径
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# # 添加项目根目录到Python路径
+# sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 # 从external目录导入API路由
 from interaction.entry_layer import app as api_app
@@ -19,6 +19,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+
 )
 
 # 添加CORS中间件

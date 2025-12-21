@@ -8,15 +8,16 @@ import ResourcePanel from '@/features/ResourcePanel/index.vue';
 </script>
 
 <template>
+
   <MainLayout>
     <template #sidebar>
-      <GlassCard>
+      <GlassCard class="h-full">
         <TaskSidebar />
       </GlassCard>
     </template>
 
     <template #chat>
-      <GlassCard class="bg-white/2">
+      <GlassCard class="h-full bg-white/2">
         <Copilot />
       </GlassCard>
     </template>
@@ -26,7 +27,7 @@ import ResourcePanel from '@/features/ResourcePanel/index.vue';
     </template>
 
     <template #resources>
-      <GlassCard>
+      <GlassCard class="h-full">
         <ResourcePanel />
       </GlassCard>
     </template>
