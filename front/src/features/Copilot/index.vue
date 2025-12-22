@@ -4,7 +4,7 @@
       <div class="flex items-center gap-2">
         <div class="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-glow-cyan"></div>
         <span class="text-xs font-medium text-gray-400 tracking-wide">
-          CONTEXT: <span class="text-cyan-300 font-mono">TSK-01</span>
+          CONTEXT: <span class="text-cyan-300 font-mono">{{ selectedTaskId }}</span>
         </span>
       </div>
       <StatusDot :status="aiStatus" size="sm" :label="aiStatusLabel" />
@@ -163,6 +163,14 @@ import { ref, onMounted, nextTick, computed, watch } from 'vue';
 import GlassCard from '@/components/ui/GlassCard.vue';
 import InputHud from '@/components/ui/InputHud.vue';
 import StatusDot from '@/components/ui/StatusDot.vue';
+
+// 接收选中的任务ID
+const props = defineProps({
+  selectedTaskId: {
+    type: String,
+    required: true
+  }
+});
 
 const input = ref('');
 const messagesContainer = ref(null);

@@ -44,7 +44,18 @@ class EventInstance(BaseModel):
     
     # 原有字段
     input_params: Dict[str, Any] = Field(default_factory=dict)
-    error_msg: Optional[str] = None
+    
+    # 建议修改：错误详情，支持存储更丰富的错误信息
+    error_detail: Optional[Dict[str, Any]] = None
+    
+    # 建议新增：运行时快照，用于存储执行系统上报的最新关键上下文
+    runtime_state_snapshot: Optional[Dict[str, Any]] = None
+    
+    # 建议新增：结果摘要，用于存储简短的返回值
+    result_summary: Optional[str] = None
+    
+    # 建议新增：交互信号，Agent -> 指令塔，比如 "NEED_HUMAN_CONFIRM"
+    interactive_signal: Optional[str] = None
 
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

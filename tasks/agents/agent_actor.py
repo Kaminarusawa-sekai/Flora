@@ -200,7 +200,7 @@ class AgentActor(Actor):
                 source="AgentActor",
                 agent_id=self.agent_id,
                 data={
-                    "plans_count": len(plans),
+                    "plans": plans,
                     "message": "任务已分发给子Agent"
                 },
                 user_id=self.current_user_id

@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..common.event_instance import EventInstance
+from ..common.event_log import EventLog
 from ..common.enums import EventInstanceStatus
 
 from ..external.cache.base import CacheClient
 from ..external.db.session import dialect
-from ..external.db.impl import create_event_definition_repo, create_event_instance_repo
+from ..external.db.impl import create_event_definition_repo, create_event_instance_repo, create_event_log_repo
 from ..external.events.bus import EventBus
 
 ##TODO:这里有双写一致性问题，后期再解决
@@ -31,16 +32,38 @@ class LifecycleService:
         # 并返回对应的引用 key
         return f"payload-{str(uuid.uuid4())[:8]}"
 
+    async def _record_event_log(self, session: AsyncSession, instance: EventInstance, event_type: str, payload: dict, error: str = None):
+        """
+        【新增辅助方法】通用流水账记录
+        对应执行系统的每一次“上报”
+        """
+        log_repo = create_event_log_repo(session, dialect)
+        log_entry = EventLog(
+            id=str(uuid.uuid4()),
+            instance_id=instance.id,
+            trace_id=instance.trace_id,
+            event_type=event_type,
+            level="ERROR" if error else "INFO",
+            content=f"State changed to {event_type}",
+            payload_snapshot=payload.get("enriched_context_snapshot"), # 记录当时的快照
+            error_detail={"msg": error} if error else None,
+            execution_node=payload.get("execution_node"),
+            agent_id=payload.get("agent_id"),
+            created_at=datetime.now(timezone.utc)
+        )
+        await log_repo.create(log_entry)
+
     async def start_trace(
         self,
         session: AsyncSession,
         root_def_id: str,
         input_params: dict,
-        trace_id: str,
+        trace_id: str, # 外部传入，作为唯一凭证
+        user_id: Optional[str] = None # 新增：记录是谁触发的
 
     ) -> str:
         """
-        启动链路，创建根节点并触发执行
+        启动链路，创建根节点 + 记录第一条流水
         """
         # 1. 校验定义是否存在
         def_repo = create_event_definition_repo(session, dialect)
@@ -60,14 +83,25 @@ class LifecycleService:
             depth=0,
             actor_type=definition.actor_type,
             role=definition.role,
-            status=EventInstanceStatus.RUNNING, # 根节点直接开始
+            status=EventInstanceStatus.PENDING, # 根节点直接开始
             input_params={**definition.default_params, **input_params},
             input_ref=await self._save_payload(input_params), # 抽离大字段存储
+            # 【新增】初始快照
+            runtime_state_snapshot={"lifecycle": "created"},
             created_at=datetime.now(timezone.utc)
         )
         
         inst_repo = create_event_instance_repo(session, dialect)
         await inst_repo.create(root)
+        
+        # 【新增】记录 EventLog (历史轨迹)
+        # 即使是创建，也应该是一条 Log，方便回溯 "什么时候开始的"
+        await self._record_event_log(
+            session,
+            root,
+            event_type="STARTED",
+            payload={"user_id": user_id, "params_preview": str(input_params)[:100]}
+        )
         
         # 【使用抽象】发送 TRACE_CREATED 事件
         # 告诉外界：有一个新链路开始了，根节点是 root_id
@@ -88,7 +122,8 @@ class LifecycleService:
         session: AsyncSession,
         parent_id: str,
         subtasks_meta: list[dict],
-        trace_id: str = None
+        trace_id: str = None,
+        context_snapshot: Dict = None  # 新增：接收上下文快照
     ) -> List[str]:
         """
         动态拓扑扩展
@@ -163,6 +198,20 @@ class LifecycleService:
             
         await inst_repo.bulk_create(new_instances)
         
+        # 【新增】记录 Parent 的 EventLog
+        # 记录 "我生了孩子" 这一事件
+        await self._record_event_log(
+            session,
+            parent,
+            event_type="TOPOLOGY_EXPANDED",
+            payload={
+                "new_children_count": len(new_ids),
+                "children_ids": new_ids,
+                # 优先使用传入的 snapshot，如果没有则使用默认
+                "enriched_context_snapshot": context_snapshot or {"action": "spawn_subtasks"}
+            }
+        )
+        
         # 【使用抽象】发送 TOPOLOGY_EXPANDED 事件
         # 告诉外界：parent_id 下面裂变出了 new_ids 这些新任务
         if new_ids:
@@ -178,4 +227,89 @@ class LifecycleService:
             )
         
         return new_ids
+
+    # ------------------------------------------------------
+    # 场景3：【核心新增】同步执行状态 (对接执行系统的 Args)
+    # ------------------------------------------------------
+    async def sync_execution_state(
+        self,
+        session: AsyncSession,
+        execution_args: dict
+    ):
+        """
+        接收执行系统的 Args 对象，更新 Instance 状态并记录 Log
+        execution_args: 即你提供的 Args 数据结构
+        """
+        task_id = execution_args.get("task_id")
+        event_type = execution_args.get("event_type") # STARTED, RUNNING, COMPLETED, FAILED
+        snapshot = execution_args.get("enriched_context_snapshot")
+        data = execution_args.get("data")
+        error_msg = execution_args.get("error")
+
+        inst_repo = create_event_instance_repo(session, dialect)
+        instance = await inst_repo.get(task_id)
+        
+        if not instance:
+            # 极端情况：收到事件但找不到任务（可能是创建消息延迟了）
+            # 可以选择抛错或者创建一个“孤儿任务”记录
+            print(f"Warning: Received event {event_type} for unknown task {task_id}")
+            return
+
+        # 1. 更新 EventInstance (最新态)
+        # 根据 event_type 映射状态
+        update_fields = {"updated_at": datetime.now(timezone.utc)}
+        
+        if event_type == "STARTED":
+            update_fields["status"] = EventInstanceStatus.RUNNING
+            update_fields["started_at"] = datetime.now(timezone.utc)
+        
+        elif event_type == "COMPLETED":
+            update_fields["status"] = EventInstanceStatus.SUCCESS
+            update_fields["finished_at"] = datetime.now(timezone.utc)
+            update_fields["progress"] = 100
+            # 处理输出数据
+            if data:
+                # 假设执行系统已经处理好大字段，这里 data 可能是引用或小字段
+                update_fields["output_ref"] = str(data)
+        
+        elif event_type == "FAILED":
+            update_fields["status"] = EventInstanceStatus.FAILED
+            update_fields["finished_at"] = datetime.now(timezone.utc)
+            update_fields["error_detail"] = {"msg": error_msg} # 更新 Instance 上的错误摘要
+            
+        elif event_type == "PROGRESS":
+            # 假设 data 里有 percent
+            if isinstance(data, dict) and "percent" in data:
+                update_fields["progress"] = data["percent"]
+
+        # 更新快照 (始终保持最新)
+        if snapshot:
+            update_fields["runtime_state_snapshot"] = snapshot
+
+        # 执行更新
+        for k, v in update_fields.items():
+            setattr(instance, k, v)
+        await inst_repo.update_fields(task_id, **update_fields) # 保存更新
+
+        # 2. 插入 EventLog (流水态)
+        # 无论 update_fields 变没变，Log 都要记，因为这是“发生了一件事”
+        await self._record_event_log(
+            session,
+            instance,
+            event_type=event_type,
+            payload=execution_args, # 把整个 Args 存下来或者存关键部分
+            error=error_msg
+        )
+
+        # 3. 如果需要，转发给前端或其他系统
+        await self.event_bus.publish(
+            topic=self.topic_name,
+            event_type=f"TASK_{event_type}", # 比如 TASK_COMPLETED
+            key=instance.trace_id,
+            payload={
+                "task_id": task_id,
+                "status": update_fields.get("status"),
+                "progress": update_fields.get("progress")
+            }
+        )
 

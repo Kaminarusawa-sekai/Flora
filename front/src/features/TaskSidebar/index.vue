@@ -430,6 +430,9 @@ const completedTasks = ref<Task[]>([
 
 
 
+// 定义事件
+const emit = defineEmits(['task-select']);
+
 const activateTask = (taskId: string) => {
 
   tasks.value.forEach(task => {
@@ -437,6 +440,9 @@ const activateTask = (taskId: string) => {
     task.active = task.id === taskId;
 
   });
+
+  // 触发任务选择事件
+  emit('task-select', taskId);
 
 };
 

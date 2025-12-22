@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 from ...common.event_definition import EventDefinition
 from ...common.event_instance import EventInstance
+from ...common.event_log import EventLog
 from ...common.enums import EventInstanceStatus
 
 
@@ -45,3 +46,18 @@ class EventInstanceRepository(ABC):
     async def bulk_update_signal_by_path(self, trace_id: str, path_pattern: str, signal: str) -> None: ...
     @abstractmethod
     async def update_signal_by_trace(self, trace_id: str, signal: str) -> None: ...
+
+
+class EventLogRepository(ABC):
+    @abstractmethod
+    async def create(self, log: EventLog) -> None: ...
+    @abstractmethod
+    async def get(self, log_id: str) -> EventLog: ...
+    @abstractmethod
+    async def find_by_instance_id(self, instance_id: str) -> List[EventLog]: ...
+    @abstractmethod
+    async def find_by_trace_id(self, trace_id: str) -> List[EventLog]: ...
+    @abstractmethod
+    async def find_by_trace_id_with_filters(self, trace_id: str, filters: dict, limit: int = 100, offset: int = 0) -> List[EventLog]: ...
+    @abstractmethod
+    async def count_by_event_type(self, instance_id: str, event_type: str) -> int: ...

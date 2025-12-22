@@ -3,7 +3,7 @@ import threading
 import json
 from typing import Any
 
-from message_queue_base import MessageQueueListener
+from .message_queue_base import MessageQueueListener
 
 # 尝试导入RabbitMQ依赖
 try:
@@ -15,13 +15,9 @@ except ImportError as e:
     RABBITMQ_AVAILABLE = False
 
 # 导入消息相关模块
-try:
-    from common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
-except ImportError as e:
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Failed to import message dependencies: {e}")
-    AgentTaskMessage = None
-    ResumeTaskMessage = None
+
+from ...common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
+
 
 
 class RabbitMQListenerImpl(MessageQueueListener):

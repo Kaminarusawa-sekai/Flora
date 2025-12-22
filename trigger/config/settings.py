@@ -73,6 +73,9 @@ class Settings:
         # Worker URL
         self.worker_url = os.getenv("WORKER_URL", self._config_data.get("worker_url", "http://localhost:8001"))
         
+        # Events Service URL
+        self.EVENTS_SERVICE_BASE_URL = os.getenv("EVENTS_SERVICE_BASE_URL", self._config_data.get("events_service_base_url", "http://localhost:8002"))
+        
         # 消息队列配置
         # 支持的值: "redis", "rabbitmq"
         self.message_broker_type = os.getenv("MESSAGE_BROKER_TYPE", self._config_data.get("message_broker_type", "redis"))

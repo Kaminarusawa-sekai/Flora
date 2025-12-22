@@ -4,10 +4,11 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
 
-from ..base import EventInstanceRepository, EventDefinitionRepository
-from ..models import EventInstanceDB, EventDefinitionDB
+from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository
+from ..models import EventInstanceDB, EventDefinitionDB, EventLogDB
 from ....common.event_instance import EventInstance
 from ....common.event_definition import EventDefinition
+from ....common.event_log import EventLog
 from ....common.enums import EventInstanceStatus
 
 logger = logging.getLogger(__name__)
@@ -341,3 +342,79 @@ class SQLiteEventDefinitionRepository(EventDefinitionRepository):
         )
         self.session.add(db_definition)
         await self.session.commit()
+
+
+class SQLiteEventLogRepository(EventLogRepository):
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_domain(self, db: EventLogDB) -> EventLog:
+        return EventLog(
+            id=db.id,
+            instance_id=db.instance_id,
+            trace_id=db.trace_id,
+            event_type=db.event_type,
+            level=db.level,
+            content=db.content,
+            payload_snapshot=db.payload_snapshot,
+            execution_node=db.execution_node,
+            agent_id=db.agent_id,
+            created_at=db.created_at
+        )
+
+    async def create(self, log: EventLog) -> None:
+        db_log = EventLogDB(
+            id=log.id,
+            instance_id=log.instance_id,
+            trace_id=log.trace_id,
+            event_type=log.event_type,
+            level=log.level,
+            content=log.content,
+            payload_snapshot=log.payload_snapshot,
+            execution_node=log.execution_node,
+            agent_id=log.agent_id,
+            created_at=log.created_at
+        )
+        self.session.add(db_log)
+        await self.session.commit()
+
+    async def get(self, log_id: str) -> EventLog:
+        stmt = select(EventLogDB).where(EventLogDB.id == log_id)
+        result = await self.session.execute(stmt)
+        row = result.scalar_one_or_none()
+        return self._to_domain(row) if row else None
+
+    async def find_by_instance_id(self, instance_id: str) -> List[EventLog]:
+        stmt = select(EventLogDB).where(EventLogDB.instance_id == instance_id).order_by(EventLogDB.created_at)
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        return [self._to_domain(row) for row in rows]
+
+    async def find_by_trace_id(self, trace_id: str) -> List[EventLog]:
+        stmt = select(EventLogDB).where(EventLogDB.trace_id == trace_id).order_by(EventLogDB.created_at)
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        return [self._to_domain(row) for row in rows]
+
+    async def find_by_trace_id_with_filters(self, trace_id: str, filters: dict, limit: int = 100, offset: int = 0) -> List[EventLog]:
+        stmt = select(EventLogDB).where(EventLogDB.trace_id == trace_id)
+        
+        for key, value in filters.items():
+            column = getattr(EventLogDB, key, None)
+            if column is not None:
+                stmt = stmt.where(column == value)
+        
+        stmt = stmt.order_by(EventLogDB.created_at).offset(offset).limit(limit)
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        return [self._to_domain(row) for row in rows]
+
+    async def count_by_event_type(self, instance_id: str, event_type: str) -> int:
+        stmt = select(EventLogDB).where(
+            and_(
+                EventLogDB.instance_id == instance_id,
+                EventLogDB.event_type == event_type
+            )
+        )
+        result = await self.session.execute(stmt)
+        return len(result.scalars().all())

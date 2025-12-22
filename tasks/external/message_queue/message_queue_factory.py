@@ -1,15 +1,12 @@
 import logging
 from typing import Any
 
-from message_queue_base import MessageQueueListener
+from .message_queue_base import MessageQueueListener
 
 # 导入具体实现类
-try:
-    from rabbitmq_listener import RabbitMQListenerImpl
-except ImportError as e:
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Failed to import RabbitMQ listener implementation: {e}")
-    RabbitMQListenerImpl = None
+
+from .rabbitmq_listener import RabbitMQListenerImpl
+
 
 
 class MessageQueueFactory:

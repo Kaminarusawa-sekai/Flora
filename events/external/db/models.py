@@ -94,3 +94,25 @@ class EventInstanceDB(Base):
     __table_args__ = (
         Index("idx_trace_status", "trace_id", "status", if_not_exists=True),
     )
+
+
+class EventLogDB(Base):
+    __tablename__ = "event_logs"
+
+    id = Column(String, primary_key=True)
+    instance_id = Column(String, index=True, nullable=False)
+    trace_id = Column(String, index=True, nullable=False)
+    event_type = Column(String, index=True, nullable=False)
+    level = Column(String, default="INFO")
+    content = Column(Text, nullable=True)
+    payload_snapshot = Column(JSON, nullable=True)
+    execution_node = Column(String, nullable=True)
+    agent_id = Column(String, nullable=True)
+    error_detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("idx_instance_id", "instance_id", if_not_exists=True),
+        Index("idx_trace_id", "trace_id", if_not_exists=True),
+        Index("idx_event_type", "event_type", if_not_exists=True),
+    )

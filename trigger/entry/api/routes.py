@@ -46,6 +46,20 @@ class TaskInstanceResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# 定义即席任务请求模型
+class AdHocTaskRequest(BaseModel):
+    task_name: str
+    task_content: dict  # 具体的执行逻辑，如 {"script": "print('hello')", "image": "python:3.9"}
+    input_params: dict
+    loop_config: Optional[dict] = None
+    is_temporary: bool = True
+
+# 定义即席任务响应模型
+class AdHocTaskResponse(BaseModel):
+    trace_id: str
+    status: str
+    message: str
+
 # 全局服务变量，将在 main.py 中初始化
 _lifecycle_svc = None
 
@@ -86,17 +100,6 @@ async def list_task_definitions(
     active_defs = await def_repo.list_active_cron()
     return active_defs
 
-@router.get("/definitions/{def_id}", response_model=TaskDefResponse)
-async def get_task_definition(
-    def_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """获取单个任务定义"""
-    def_repo = create_task_definition_repo(db, dialect)
-    task_def = await def_repo.get(def_id)
-    if not task_def:
-        raise HTTPException(status_code=404, detail="Task definition not found")
-    return task_def
 
 @router.post("/definitions/{def_id}/trigger")
 async def manual_trigger(
@@ -112,55 +115,41 @@ async def manual_trigger(
         raise HTTPException(status_code=404, detail="Task definition not found")
     
     # 手动触发任务
-    await lifecycle_svc.start_new_trace(
+    await lifecycle_svc.trigger_by_id(
         session=db,
         def_id=def_id,
-        input_params={"trigger": "manual"},
-        trigger_type="MANUAL"
+        input_params={"trigger": "manual"}
     )
     return {"status": "triggered", "message": f"Task {def_id} triggered manually"}
 
-@router.get("/instances/{trace_id}", response_model=List[TaskInstanceResponse])
-async def get_task_instances(
-    trace_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """查询某个 Trace 下的所有任务实例状态"""
-    instance_repo = create_task_instance_repo(db, dialect)
-    instances = await instance_repo.list_by_trace_id(trace_id)
-    return instances
 
-@router.get("/instances/{trace_id}/status")
-async def get_trace_status(
-    trace_id: str,
-    db: AsyncSession = Depends(get_db)
+@router.post("/ad-hoc-tasks", response_model=AdHocTaskResponse)
+async def submit_ad_hoc_task(
+    task_in: AdHocTaskRequest,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
 ):
-    """查询某个 Trace 的整体状态"""
-    instance_repo = create_task_instance_repo(db, dialect)
-    instances = await instance_repo.list_by_trace_id(trace_id)
-    
-    if not instances:
-        raise HTTPException(status_code=404, detail="No instances found for this trace")
-    
-    # 计算整体状态
-    statuses = [inst.status for inst in instances]
-    if "FAILED" in statuses:
-        overall_status = "FAILED"
-    elif "RUNNING" in statuses:
-        overall_status = "RUNNING"
-    elif all(status == "SUCCESS" for status in statuses):
-        overall_status = "SUCCESS"
-    else:
-        overall_status = "PENDING"
-    
-    return {
-        "trace_id": trace_id,
-        "status": overall_status,
-        "instance_count": len(instances),
-        "instance_statuses": {
-            "PENDING": statuses.count("PENDING"),
-            "RUNNING": statuses.count("RUNNING"),
-            "SUCCESS": statuses.count("SUCCESS"),
-            "FAILED": statuses.count("FAILED")
-        }
-    }
+    """提交即席任务，包含定义和实例参数"""
+    try:
+        # 调用生命周期服务的即席任务处理方法
+        trace_id = await lifecycle_svc.submit_ad_hoc_task(
+            session=db,
+            task_name=task_in.task_name,
+            task_content=task_in.task_content,
+            input_params=task_in.input_params,
+            loop_config=task_in.loop_config,
+            is_temporary=task_in.is_temporary
+        )
+        
+        if not trace_id:
+            raise HTTPException(status_code=500, detail="Failed to create ad-hoc task")
+        
+        return AdHocTaskResponse(
+            trace_id=trace_id,
+            status="success",
+            message="Ad-hoc task submitted successfully"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error submitting ad-hoc task: {str(e)}")
+
+

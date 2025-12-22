@@ -35,7 +35,7 @@
 import { computed } from 'vue';
 
 // 定义类型
-type StatusType = 'running' | 'success' | 'error' | 'idle' | 'pending';
+type StatusType = 'running' | 'success' | 'error' | 'idle' | 'pending' | 'thinking' | 'processing';
 type SizeType = 'sm' | 'md' | 'lg';
 
 const props = defineProps({
@@ -94,6 +94,16 @@ const statusColors: Record<StatusType, { bg: string; shadow: string; text: strin
     bg: 'bg-gray-600',
     shadow: 'shadow-none',
     text: 'text-gray-500'
+  },
+  thinking: {
+    bg: 'bg-blue-400',
+    shadow: 'shadow-[0_0_15px_rgba(59,130,246,0.4)]', // 自定义蓝色发光
+    text: 'text-blue-400'
+  },
+  processing: {
+    bg: 'bg-indigo-400',
+    shadow: 'shadow-[0_0_15px_rgba(99,102,241,0.4)]', // 自定义靛蓝色发光
+    text: 'text-indigo-400'
   }
 };
 
