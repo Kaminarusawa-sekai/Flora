@@ -1,13 +1,13 @@
 from typing import Dict, Any, Optional
 from .interface import ITaskControlManagerCapability
-from ...common.task_execution import TaskControlResponseDTO
-from ...common import (
+from common.task_execution import TaskControlResponseDTO
+from common import (
     ExecutionStatus,
     IntentRecognitionResultDTO,
     UserInputDTO
 )
 from ..llm.interface import ILLMCapability
-from interaction.external.client import TaskClient
+from external.client import TaskClient
 
 class CommonTaskControl(ITaskControlManagerCapability):
     """任务控制管理器 - 控制任务的执行"""

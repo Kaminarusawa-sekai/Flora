@@ -170,7 +170,7 @@
 
           class="group cursor-pointer transition-all duration-300 mb-4"
 
-          :class="task.active ? 'border-sci-blue/30 bg-sci-blue/5' : ''"
+          :class="task.active ? 'border-sci-blue/50 bg-sci-blue/10 shadow-xl shadow-sci-blue/40 ring-1 ring-sci-blue/50' : ''"
 
           @click="activateTask(task.id)"
 

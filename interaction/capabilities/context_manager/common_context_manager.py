@@ -1,7 +1,7 @@
 from typing import List, Optional
-from interaction.common.dialog import DialogTurn
-from interaction.capabilities.context_manager.interface import IContextManagerCapability
-from interaction.external.database import SQLiteConnectionPool, DialogRepository
+from common.dialog import DialogTurn
+from .interface import IContextManagerCapability
+from external.database import SQLiteConnectionPool, DialogRepository
 
 class CommonContextManager(IContextManagerCapability):
     """
@@ -134,7 +134,7 @@ class CommonContextManager(IContextManagerCapability):
         compressed_text = "\n".join([f"{turn['role']}: {turn['utterance']}" for turn in old_turns])
         
         # 创建新的压缩轮次
-        from interaction.common.dialog import DialogTurn
+        from common.dialog import DialogTurn
         import time
         compressed_turn = DialogTurn(
             role="system",
@@ -177,3 +177,4 @@ class CommonContextManager(IContextManagerCapability):
             raise ValueError("Context manager not initialized")
         all_turns = self.repo.get_all_turns()
         return len(all_turns)
+        

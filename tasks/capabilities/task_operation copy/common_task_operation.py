@@ -2,7 +2,7 @@
 import logging
 from typing import Dict, Any, Optional
 
-from ...common.types.task_operation import TaskOperationType, TaskOperationCategory, get_operation_category
+from common.types.task_operation import TaskOperationType, TaskOperationCategory, get_operation_category
 from ..llm.interface import ILLMCapability
 from .interface import ITaskOperationCapability
 

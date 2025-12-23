@@ -4,7 +4,7 @@ import re
 import networkx as nx  # 需要引入 networkx
 from typing import List, Dict, Optional, Any, Tuple
 from .interface import ITaskPlanningCapability
-from ...external.repositories.agent_structure_repo import AgentStructureRepository 
+from external.repositories.agent_structure_repo import AgentStructureRepository 
 
 import logging
 logger = logging.getLogger(__name__)

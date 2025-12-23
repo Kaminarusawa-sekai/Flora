@@ -2,14 +2,14 @@ from thespian.actors import Actor
 import logging
 import json
 from typing import Any, Dict
-from ..capabilities import get_capability
-from ..capabilities.registry import capability_registry
-from ..capabilities.llm.interface import ILLMCapability
+from capabilities import get_capability
+from capabilities.registry import capability_registry
+from capabilities.llm.interface import ILLMCapability
 
 
 
-from ..common.messages.task_messages import TaskCompletedMessage, MCPTaskRequestMessage as MCPTaskMessage
-from ..common.messages.types import MessageType
+from common.messages.task_messages import TaskCompletedMessage, MCPTaskRequestMessage as MCPTaskMessage
+from common.messages.types import MessageType
 
 
 

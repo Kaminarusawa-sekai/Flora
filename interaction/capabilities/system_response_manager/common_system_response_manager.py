@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional, List
 from .interface import ISystemResponseManagerCapability
-from ...common import (
+from common import (
     SystemResponseDTO,
     SuggestedActionDTO,
     ActionType,

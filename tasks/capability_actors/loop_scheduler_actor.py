@@ -7,10 +7,10 @@ from typing import Any, Dict
 from datetime import datetime
 
 # 导入任务相关类型
-from ..common.types.task import Task, TaskType, TaskStatus
-from ..external.repositories.task_repo import TaskRepository
-from ..events.event_bus import event_bus
-from ..events.event_types import EventType
+from common.types.task import Task, TaskType, TaskStatus
+from external.repositories.task_repo import TaskRepository
+from events.event_bus import event_bus
+from events.event_types import EventType
 
 # 定义LoopTask类
 class LoopTask:

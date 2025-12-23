@@ -2,13 +2,13 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 from .interface import ITaskQueryManagerCapability
-from ...common import (
+from common import (
     TaskSummary,
     TaskExecutionContextDTO,
     IntentRecognitionResultDTO,
     EntityDTO
 )
-from ...external.client import TaskStorage
+from external.client import TaskStorage
 from ..llm.interface import ILLMCapability
 
 logger = logging.getLogger(__name__)

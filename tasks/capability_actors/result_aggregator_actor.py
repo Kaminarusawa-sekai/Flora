@@ -2,12 +2,12 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from thespian.actors import Actor, ActorExitRequest,ChildActorExited
-from ..common.messages.task_messages import (
+from common.messages.task_messages import (
     TaskCompletedMessage, TaskSpec,AgentTaskMessage,
     ResultAggregatorTaskRequestMessage
 )
 
-from ..common.messages.types import MessageType
+from common.messages.types import MessageType
 
 # 引入 AgentActor
 
@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 导入事件总线
-from ..events.event_bus import event_bus
+from events.event_bus import event_bus
 from common.event.event_type import EventType
 
 

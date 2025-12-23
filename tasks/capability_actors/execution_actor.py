@@ -11,10 +11,10 @@ from thespian.actors import Actor
 import logging
 from typing import Dict, Any, Optional, List, Union
 
-from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage
-from ..capabilities import get_capability
-from ..capabilities.excution import BaseExecution
-from ..events.event_bus import event_bus
+from common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage
+from capabilities import get_capability
+from capabilities.excution import BaseExecution
+from events.event_bus import event_bus
 from common.event import EventType
 
 # 配置日志

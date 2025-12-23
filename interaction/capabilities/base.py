@@ -1,7 +1,7 @@
 from typing import Any, Optional, Dict, List
 from abc import ABC, abstractmethod
 from .capability_base import CapabilityBase
-from ..common import (
+from common import (
     UserInputDTO,
     IntentRecognitionResultDTO,
     DialogStateDTO,

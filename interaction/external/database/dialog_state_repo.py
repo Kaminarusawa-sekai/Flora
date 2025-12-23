@@ -6,7 +6,7 @@ import json
 from sqlite3 import Connection
 from pydantic import BaseModel
 
-from interaction.common.response_state import DialogStateDTO
+from common.response_state import DialogStateDTO
 from .sqlite_pool import SQLiteConnectionPool
 
 

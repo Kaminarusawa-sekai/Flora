@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
-from ...common.types.task_operation import TaskOperationType, TaskOperationCategory
-from ..capability_base import CapabilityBase
+from common.types.task_operation import TaskOperationType, TaskOperationCategory
+from capability_base import CapabilityBase
 
 
 class ITaskOperationCapability(CapabilityBase):

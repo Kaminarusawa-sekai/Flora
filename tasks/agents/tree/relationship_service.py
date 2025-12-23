@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime, timedelta
-from ...external.repositories.agent_structure_repo import AgentStructureRepository
+from external.repositories.agent_structure_repo import AgentStructureRepository
 
 
 

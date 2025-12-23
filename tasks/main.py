@@ -7,29 +7,32 @@ Flora 多智能体协作系统 - 主启动文件
 """
 
 import logging
+import sys
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]  # 确保输出到控制台
+)
+
 import argparse
 import atexit
 from uvicorn import run
 from entry_layer.api_server import create_api_server
+from thespian.actors import ActorSystem
+
+from external.message_queue import MessageQueueFactory
 
 # 导入消息队列和 ActorSystem 相关模块
 try:
     from external.message_queue import MessageQueueFactory
-    from thespian.actors import ActorSystem
-    from agents.agent_actor import AgentActor
+    
     RABBITMQ_AVAILABLE = True
 except ImportError as e:
-    # 先初始化 logger 再记录（避免 NameError）
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Failed to import message queue dependencies: {e}")
+    # 先初始化 logger 再记录（避免 NameError)
     RABBITMQ_AVAILABLE = False
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+
 logger = logging.getLogger(__name__)
 
 # 全局变量，用于在退出时清理资源
@@ -57,8 +60,9 @@ def start_rabbitmq_listener(rabbitmq_url='localhost'):
         # 初始化 Actor 系统（使用 TCP 多进程模式）
         actor_system = ActorSystem('multiprocTCPBase')
         _global_actor_system = actor_system  # 保存引用以便清理
+        from agents.agent_actor import AgentActor
 
-        # 创建 AgentActor
+        # 创建 AgentActor 实例      
         agent_actor_ref = actor_system.createActor(AgentActor)
 
         # 使用工厂创建监听器
@@ -135,7 +139,8 @@ def main():
             host=args.host,
             port=args.port,
             reload=False,  # ←←← 强制禁用热重载
-            log_level="info"
+            log_level="info",
+            log_config=None,          # 👈 关键！禁用 uvicorn 的日志配置
         )
 
     except KeyboardInterrupt:

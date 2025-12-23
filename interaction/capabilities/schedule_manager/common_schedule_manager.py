@@ -1,11 +1,11 @@
 from typing import Dict, Any, Optional
 from .interface import IScheduleManagerCapability
-from ...common import (
+from common import (
     ScheduleDTO,
     TaskDraftDTO
 )
 from ..llm.interface import ILLMCapability
-from interaction.external.client.task_client import TaskClient
+from external.client.task_client import TaskClient
 
 class CommonSchedule(IScheduleManagerCapability):
     """调度管理器 - 处理任务的调度"""

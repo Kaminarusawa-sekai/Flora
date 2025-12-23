@@ -92,11 +92,12 @@ class Mem0Memory(IMemoryCapability):
             return "记忆服务未初始化。"
         try:
             results = self.client.search(query, user_id=user_id, limit=limit)
-            if not results:
+            if not results["results"]:
                 return "暂无相关记忆。"
             return "\n".join([f"- {m['memory']}" for m in results])
         except Exception as e:
-            return f"搜索记忆时出错: {str(e)}"
+            logger.error(f"搜索记忆时出错: {str(e)}")
+            return "记忆服务暂不可用。"
 
     def add_memory(self, user_id: str, text: str) -> None:
         if self.client:

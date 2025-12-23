@@ -39,8 +39,8 @@ class RequestHandler:
         
         # 初始化仓库 (用于读操作)
         try:
-            from ..external.repositories.task_repo import TaskRepository
-            from ..external.repositories.draft_repo import DraftRepository
+            from external.repositories.task_repo import TaskRepository
+            from external.repositories.draft_repo import DraftRepository
             self.task_repo = TaskRepository()
             self.draft_repo = DraftRepository()
         except ImportError:

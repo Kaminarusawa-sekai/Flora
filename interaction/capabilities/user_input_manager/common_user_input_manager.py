@@ -1,10 +1,11 @@
 from typing import Dict, Any, Optional
 from .interface import IUserInputManagerCapability
-from ...common import UserInputDTO
-from interaction.capabilities.registry import capability_registry
-from interaction.capabilities.llm.interface import ILLMCapability
-from interaction.capabilities.memory.interface import IMemoryCapability
-from interaction.capabilities.context_manager.interface import IContextManagerCapability
+from common import UserInputDTO,DialogTurn
+from capabilities.registry import capability_registry
+from capabilities.llm.interface import ILLMCapability
+from capabilities.memory.interface import IMemoryCapability
+import logging
+logger = logging.getLogger(__name__)
 
 class CommonUserInput(IUserInputManagerCapability):
     """用户输入管理器 - 接收并解析用户的原始输入"""
@@ -35,6 +36,7 @@ class CommonUserInput(IUserInputManagerCapability):
     @property
     def history_store(self):
         """懒加载对话历史存储"""
+        from capabilities.context_manager.interface import IContextManagerCapability
         if self._history_store is None:
             self._history_store = capability_registry.get_capability("context_manager", IContextManagerCapability)
         return self._history_store
@@ -60,9 +62,11 @@ class CommonUserInput(IUserInputManagerCapability):
         # 注意：我们的上下文管理器get_recent_turns方法返回的是DialogTurn对象列表
         # 我们需要转换为方案中期望的格式
         recent_turns = self.history_store.get_recent_turns(limit=self.context_window)
+        
+
         dialog_history = [
             {"role": turn.role, "utterance": turn.utterance}
-            for turn in recent_turns
+            for turn in  reversed(recent_turns)
         ]
         
         # 2. 检索长期记忆
@@ -92,19 +96,21 @@ class CommonUserInput(IUserInputManagerCapability):
 }}"""
         
         # 4. 调用LLM，解析结果
-        llm_result = self.llm.generate(prompt)
-        import json
-        try:
-            parsed_result = json.loads(llm_result)
-        except json.JSONDecodeError:
-            # 如果LLM返回的不是有效的JSON，使用默认值
-            parsed_result = {
-                "enhanced_utterance": user_input.utterance,
-                "resolved_references": {},
-                "implied_action": "",
-                "target_entity": "",
-                "new_time": ""
-            }
+        logger.info(f"LLM Prompt: {prompt}")
+        llm_result = self.llm.generate(prompt, parse_json=True)
+        parsed_result = llm_result
+        # import json
+        # try:
+        #     parsed_result = json.loads(llm_result)
+        # except json.JSONDecodeError:
+        #     # 如果LLM返回的不是有效的JSON，使用默认值
+        #     parsed_result = {
+        #         "enhanced_utterance": user_input.utterance,
+        #         "resolved_references": {},
+        #         "implied_action": "",
+        #         "target_entity": "",
+        #         "new_time": ""
+        #     }
         
         # 5. 构造返回数据
         enriched_input = {
@@ -121,5 +127,5 @@ class CommonUserInput(IUserInputManagerCapability):
             "timestamp": user_input.timestamp,
             "metadata": user_input.metadata
         }
-        
+        self.history_store.add_turn(DialogTurn(role="user", utterance=user_input.utterance, enhanced_utterance=str(enriched_input), timestamp=user_input.timestamp))
         return enriched_input

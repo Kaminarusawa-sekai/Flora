@@ -1,7 +1,7 @@
 from typing import Dict, Any
 from abc import abstractmethod
 from ..base import BaseManager
-from ...common import UserInputDTO
+from common import UserInputDTO
 
 class IUserInputManagerCapability(BaseManager):
     """用户输入管理器接口"""

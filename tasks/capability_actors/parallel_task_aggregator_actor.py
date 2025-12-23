@@ -1,21 +1,21 @@
 # capability_actors/parallel_task_aggregator_actor.py
 from typing import Dict, Any, List, Optional
 from thespian.actors import Actor, ActorExitRequest
-from ..common.messages.task_messages import (
+from common.messages.task_messages import (
     ParallelTaskRequestMessage, TaskSpec, ExecuteTaskMessage,
     TaskCompletedMessage
 )
-from ..common.messages.types import MessageType
+from common.messages.types import MessageType
 import logging
 from collections import Counter
 
 # 导入事件总线
-from ..events.event_bus import event_bus
+from events.event_bus import event_bus
 from common.event import EventType
 
 # 导入优化相关组件
-from ..capabilities.parallel import OptimizationOrchestrator
-from ..capabilities.dimension.dimension_parser import DimensionParserCapability
+from capabilities.parallel import OptimizationOrchestrator
+from capabilities.dimension.dimension_parser import DimensionParserCapability
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

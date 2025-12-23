@@ -4,21 +4,21 @@ from thespian.actors import Actor, ActorExitRequest,ChildActorExited
 import uuid
 import time
 
-from ..common.messages import (
+from common.messages import (
     TaskGroupRequestMessage as TaskGroupRequest, 
     TaskCompletedMessage,
     ParallelTaskRequestMessage,
     MCPTaskRequestMessage,
     ResultAggregatorTaskRequestMessage
 )
-from ..common.messages.types import MessageType
+from common.messages.types import MessageType
 
-from ..common.taskspec import TaskSpec
-from ..common.context.context_entry import ContextEntry
+from common.taskspec import TaskSpec
+from common.context.context_entry import ContextEntry
 import logging
 
 # 导入事件总线
-from ..events.event_bus import event_bus
+from events.event_bus import event_bus
 from common.event.event_type import EventType
 
 # 导入相关 Actor 类引用

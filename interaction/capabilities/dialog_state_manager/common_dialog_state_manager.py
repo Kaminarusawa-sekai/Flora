@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 from .interface import IDialogStateManagerCapability
-from ...common import (
+from common import (
     DialogStateDTO,
     TaskDraftDTO,
     TaskSummary,
@@ -12,7 +12,7 @@ from ...common import (
 )
 from time import timezone
 from ..llm.interface import ILLMCapability
-from interaction.external.database.dialog_state_repo import DialogStateRepository
+from external.database.dialog_state_repo import DialogStateRepository
 
 class CommonDialogState(IDialogStateManagerCapability):
     """对话状态管理器 - 维护全局对话状态"""
@@ -189,6 +189,8 @@ class CommonDialogState(IDialogStateManagerCapability):
             self.update_dialog_state(state)
         return state
     
+
+    ##TODO:1.填槽使用槽位管理的函数，2.填槽前查询已知信息（放在event里）
     def process_intent_result(
         self,
         session_id: str,
@@ -211,7 +213,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         corrected_intent = self._resolve_ambiguous_intent(intent_result, state)
         
         # 2. 【草稿管理】决定是否创建/更新/清除草稿
-        if corrected_intent in [IntentType.CREATE, IntentType.MODIFY, IntentType.SET_SCHEDULE]:
+        if corrected_intent in [IntentType.CREATE_TASK, IntentType.MODIFY_TASK, IntentType.SET_SCHEDULE]:
             if state.active_task_draft is None:
                 # 创建新草稿
                 draft = TaskDraftDTO(task_type=corrected_intent.value, slots={})
@@ -295,10 +297,10 @@ class CommonDialogState(IDialogStateManagerCapability):
                 getattr(task, 'status', None) == "INTERRUPTED" for task in state.recent_tasks
             )
             if has_interrupted:
-                return IntentType.RESUME  # 转为“恢复中断”
+                return IntentType.RESUME_INTERRUPTED  # 转为“恢复中断”
 
         # 场景2: “取消” + 有活跃执行 → CANCEL_TASK；否则可能是取消草稿
-        if primary == IntentType.CANCEL:
+        if primary == IntentType.CANCEL_TASK:
             if state.active_task_execution:
                 return IntentType.CANCEL_TASK
             elif state.active_task_draft:

@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any
 from sqlite3 import Connection
-from interaction.common.dialog import DialogTurn
+from common.dialog import DialogTurn
 from .sqlite_pool import SQLiteConnectionPool
 
 class DialogRepository:

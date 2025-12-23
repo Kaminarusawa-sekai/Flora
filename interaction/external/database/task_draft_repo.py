@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any
 import json
 from datetime import datetime
 from sqlite3 import Connection
-from interaction.common.task_draft import TaskDraftDTO, SlotValueDTO, ScheduleDTO
+from common.task_draft import TaskDraftDTO, SlotValueDTO, ScheduleDTO
 from .sqlite_pool import SQLiteConnectionPool
 
 class TaskDraftRepository:
@@ -36,7 +36,7 @@ class TaskDraftRepository:
     
     def _serialize_slots(self, slots: Dict[str, SlotValueDTO]) -> str:
         return json.dumps({
-            k: v.dict() for k, v in slots.items()
+            k: v.model_dump() for k, v in slots.items()
         })
     
     def _deserialize_slots(self, slots_str: str) -> Dict[str, SlotValueDTO]:
@@ -51,7 +51,7 @@ class TaskDraftRepository:
         return json.loads(lst_str)
     
     def _serialize_schedule(self, schedule: Optional[ScheduleDTO]) -> Optional[str]:
-        return json.dumps(schedule.dict()) if schedule else None
+        return json.dumps(schedule.model_dump()) if schedule else None
     
     def _deserialize_schedule(self, schedule_str: Optional[str]) -> Optional[ScheduleDTO]:
         return ScheduleDTO(**json.loads(schedule_str)) if schedule_str else None

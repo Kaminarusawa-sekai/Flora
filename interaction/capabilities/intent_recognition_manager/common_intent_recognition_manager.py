@@ -5,11 +5,12 @@ from collections import Counter
 
 from .interface import IIntentRecognitionManagerCapability
 from ..llm.interface import ILLMCapability
-from ...common import (
+from common import (
     IntentRecognitionResultDTO,
     IntentType,
     EntityDTO,
-    UserInputDTO
+    UserInputDTO,
+    DialogStateDTO
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
         self.ambiguity_threshold = config.get("ambiguity_threshold", 0.2)  # top1 - top2 < 此值则视为歧义
         
     @property
-    def llm(self):
+    def llm(self)-> ILLMCapability:
         """懒加载LLM能力"""
         if self._llm is None:
             from .. import get_capability
@@ -48,29 +49,44 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
         utterance = user_input.utterance.strip()
         if not utterance:
             return self._build_result(
-                primary=IntentType.IDLE,
+                primary=IntentType.IDLE_CHAT,
                 confidence=1.0,
                 alternatives=[],
                 entities=[],
                 utterance=utterance,
                 raw={}
             )
-
+        
+        from ..dialog_state_manager.interface import IDialogStateManagerCapability
+        from .. import get_capability
+        dialog_state_manager :IDialogStateManagerCapability= get_capability("dialog_state", expected_type=IDialogStateManagerCapability)
+        recent_status = dialog_state_manager.get_or_create_dialog_state(user_input.session_id)
+        # --- 核心修改：将对象转为自然语言描述 ---
+        context_desc = self._format_context_for_llm(recent_status)
         # === 阶段1：是否任务相关？===
         stage1_prompt = (
-            f"判断以下用户输入是否与任务管理相关（如创建、修改、查询、删除、暂停、恢复、重试、设置定时等）。\n"
-            f"如果是，回复 'TASK'；否则回复 'IDLE'。\n\n"
-            f"用户输入：{utterance}"
+            f"你是一个意图分类助手。请判断用户输入是否与任务管理相关。\n"
+            f"任务管理包括：创建任务、补充参数、修改信息、查询状态、取消/暂停/恢复任务。\n\n"
+            f"【当前上下文状态】\n{context_desc}\n\n"
+            f"【判断规则】\n"
+            f"1. 如果当前处于'填槽'或'澄清'状态，用户的简短回答（如'明天'、'张三'、'是的'）应被视为 TASK（用于补充信息）。\n"
+            f"2. 只有与当前任务完全无关的闲聊（如'你吃饭了吗'）才判为 IDLE。\n\n"
+            f"用户输入：{utterance}\n\n"
+            f"请严格按照以下 JSON 格式回复，不要包含任何其他内容：\n"
+            f"{{\"intent\": \"TASK\" 或 \"IDLE\", \"reason\": \"简要说明判断依据\"}}"
         )
         try:
-            stage1_result = self.llm.generate(stage1_prompt).strip()
+            stage1_response:dict = self.llm.generate(stage1_prompt, parse_json=True)
+            logger.info(f"Stage1 LLM Response: {str(stage1_response)}")
+            stage1_result = stage1_response.get("intent", "TASK")
+            
         except Exception as e:
             logger.warning("Stage1 LLM failed: %s", e)
             stage1_result = "TASK"
 
-        if stage1_result != "TASK":
+        if "TASK" not in stage1_result: # 宽松匹配
             return self._build_result(
-                primary=IntentType.IDLE,
+                primary=IntentType.IDLE_CHAT,
                 confidence=0.95,
                 alternatives=[],
                 entities=[],
@@ -84,6 +100,8 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             f"分析用户输入，返回最可能的意图及其置信度。\n\n"
             f"用户输入：{utterance}\n\n"
             f"意图必须从以下选项中选择：{allowed_str}\n"
+            f"之前的判断是：{stage1_result}\n"
+            f"最近任务状态：{context_desc}\n\n"
             f"请以 JSON 格式返回，包含：\n"
             f"- primary_intent: 字符串\n"
             f"- confidence: 浮点数（0~1）\n"
@@ -145,24 +163,24 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
     def _rule_based_intent(self, utterance: str) -> Tuple[IntentType, float]:
         lower_utterance = utterance.lower()
         rules = [
-            (["创建", "新建", "添加"], IntentType.CREATE, 0.9),
-            (["修改", "编辑", "更新"], IntentType.MODIFY, 0.8),
-            (["查询", "查看", "列表", "有哪些"], IntentType.QUERY, 0.9),
-            (["删除"], IntentType.DELETE, 0.8),
-            (["取消"], IntentType.CANCEL, 0.8),
+            (["创建", "新建", "添加"], IntentType.CREATE_TASK, 0.9),
+            (["修改", "编辑", "更新"], IntentType.MODIFY_TASK, 0.8),
+            (["查询", "查看", "列表", "有哪些"], IntentType.QUERY_TASK, 0.9),
+            (["删除"], IntentType.DELETE_TASK, 0.8),
+            (["取消"], IntentType.CANCEL_TASK, 0.8),
             (["恢复", "继续"], IntentType.RESUME_TASK, 0.7),  # 默认是继续任务
-            (["中断", "挂起"], IntentType.PAUSE, 0.7),
-            (["重试"], IntentType.RETRY, 0.8),
+            (["中断", "挂起"], IntentType.PAUSE_TASK, 0.7),
+            (["重试"], IntentType.RETRY_TASK, 0.8),
             (["定时", "每天", "每周", "每小时", "计划"], IntentType.SET_SCHEDULE, 0.8),
         ]
         for keywords, intent, conf in rules:
             if any(kw in lower_utterance for kw in keywords):
                 # 特殊处理“恢复中断”
                 if intent == IntentType.RESUME_TASK and "中断" in lower_utterance:
-                    return IntentType.RESUME, conf
+                    return IntentType.RESUME_TASK, conf
                     
                 return intent, conf
-        return IntentType.IDLE, 0.6
+        return IntentType.IDLE_CHAT, 0.6
 
     def _extract_entities(self, utterance: str) -> List[EntityDTO]:
         """增强版实体提取:优先 LLM，失败则规则（此处简化为仅 LLM）"""
@@ -228,3 +246,42 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
                 **raw
             }
         )
+    
+    def _format_context_for_llm(self, state: DialogStateDTO) -> str:
+        """将结构化状态转换为 LLM 可读的自然语言描述"""
+        if not state:
+            return "当前无活跃会话上下文。"
+        
+        parts = []
+        
+        # 1. 检查是否有正在草拟的任务
+        if state.active_task_draft:
+            draft = state.active_task_draft
+            status_desc = f"用户正在创建一个 '{draft.task_type}' 任务 (状态: {draft.status})。"
+            
+            # 提取已填和缺失信息
+            filled = [k for k, v in draft.slots.items() if v.confirmed]
+            missing = draft.missing_slots
+            
+            if missing:
+                status_desc += f" 正在等待用户提供: {', '.join(missing)}。"
+            elif filled:
+                status_desc += f" 已收集信息: {', '.join(filled)}。"
+                
+            parts.append(status_desc)
+            
+            # 关键：告诉 LLM 此时的预期
+            parts.append("【重要提示】此时用户的短语（如时间、地点、人名、确认/拒绝）极大概率是在【修改任务/填充参数】，而非闲聊。")
+
+        # 2. 检查是否有正在执行的任务
+        elif state.active_task_execution:
+            parts.append(f"当前有一个任务正在执行中 (TaskID: {state.active_task_execution})。")
+            
+        # 3. 检查澄清状态
+        if state.requires_clarification:
+            parts.append(f"系统上一轮发起了澄清提问：{state.clarification_message}")
+
+        if not parts:
+            return "当前无活跃任务，处于空闲状态。"
+            
+        return "\n".join(parts)

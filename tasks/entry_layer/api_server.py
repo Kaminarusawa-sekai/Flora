@@ -15,8 +15,9 @@ from thespian.actors import ActorSystem
 import uuid
 
 # 导入Actor和消息定义
-from tasks.agents.agent_actor import AgentActor
-from tasks.common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
+
+from common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
+from agents.agent_actor import AgentActor
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ app.add_middleware(
 )
 
 # 1. 启动Actor系统（单例）
-actor_system = ActorSystem('multiprocTCPBase')
+actor_system = ActorSystem('simpleSystemBase')
 
 # 2. 获取AgentActor的引用
 agent_actor_ref = actor_system.createActor(AgentActor)

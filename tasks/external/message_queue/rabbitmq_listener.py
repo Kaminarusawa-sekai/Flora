@@ -16,7 +16,7 @@ except ImportError as e:
 
 # 导入消息相关模块
 
-from ...common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
+from common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
 
 
 

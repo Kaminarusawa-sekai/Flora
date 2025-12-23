@@ -18,7 +18,7 @@ interface DagState {
   isDragging: boolean;
 }
 
-export const useDagStore = defineStore('dag', {
+export const useAppStore = defineStore('app', {
   state: (): DagState => ({
     nodes: [
       {

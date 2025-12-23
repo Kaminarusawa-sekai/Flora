@@ -4,24 +4,24 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from thespian.actors import Actor, ActorAddress, ActorExitRequest,ChildActorExited
 import uuid
-from ..common.messages import (
+from common.messages import (
     AgentTaskMessage, TaskCompletedMessage, ResumeTaskMessage,
      TaskGroupRequestMessage, 
 )
-from ..common.taskspec import TaskSpec
-from ..common.context.context_entry import ContextEntry
+from common.taskspec import TaskSpec
+from common.context.context_entry import ContextEntry
 # 导入新的能力管理模块
-from ..capabilities import init_capabilities, get_capability, get_capability_registry
+from capabilities import init_capabilities, get_capability, get_capability_registry
 
 # 导入能力接口
-from ..capabilities.llm_memory.interface import IMemoryCapability
+from capabilities.llm_memory.interface import IMemoryCapability
 
 
 # 导入新的能力接口
-from ..capabilities.task_planning.interface import ITaskPlanningCapability
+from capabilities.task_planning.interface import ITaskPlanningCapability
 
 # 导入事件总线和EventType
-from ..events.event_bus import event_bus
+from events.event_bus import event_bus
 from common.event import EventType
 
 

@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 import requests
-from ....external.clients import DifyClient
+from external.clients import DifyClient
 from .base_connector import BaseConnector
 
 import logging

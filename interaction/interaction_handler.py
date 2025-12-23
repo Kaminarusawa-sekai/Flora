@@ -1,23 +1,24 @@
 import logging
 import traceback
 from typing import Dict, Any, Optional
-from .common import (
+from common import (
     UserInputDTO,
     SystemResponseDTO,
     IntentRecognitionResultDTO,
     DialogStateDTO,
-    IntentType
+    IntentType,
+    DialogTurn
 )
-from .capabilities.capability_manager import capability_registry
-from .capabilities.user_input_manager.interface import IUserInputManagerCapability
-from .capabilities.intent_recognition_manager.interface import IIntentRecognitionManagerCapability
-from .capabilities.dialog_state_manager.interface import IDialogStateManagerCapability
-from .capabilities.task_draft_manager.interface import ITaskDraftManagerCapability
-from .capabilities.task_query_manager.interface import ITaskQueryManagerCapability
-from .capabilities.task_control_manager.interface import ITaskControlManagerCapability
-from .capabilities.schedule_manager.interface import IScheduleManagerCapability
-from .capabilities.task_execution_manager.interface import ITaskExecutionManagerCapability
-from .capabilities.system_response_manager.interface import ISystemResponseManagerCapability
+from capabilities.capability_manager import capability_registry
+from capabilities.user_input_manager.interface import IUserInputManagerCapability
+from capabilities.intent_recognition_manager.interface import IIntentRecognitionManagerCapability
+from capabilities.dialog_state_manager.interface import IDialogStateManagerCapability
+from capabilities.task_draft_manager.interface import ITaskDraftManagerCapability
+from capabilities.task_query_manager.interface import ITaskQueryManagerCapability
+from capabilities.task_control_manager.interface import ITaskControlManagerCapability
+from capabilities.schedule_manager.interface import IScheduleManagerCapability
+from capabilities.task_execution_manager.interface import ITaskExecutionManagerCapability
+from capabilities.system_response_manager.interface import ISystemResponseManagerCapability
 
 # 初始化logger
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class InteractionHandler:
         try:
             user_input_manager = self.registry.get_capability("user_input", IUserInputManagerCapability)
             session_state = user_input_manager.process_input(input)
+            input.utterance=session_state["enhanced_utterance"]
         except ValueError as e:
             # 用户输入能力未启用，直接跳过并返回兜底响应
             logger.error(f"User input capability is disabled: {e}")
@@ -55,7 +57,62 @@ class InteractionHandler:
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             return self.fallback_response(input.session_id, f"用户输入处理失败: {str(e)}")
         
-        # 2. 意图识别
+
+
+        # =========================================================================
+        # 🔥 【新增逻辑】 状态拦截器 (State Interceptor)
+        # 如果处于“待确认”状态，且用户意图是“确认/肯定”，则直接短路进执行
+        # =========================================================================
+        
+        # 定义需要拦截的确认意图 (需要你在 IntentType 里定义 CONFIRM/POSITIVE)
+        is_confirm_intent = intent_result.intent in [IntentType.CONFIRM, IntentType.AFFIRM] 
+        # 定义拒绝/取消意图
+        is_cancel_intent = intent_result.intent in [IntentType.CANCEL, IntentType.DENY, IntentType.REJECT]
+        
+        # 这一步将决定是否跳过第4步的路由
+        bypass_routing = False 
+        
+        # 默认结果容器
+        result_data: Dict[str, Any] = {}
+
+        if dialog_state.waiting_for_confirmation and dialog_state.active_task_draft:
+            if is_confirm_intent:
+                yield "thought", {"message": "检测到待确认状态及确认意图，直接进入执行流程"}
+                
+                # 1. 关掉等待开关
+                dialog_state.waiting_for_confirmation = False
+                
+                # 2. 修改草稿状态为 SUBMITTED (这一步很关键，触发后续第5步的执行)
+                dialog_state.active_task_draft.status = "SUBMITTED"
+                
+                # 3. 构造 result_data，模拟 TaskDraftManager 的返回
+                result_data = {
+                    "should_execute": True,
+                    "task_draft": dialog_state.active_task_draft,
+                    "response_text": "好的，正在为您执行..." # 这里的回复可能随后被执行结果覆盖
+                }
+                
+                # 4. 标记跳过路由
+                bypass_routing = True
+                
+            elif is_cancel_intent:
+                yield "thought", {"message": "用户取消了待确认的操作"}
+                
+                dialog_state.waiting_for_confirmation = False
+                # 这里可以选择清空 draft 或者保留但不提交
+                # dialog_state.active_task_draft = None 
+                
+                result_data = {"response_text": "好的，已取消该操作。"}
+                bypass_routing = True
+            
+            else:
+                # 处于等待确认状态，但用户说了别的（比如“天气怎么样”），
+                # 策略A：认为这是中断，继续往下走常规路由 (waiting_for_confirmation 保持 True 或 False 看业务需求)
+                # 策略B：提示用户必须回答是或否
+                pass
+
+
+        # 2. 意图识别（如果是确认状态直接看是不是确认意图，然后再走正式逻辑）
         intent_result: IntentRecognitionResultDTO
         try:
             intent_recognition_manager = self.registry.get_capability("intent_recognition", IIntentRecognitionManagerCapability)
@@ -65,7 +122,7 @@ class InteractionHandler:
             logger.error(f"Intent recognition capability is disabled: {e}")
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             intent_result = IntentRecognitionResultDTO(
-                primary_intent=IntentType.IDLE,
+                primary_intent=IntentType.IDLE_CHAT,
                 confidence=1.0,
                 entities=[],
                 raw_nlu_output={"original_utterance": input.utterance}
@@ -75,7 +132,7 @@ class InteractionHandler:
             logger.error(f"Failed to recognize intent: {e}")
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             intent_result = IntentRecognitionResultDTO(
-                primary_intent=IntentType.IDLE,
+                primary_intent=IntentType.IDLE_CHAT,
                 confidence=1.0,
                 entities=[],
                 raw_nlu_output={"original_utterance": input.utterance}
@@ -101,7 +158,7 @@ class InteractionHandler:
         
         try:
             match intent_result.intent:
-                case IntentType.CREATE | IntentType.MODIFY:
+                case IntentType.CREATE_TASK | IntentType.MODIFY_TASK:
                     try:
                         task_draft_manager = self.registry.get_capability("task_draft", ITaskDraftManagerCapability)
                         result_data = task_draft_manager.update_draft_from_intent(
@@ -117,7 +174,7 @@ class InteractionHandler:
                         logger.debug(f"Error traceback: {traceback.format_exc()}")
                         return self.fallback_response(input.session_id, f"任务创建功能执行失败: {str(e)}")
                 
-                case IntentType.QUERY:
+                case IntentType.QUERY_TASK:
                     try:
                         task_query_manager = self.registry.get_capability("task_query", ITaskQueryManagerCapability)
                         result_data = task_query_manager.process_query_intent(
@@ -133,7 +190,7 @@ class InteractionHandler:
                         logger.debug(f"Error traceback: {traceback.format_exc()}")
                         return self.fallback_response(input.session_id, f"任务查询功能执行失败: {str(e)}")
                 
-                case IntentType.DELETE | IntentType.CANCEL | IntentType.PAUSE | IntentType.RESUME_TASK | IntentType.RETRY:
+                case IntentType.DELETE_TASK | IntentType.CANCEL_TASK | IntentType.PAUSE_TASK | IntentType.RESUME_TASK | IntentType.RETRY_TASK:
                     try:
                         task_control_manager = self.registry.get_capability("task_control", ITaskControlManagerCapability)
                         task_control_response = task_control_manager.handle_task_control(
@@ -175,7 +232,7 @@ class InteractionHandler:
                         logger.debug(f"Error traceback: {traceback.format_exc()}")
                         return self.fallback_response(input.session_id, f"定时任务或任务创建功能执行失败: {str(e)}")
                 
-                case IntentType.IDLE:
+                case IntentType.IDLE_CHAT:
                     result_data = {"response_text": "好的，有需要随时告诉我！"}
                 
                 case _:
@@ -246,6 +303,7 @@ class InteractionHandler:
         try:
             user_input_manager = self.registry.get_capability("user_input", IUserInputManagerCapability)
             session_state = user_input_manager.process_input(input)
+            input.utterance=session_state["enhanced_utterance"]
             yield "thought", {"message": "用户输入处理完成"}
         except ValueError as e:
             # 用户输入能力未启用，直接跳过并返回兜底响应
@@ -259,6 +317,62 @@ class InteractionHandler:
             yield "error", {"message": f"用户输入处理失败: {str(e)}"}
             return
         
+
+        # =========================================================================
+        # 🔥 【新增逻辑】 状态拦截器 (State Interceptor)
+        # 如果处于“待确认”状态，且用户意图是“确认/肯定”，则直接短路进执行
+        # =========================================================================
+        
+        # 定义需要拦截的确认意图 (需要你在 IntentType 里定义 CONFIRM/POSITIVE)
+        is_confirm_intent = intent_result.intent in [IntentType.CONFIRM, IntentType.AFFIRM] 
+        # 定义拒绝/取消意图
+        is_cancel_intent = intent_result.intent in [IntentType.CANCEL, IntentType.DENY, IntentType.REJECT]
+        
+        # 这一步将决定是否跳过第4步的路由
+        bypass_routing = False 
+        
+        # 默认结果容器
+        result_data: Dict[str, Any] = {}
+
+        if dialog_state.waiting_for_confirmation and dialog_state.active_task_draft:
+            if is_confirm_intent:
+                yield "thought", {"message": "检测到待确认状态及确认意图，直接进入执行流程"}
+                
+                # 1. 关掉等待开关
+                dialog_state.waiting_for_confirmation = False
+                
+                # 2. 修改草稿状态为 SUBMITTED (这一步很关键，触发后续第5步的执行)
+                dialog_state.active_task_draft.status = "SUBMITTED"
+                
+                # 3. 构造 result_data，模拟 TaskDraftManager 的返回
+                result_data = {
+                    "should_execute": True,
+                    "task_draft": dialog_state.active_task_draft,
+                    "response_text": "好的，正在为您执行..." # 这里的回复可能随后被执行结果覆盖
+                }
+                
+                # 4. 标记跳过路由
+                bypass_routing = True
+                
+            elif is_cancel_intent:
+                yield "thought", {"message": "用户取消了待确认的操作"}
+                
+                dialog_state.waiting_for_confirmation = False
+                # 这里可以选择清空 draft 或者保留但不提交
+                # dialog_state.active_task_draft = None 
+                
+                result_data = {"response_text": "好的，已取消该操作。"}
+                bypass_routing = True
+            
+            else:
+                # 处于等待确认状态，但用户说了别的（比如“天气怎么样”），
+                # 策略A：认为这是中断，继续往下走常规路由 (waiting_for_confirmation 保持 True 或 False 看业务需求)
+                # 策略B：提示用户必须回答是或否
+                pass
+
+
+        # 2. 意图识别（如果是确认状态直接看是不是确认意图，然后再走正式逻辑）
+
         # 2. 意图识别
         intent_result: IntentRecognitionResultDTO
         try:
@@ -270,7 +384,7 @@ class InteractionHandler:
             logger.error(f"Intent recognition capability is disabled: {e}")
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             intent_result = IntentRecognitionResultDTO(
-                primary_intent=IntentType.IDLE,
+                primary_intent=IntentType.IDLE_CHAT,
                 confidence=1.0,
                 entities=[],
                 raw_nlu_output={"original_utterance": input.utterance}
@@ -281,7 +395,7 @@ class InteractionHandler:
             logger.error(f"Failed to recognize intent: {e}")
             logger.debug(f"Error traceback: {traceback.format_exc()}")
             intent_result = IntentRecognitionResultDTO(
-                primary_intent=IntentType.IDLE,
+                primary_intent=IntentType.IDLE_CHAT,
                 confidence=1.0,
                 entities=[],
                 raw_nlu_output={"original_utterance": input.utterance}
@@ -293,6 +407,7 @@ class InteractionHandler:
             dialog_state_manager = self.registry.get_capability("dialog_state", IDialogStateManagerCapability)
             dialog_state = dialog_state_manager.get_or_create_dialog_state(input.session_id)
             dialog_state.current_intent = intent_result.intent
+            logger.info(f"更新全局对话状态: {dialog_state}")
             yield "thought", {"message": "对话状态更新完成"}
         except ValueError as e:
             # 对话状态管理能力未启用，直接返回兜底响应
@@ -311,12 +426,33 @@ class InteractionHandler:
         
         try:
             match intent_result.intent:
-                case IntentType.CREATE | IntentType.MODIFY:
+                case IntentType.CREATE_TASK | IntentType.MODIFY_TASK:
                     try:
                         task_draft_manager = self.registry.get_capability("task_draft", ITaskDraftManagerCapability)
+                        
+                        # 如果是CREATE意图且没有活动草稿，先创建新草稿
+                        if intent_result.intent == IntentType.CREATE_TASK and not dialog_state.active_task_draft:
+                            dialog_state.active_task_draft = task_draft_manager.create_draft(
+                                task_type="default",  # 可以根据intent_result获取具体任务类型
+                                session_id=dialog_state.session_id,
+                                user_id="default_user"  # 可以从上下文中获取实际用户ID
+                            )
+                        
                         result_data = task_draft_manager.update_draft_from_intent(
                             dialog_state.active_task_draft, intent_result
                         )
+
+                        # --- 新增防御逻辑 ---
+                        if not result_data.get("response_text"):
+                            # 如果管理器没有返回回复文本（可能是因为配置缺失），给一个默认回复
+                            result_data["response_text"] = (
+                                f"已识别任务类型为 {intent_result.entities[0].value if intent_result.entities else '未知'}，"
+                                "但系统缺少该任务的配置模板，无法继续引导。"
+                            )
+                            logger.warning("Empty response text from task_draft_manager. Check task configuration.")
+                        # -------------------
+
+
                         yield "thought", {"message": "任务草稿更新完成"}
                     except ValueError as e:
                         # 任务创建能力未启用，跳过并返回兜底响应
@@ -330,7 +466,7 @@ class InteractionHandler:
                         yield "error", {"message": f"任务创建功能执行失败: {str(e)}"}
                         return
                 
-                case IntentType.QUERY:
+                case IntentType.QUERY_TASK:
                     try:
                         task_query_manager = self.registry.get_capability("task_query", ITaskQueryManagerCapability)
                         result_data = task_query_manager.process_query_intent(
@@ -349,7 +485,7 @@ class InteractionHandler:
                         yield "error", {"message": f"任务查询功能执行失败: {str(e)}"}
                         return
                 
-                case IntentType.DELETE | IntentType.CANCEL | IntentType.PAUSE | IntentType.RESUME_TASK | IntentType.RETRY:
+                case IntentType.DELETE_TASK | IntentType.CANCEL_TASK | IntentType.PAUSE_TASK | IntentType.RESUME_TASK | IntentType.RETRY_TASK:
                     try:
                         task_control_manager = self.registry.get_capability("task_control", ITaskControlManagerCapability)
                         task_control_response = task_control_manager.handle_task_control(
@@ -397,9 +533,53 @@ class InteractionHandler:
                         yield "error", {"message": f"定时任务或任务创建功能执行失败: {str(e)}"}
                         return
                 
-                case IntentType.IDLE:
-                    result_data = {"response_text": "好的，有需要随时告诉我！"}
-                    yield "thought", {"message": "闲聊意图处理完成"}
+                case IntentType.IDLE_CHAT:
+                    from capabilities.llm.interface import ILLMCapability
+                    llm_capability = self.registry.get_capability("llm", ILLMCapability)
+                    
+                    try:
+                            from capabilities.context_manager.interface import IContextManagerCapability
+                            context_manager = self.registry.get_capability("context_manager", IContextManagerCapability)
+                            # 获取最近 5-10 轮对话 (根据 Token 限制调整)
+                            # 注意：get_recent_turns 返回的是按时间倒序的(最近的在前面)，还是正序，取决于你的实现。
+                            # 你提供的 CommonContextManager 代码中： return all_turns[-limit:][::-1] (倒序，最近的在index 0)
+                            recent_turns = context_manager.get_recent_turns(limit=5)
+                            
+                            # 因为你的实现是倒序返回 ([最近, 次近...])，为了给 LLM 阅读，我们需要反转回正序
+                            recent_turns.reverse() 
+                            
+                            # 3. 格式化历史记录
+                            history_str = ""
+                            for turn in recent_turns:
+                                # 假设 turn 是字典或对象，根据 DialogRepository 的实现调整
+                                # 如果是对象: role = turn.role
+                                # 如果是字典: role = turn['role']
+                                role = getattr(turn, 'role', turn.role)
+                                content = getattr(turn, 'utterance', turn.utterance)
+                                history_str += f"{role}: {content}\n"
+                                
+                    except Exception as e:
+                        logger.warning(f"Failed to load context history: {e}")
+                        history_str = "" # 降级处理：获取失败就不带历史
+
+                        # 4. 构建带记忆的 Prompt
+                        prompt = f"""
+                            你是一个由 Python 驱动的智能助手。请根据下方的对话历史陪用户聊天。
+
+                            【对话历史】
+                            {history_str}
+
+                            【用户当前输入】
+                            {input.utterance}
+
+                            请回复用户：
+                            """
+
+                        # 5. 调用 LLM
+                        idle_content = llm_capability.generate(prompt)
+                        context_manager.add_turn(DialogTurn(role="assistant", utterance=idle_content))
+                        result_data = {"response_text": idle_content}
+                        yield "thought", {"message": "闲聊意图处理完成(已携带历史记忆)"}
                 
                 case _:
                     result_data = {"response_text": "我还不太明白，请换种说法？"}
@@ -411,6 +591,7 @@ class InteractionHandler:
             return
         
         logger.info(f"处理结果: {result_data}")
+        context_manager.add_turn(DialogTurn(role="system", utterance=result_data.get("response_text", "")))
         # 5. 执行任务（如果是新建/修改且已确认）
         if (result_data.get("should_execute", False) and
             hasattr(result_data.get("task_draft", {}), "status") and

@@ -1,12 +1,12 @@
 from typing import Dict, Any, Optional, List
 from .interface import ITaskExecutionManagerCapability
-from ...common import (
+from common import (
     TaskExecutionContextDTO,
     ExecutionStatus,
     ExecutionLogEntry
 )
 from ..llm.interface import ILLMCapability
-from interaction.external.client.task_client import TaskClient
+from external.client.task_client import TaskClient
 
 class CommonTaskExecution(ITaskExecutionManagerCapability):
     """任务执行管理器 - 负责任务的生命周期协调、外部执行系统交互和状态同步"""

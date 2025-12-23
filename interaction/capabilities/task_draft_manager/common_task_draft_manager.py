@@ -1,14 +1,14 @@
 from typing import Dict, Any, Optional, List
 import json
 from .interface import ITaskDraftManagerCapability
-from ...common import (
+from common import (
     TaskDraftDTO,
     SlotValueDTO,
     ScheduleDTO,
     SlotSource,
     IntentRecognitionResultDTO
 )
-from ...external.database.task_draft_repo import TaskDraftRepository
+from external.database.task_draft_repo import TaskDraftRepository
 from ..llm.interface import ILLMCapability
 
 class CommonTaskDraft(ITaskDraftManagerCapability):
@@ -24,7 +24,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         self.draft_storage = TaskDraftRepository()
         
     @property
-    def llm(self):
+    def llm(self) -> ILLMCapability:
         """懒加载LLM能力"""
         if self._llm is None:
             from .. import get_capability
@@ -378,18 +378,77 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         """
         return self.llm.generate(prompt, max_tokens=100).strip()
     
-    def update_draft_from_intent(self, draft: TaskDraftDTO, intent_result: IntentRecognitionResultDTO) -> TaskDraftDTO:
-        """根据意图识别结果更新任务草稿
-        
-        Args:
-            draft: 任务草稿DTO
-            intent_result: 意图识别结果DTO
-            
-        Returns:
-            更新后的任务草稿
+    def update_draft_from_intent(self, draft: TaskDraftDTO, intent_result: IntentRecognitionResultDTO) -> Dict[str, Any]:
         """
-        # 将识别到的实体填充到槽位
-        for entity in intent_result.entities:
-            draft = self.fill_entity_to_slot(
-                draft, entity.name, entity.resolved_value or entity.value, SlotSource.INFERENCE)
-        return draft
+        [修改后] 根据意图更新草稿，并动态生成下一步回复
+        适应场景：无固定Schema，依靠LLM动态判断缺什么参数
+        """
+        
+        # 1. 把识别到的实体（Entities）全部填入槽位（Slots）
+        # 既然槽位是虚的，我们就直接把 entity.name 当作 slot_name 存进去
+        if intent_result.entities:
+            for entity in intent_result.entities:
+                # SlotSource.INFERENCE 表示这是从推理中获取的
+                self.fill_entity_to_slot(
+                    draft, 
+                    entity.name, 
+                    entity.resolved_value or entity.value, 
+                    SlotSource.INFERENCE
+                )
+        
+        # 2. 持久化保存一下当前的草稿状态
+        self.update_draft(draft)
+        
+        # 3. [关键] 调用 LLM 动态生成回复
+        # 不再去查 required_slots 列表，而是直接问 LLM 下一步该怎么办
+        response_text, should_execute = self._generate_dynamic_response(draft, intent_result.raw_nlu_output.get("original_utterance", ""))
+
+        # 4. 返回 InteractionHandler 能够理解的字典格式
+        return {
+            "task_draft": draft,
+            "response_text": response_text,       # 必须有这个，否则用户收不到消息
+            "requires_input": not should_execute, # 如果还没决定执行，就继续等待用户输入
+            "should_execute": should_execute      # 如果 LLM 觉得信息够了，可以设为 True
+        }
+
+    def _generate_dynamic_response(self, draft: TaskDraftDTO, last_user_utterance: str) -> tuple[str, bool]:
+        """
+        [新增] 动态决策助手
+        由 LLM 根据当前收集到的槽位，决定是追问参数，还是进行确认
+        Returns: (回复文本, 是否建议立即执行)
+        """
+        # 提取当前已有的所有参数（kv对）
+        current_slots_str = json.dumps(
+            {k: v.resolved for k, v in draft.slots.items()}, 
+            ensure_ascii=False
+        )
+        
+        task_type = draft.task_type
+        
+        # 构造 Prompt：让 LLM 充当业务专家
+        prompt = f"""
+你是一个智能任务助理。用户正在试图创建一个「{task_type}」任务。
+
+【当前已知信息】
+{current_slots_str}
+
+【用户刚才说】
+"{last_user_utterance}"
+
+【你的任务】
+请判断当前收集的信息是否足以创建一个最基础的任务草稿。
+1. 如果信息太少（比如完全没有关键参数），请用自然的中文向用户追问下一个最需要的参数（例如：时间、对象、预算等，一次只问一个）。
+2. 如果信息看起来包含了基本要素，或者用户明确表示“就这样”，请输出一段任务确认摘要，并询问用户是否确认执行。
+
+请直接输出回复给用户的内容，不要输出任何思考过程。
+"""
+        # 调用 LLM 生成回复
+        response = self.llm.generate(prompt, max_tokens=150, temperature=0.5).strip()
+        
+        # 简单的启发式规则：如果 LLM 的回复里包含“确认”或“执行”等字眼，可能意味着可以推进状态
+        # (这里是一个简单的判断，实际场景中你可以让 LLM 返回 JSON 来更精准控制 should_execute)
+        should_execute = False 
+        
+        # 如果你想做得更智能，可以让 LLM 返回特定标记，目前先默认由用户在下一轮显式确认
+        
+        return response, should_execute

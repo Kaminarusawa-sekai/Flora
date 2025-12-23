@@ -1,5 +1,5 @@
 from typing import Dict, Any, List
-from ....external.clients import HttpClient
+from external.clients import HttpClient
 from .base_connector import BaseConnector
 
 

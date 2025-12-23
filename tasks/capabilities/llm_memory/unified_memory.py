@@ -29,7 +29,7 @@ _SHARED_RESOURCE_REPO = None
 def _init_shared_repos():
     global _SHARED_VAULT_REPO, _SHARED_PROCEDURAL_REPO, _SHARED_RESOURCE_REPO
     if _SHARED_VAULT_REPO is None:
-        from ...external.memory_store.memory_repos import (
+        from external.memory_store.memory_repos import (
             build_procedural_repo,
             build_resource_repo,
             build_vault_repo

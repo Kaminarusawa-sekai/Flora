@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional, List
 import logging
 from .node_service import NodeService
 from .relationship_service import RelationshipService
-from ...external.repositories.agent_structure_repo import AgentStructureRepository
+from external.repositories.agent_structure_repo import AgentStructureRepository
 
 
 

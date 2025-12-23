@@ -2,7 +2,8 @@
 from typing import Dict, Any, List, Optional, Union
 import json
 from .interface import ILLMCapability
-
+import logging
+logger = logging.getLogger(__name__)
 
 class QwenLLM(ILLMCapability):
     """
@@ -99,6 +100,7 @@ class QwenLLM(ILLMCapability):
                     continue
 
                 text = response.output.text.strip()
+                logger.info(f"[QwenLLM Text Response] {text}")
                 if not parse_json:
                     return text
 

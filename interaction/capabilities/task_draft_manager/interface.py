@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional, List
 from abc import abstractmethod
 from ..base import BaseManager, TaskStorage
-from ...common import (
+from common import (
     TaskDraftDTO,
     SlotValueDTO,
     ScheduleDTO,

@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from interaction.common.dialog import DialogTurn
-from interaction.capabilities.capability_base import CapabilityBase
+from common.dialog import DialogTurn
+from ..base import BaseManager
 
-class IContextManagerCapability(CapabilityBase):
+class IContextManagerCapability(BaseManager):
     """
     上下文管理服务接口，用于管理对话历史和上下文
     """

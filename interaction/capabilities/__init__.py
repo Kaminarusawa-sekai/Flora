@@ -36,7 +36,7 @@ from .system_response_manager.common_system_response_manager import CommonSystem
 
 # 创建全局能力管理器实例
 _global_manager = None
-CONFIG_PATH = "./interaction/interaction_config.json"
+CONFIG_PATH = "interaction_config.json"
 
 # 导出常用接口
 __all__ = [

@@ -1,10 +1,10 @@
 import logging
 from typing import Dict, Any, Optional
 from thespian.actors import ActorAddress, Actor, ActorExitRequest,ChildActorExited
-from ..common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage, AgentTaskMessage
-from ..capabilities import get_capability
-from ..capabilities.llm_memory.interface import IMemoryCapability
-from ..events.event_bus import event_bus
+from common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage, AgentTaskMessage
+from capabilities import get_capability
+from capabilities.llm_memory.interface import IMemoryCapability
+from events.event_bus import event_bus
 from common.event.event_type import EventType
 
 logger = logging.getLogger(__name__)

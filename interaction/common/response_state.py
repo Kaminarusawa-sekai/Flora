@@ -52,5 +52,15 @@ class DialogStateDTO(BaseModel):
     clarification_message: Optional[str] = None
     missing_required_slots: List[str] = Field(default_factory=list)
     
+
+    # ✅ 【新增】待确认状态锁
+    # 当这个为 True 时，系统的第一优先级是判断用户是否确认
+    waiting_for_confirmation: bool = False 
+    
+    # (可选) 存一下到底在确认什么，防止上下文丢失
+    confirmation_payload: Optional[Dict[str, Any]] = None
+
     # --- 新增字段：会话生命周期 ---
     last_updated: datetime =  Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    

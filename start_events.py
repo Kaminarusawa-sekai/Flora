@@ -14,7 +14,7 @@ print(f"PYTHONPATH 已设为: {project_root}")
 # 启动 events/main.py
 subprocess.run([
     sys.executable, "-m", "uvicorn",
-    "interaction.main:app",   # 模块路径：interaction/main.py 中的 app
+    "events.main:app",   # 模块路径：events/main.py 中的 app
     "--host", "0.0.0.0",
     "--port", "8000",
     "--reload"

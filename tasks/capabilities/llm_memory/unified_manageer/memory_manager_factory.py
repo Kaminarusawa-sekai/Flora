@@ -41,7 +41,7 @@ class MemoryManagerFactory:
             """初始化共享仓库"""
             global _SHARED_VAULT_REPO, _SHARED_PROCEDURAL_REPO, _SHARED_RESOURCE_REPO
             if _SHARED_VAULT_REPO is None:
-                from ....external.memory_store.memory_repos import (
+                from external.memory_store.memory_repos import (
                     build_procedural_repo,
                     build_resource_repo,
                     build_vault_repo

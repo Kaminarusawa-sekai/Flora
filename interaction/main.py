@@ -6,11 +6,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# # 添加项目根目录到Python路径
-# sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
 # 从external目录导入API路由
-from interaction.entry_layer import app as api_app
+from entry_layer import app as api_app
 
 # 创建主应用
 app = FastAPI(
@@ -37,4 +34,4 @@ app.mount("/v1", api_app)
 
 if __name__ == "__main__":
     """启动FastAPI服务"""
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

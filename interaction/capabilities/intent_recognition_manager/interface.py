@@ -1,7 +1,7 @@
 from typing import List
 from abc import abstractmethod
 from ..base import BaseManager
-from ...common import (
+from common import (
     IntentRecognitionResultDTO,
     UserInputDTO,
     EntityDTO

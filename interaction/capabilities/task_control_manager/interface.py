@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional
 from abc import abstractmethod
 from ..base import BaseManager, TaskStorage
-from ...common.task_execution import TaskExecutionContextDTO, TaskControlResponseDTO
+from common.task_execution import TaskExecutionContextDTO, TaskControlResponseDTO
 
 class ITaskControlManagerCapability(BaseManager):
     """任务控制管理器接口"""

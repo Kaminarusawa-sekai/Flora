@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any
 from thespian.actors import ActorAddress
 
-from tasks.common.context.context_entry import ContextEntry
+from common.context.context_entry import ContextEntry
 class BaseMessage(BaseModel):
     message_type: str
     source: str = Field(default="")
