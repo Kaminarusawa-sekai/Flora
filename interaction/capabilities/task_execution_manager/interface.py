@@ -56,23 +56,8 @@ class ITaskExecutionManagerCapability(BaseManager):
         """
         pass
     
-    @abstractmethod
-    def retry_task(self, task_id: str):
-        """重试任务执行
-        
-        Args:
-            task_id: 任务ID
-        """
-        pass
-    
-    @abstractmethod
-    def terminate_task(self, task_id: str):
-        """强制终止任务执行
-        
-        Args:
-            task_id: 任务ID
-        """
-        pass
+
+
     
     @abstractmethod
     def handle_task_interruption(self, task_id: str, field_name: str, message: str):
@@ -105,15 +90,7 @@ class ITaskExecutionManagerCapability(BaseManager):
         """
         pass
     
-    @abstractmethod
-    def fail_task(self, task_id: str, error: Dict[str, Any]):
-        """标记任务失败
-        
-        Args:
-            task_id: 任务ID
-            error: 错误信息
-        """
-        pass
+
     
     @abstractmethod
     def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:

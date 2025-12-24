@@ -1,7 +1,7 @@
 from .base import MessageBroker
 from .redis_broker import RedisMessageBroker
 from .rabbitmq_delayed import RabbitMQDelayedMessageBroker
-from ...config.settings import settings
+from config.settings import settings
 
 
 # 根据配置创建消息队列实例

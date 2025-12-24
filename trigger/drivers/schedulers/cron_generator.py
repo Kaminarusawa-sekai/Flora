@@ -3,11 +3,11 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import asyncio
 import logging
-from ...services.lifecycle_service import LifecycleService
-from ...config.settings import settings
+from services.lifecycle_service import LifecycleService
+from config.settings import settings
 from sqlalchemy.ext.asyncio import AsyncSession
-from ...external.db.impl import create_task_definition_repo
-from ...external.db.session import dialect
+from external.db.impl import create_task_definition_repo
+from external.db.session import dialect
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class CronGenerator:
         if len(parts) != 5:
             return False
         try:
-            croniter.croniter(expr)
+            croniter(expr)
             return True
         except ValueError:
             return False
@@ -33,11 +33,25 @@ class CronGenerator:
     @staticmethod
     def get_next_run_time(expr: str, base_time: Optional[datetime] = None) -> datetime:
         """
-        获取 CRON 表达式的下一次执行时间
+        获取 CRON 表达式的下一次执行时间（始终返回 UTC aware datetime）
         """
-        if not base_time:
+        if base_time is None:
             base_time = datetime.now(timezone.utc)
-        return croniter.croniter(expr, base_time).get_next(datetime)
+        else:
+            # 如果 base_time 是 naive，视为 UTC
+            if base_time.tzinfo is None:
+                base_time = base_time.replace(tzinfo=timezone.utc)
+            else:
+                # 转为 UTC
+                base_time = base_time.astimezone(timezone.utc)
+
+        next_run = croniter(expr, base_time).get_next(datetime)
+        
+        # croniter 会保持 base_time 的时区属性，但我们再保险一层
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        
+        return next_run
 
     @staticmethod
     def get_next_n_run_times(expr: str, n: int, base_time: Optional[datetime] = None) -> List[datetime]:
@@ -46,7 +60,7 @@ class CronGenerator:
         """
         if not base_time:
             base_time = datetime.now(timezone.utc)
-        iter = croniter.croniter(expr, base_time)
+        iter = croniter(expr, base_time)
         return [iter.get_next(datetime) for _ in range(n)]
 
     @staticmethod
@@ -120,7 +134,7 @@ async def cron_scheduler(lifecycle_svc: LifecycleService, async_session_factory)
                         # 2. 计算下一次应触发时间（基于last_triggered_at或默认值）
                         # 这里需要从数据库直接获取last_triggered_at，目前full_defn是领域模型，不包含该字段
                         # 所以我们直接从数据库查询
-                        from ...external.db.models import TaskDefinitionDB
+                        from external.db.models import TaskDefinitionDB
                         from sqlalchemy import select
                         
                         stmt = select(TaskDefinitionDB.last_triggered_at).where(TaskDefinitionDB.id == defn.id)

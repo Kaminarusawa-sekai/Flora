@@ -12,6 +12,8 @@ class DialogRepository:
         conn = self.pool.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # 先创建表（如果不存在）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS dialog_turns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,6 +23,19 @@ class DialogRepository:
                     enhanced_utterance TEXT
                 )
             ''')
+            
+            # 检查并添加 session_id 列（如果不存在）
+            cursor.execute("PRAGMA table_info(dialog_turns)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            if 'session_id' not in columns:
+                cursor.execute('ALTER TABLE dialog_turns ADD COLUMN session_id TEXT NOT NULL DEFAULT "unknown"')
+            if 'user_id' not in columns:
+                cursor.execute('ALTER TABLE dialog_turns ADD COLUMN user_id TEXT NOT NULL DEFAULT "unknown"')
+            
+            # 创建索引
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_session_timestamp ON dialog_turns(session_id, timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_timestamp ON dialog_turns(user_id, timestamp)')
             conn.commit()
         finally:
             self.pool.return_connection(conn)
@@ -30,9 +45,9 @@ class DialogRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO dialog_turns (role, utterance, timestamp, enhanced_utterance)
-                VALUES (?, ?, ?, ?)
-            ''', (turn.role, turn.utterance, turn.timestamp, turn.enhanced_utterance))
+                INSERT INTO dialog_turns (session_id, user_id, role, utterance, timestamp, enhanced_utterance)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (turn.session_id, turn.user_id, turn.role, turn.utterance, turn.timestamp, turn.enhanced_utterance))
             conn.commit()
             return cursor.lastrowid
         finally:
@@ -43,13 +58,15 @@ class DialogRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role, utterance, timestamp, enhanced_utterance
+                SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
                 FROM dialog_turns
                 WHERE id = ?
             ''', (turn_id,))
             row = cursor.fetchone()
             if row:
                 return DialogTurn(
+                    session_id=row['session_id'],
+                    user_id=row['user_id'],
                     role=row['role'],
                     utterance=row['utterance'],
                     timestamp=row['timestamp'],
@@ -64,13 +81,15 @@ class DialogRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT role, utterance, timestamp, enhanced_utterance
+                SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
                 FROM dialog_turns
                 ORDER BY timestamp
             ''')
             rows = cursor.fetchall()
             return [
                 DialogTurn(
+                    session_id=row['session_id'],
+                    user_id=row['user_id'],
                     role=row['role'],
                     utterance=row['utterance'],
                     timestamp=row['timestamp'],
@@ -164,7 +183,7 @@ class DialogRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, role, utterance, timestamp, enhanced_utterance
+                SELECT id, session_id, user_id, role, utterance, timestamp, enhanced_utterance
                 FROM dialog_turns
                 ORDER BY timestamp ASC
                 LIMIT ?
@@ -192,6 +211,105 @@ class DialogRepository:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(turn_ids))
             cursor.execute(f'DELETE FROM dialog_turns WHERE id IN ({placeholders})', turn_ids)
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            self.pool.return_connection(conn)
+    
+    def get_turns_by_session(self, session_id: str, limit: int = 20, offset: int = 0) -> List[DialogTurn]:
+        """
+        根据会话ID获取对话轮次
+        
+        Args:
+            session_id: 会话ID
+            limit: 返回的最大轮次数
+            offset: 偏移量
+            
+        Returns:
+            对话轮次列表
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                FROM dialog_turns
+                WHERE session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ? OFFSET ?
+            ''', (session_id, limit, offset))
+            rows = cursor.fetchall()
+            return [
+                DialogTurn(
+                    session_id=row['session_id'],
+                    user_id=row['user_id'],
+                    role=row['role'],
+                    utterance=row['utterance'],
+                    timestamp=row['timestamp'],
+                    enhanced_utterance=row['enhanced_utterance']
+                )
+                for row in rows
+            ]
+        finally:
+            self.pool.return_connection(conn)
+    
+    def get_turns_by_user(self, user_id: str, limit: int = 20, offset: int = 0) -> List[DialogTurn]:
+        """
+        根据用户ID获取对话轮次
+        
+        Args:
+            user_id: 用户ID
+            limit: 返回的最大轮次数
+            offset: 偏移量
+            
+        Returns:
+            对话轮次列表
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                FROM dialog_turns
+                WHERE user_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ? OFFSET ?
+            ''', (user_id, limit, offset))
+            rows = cursor.fetchall()
+            return [
+                DialogTurn(
+                    session_id=row['session_id'],
+                    user_id=row['user_id'],
+                    role=row['role'],
+                    utterance=row['utterance'],
+                    timestamp=row['timestamp'],
+                    enhanced_utterance=row['enhanced_utterance']
+                )
+                for row in rows
+            ]
+        finally:
+            self.pool.return_connection(conn)
+    
+    def update_turns_user_id(self, session_id: str, old_user_id: str, new_user_id: str) -> bool:
+        """
+        更新会话中所有轮次的用户ID（用于匿名转正式）
+        
+        Args:
+            session_id: 会话ID
+            old_user_id: 旧用户ID
+            new_user_id: 新用户ID
+            
+        Returns:
+            更新是否成功
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE dialog_turns
+                SET user_id = ?
+                WHERE session_id = ? AND user_id = ?
+            ''', (new_user_id, session_id, old_user_id))
             conn.commit()
             return cursor.rowcount > 0
         finally:

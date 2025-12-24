@@ -14,12 +14,12 @@ class CommonTaskControl(ITaskControlManagerCapability):
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化任务控制管理器"""
-        import logging
+        self.logger.info("初始化任务控制管理器")
         self.config = config
         self._llm: Optional[ILLMCapability] = None
-        self.logger = logging.getLogger(__name__)
         # 初始化外部任务客户端
         self.external_task_client = TaskClient()
+        self.logger.info("任务控制管理器初始化完成")
     @property
     def llm(self) -> ILLMCapability:
         """懒加载LLM能力"""

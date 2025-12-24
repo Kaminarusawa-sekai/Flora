@@ -1,14 +1,11 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List
-from ...common.enums import TaskInstanceStatus
 from sqlalchemy.ext.asyncio import AsyncSession
-from ...config.settings import settings
-from ...external.db.impl import create_task_instance_repo
-from ...external.db.session import dialect
-from sqlalchemy import select
-from ...external.db.models import TaskInstanceDB
-from sqlalchemy import and_
+from config.settings import settings
+from external.db.impl import create_task_instance_repo
+from external.db.session import dialect
+from sqlalchemy import select, and_
+from external.db.models import TaskInstanceDB
 
 
 async def health_checker(async_session_factory):
@@ -25,15 +22,23 @@ async def health_checker(async_session_factory):
             
             # 1. 检查并处理长时间运行的任务
             timeout_sec = settings.task_timeout_sec
+            running_threshold = now - timedelta(seconds=timeout_sec)
             
             # 获取所有运行中且超过超时时间的任务
-            running_tasks = await inst_repo.get_running_instances(timeout_sec)
+            stmt = select(TaskInstanceDB).where(
+                and_(
+                    TaskInstanceDB.status.in_(["RUNNING", "DISPATCHED"]),
+                    TaskInstanceDB.updated_at < running_threshold
+                )
+            ).limit(100)
+            result = await db_session.execute(stmt)
+            running_tasks = result.scalars().all()
             
             for task in running_tasks:
                 # 将超时任务标记为失败
                 await inst_repo.update_status(
-                    task.id,
-                    "FAILED",
+                    instance_id=task.id,
+                    status="FAILED",
                     error_msg=f"Task timed out after {timeout_sec} seconds"
                 )
             
@@ -41,7 +46,6 @@ async def health_checker(async_session_factory):
             pending_timeout_sec = settings.pending_timeout_sec
             pending_threshold = now - timedelta(seconds=pending_timeout_sec)
             
-            # 使用SQLAlchemy直接查询
             stmt = select(TaskInstanceDB).where(
                 and_(
                     TaskInstanceDB.status == "PENDING",
@@ -54,6 +58,23 @@ async def health_checker(async_session_factory):
             for task in pending_tasks:
                 # 告警：长时间处于 PENDING 状态的任务
                 print(f"ALERT: Task {task.id} has been PENDING for more than {pending_timeout_sec} seconds")
+            
+            # 3. 检查并处理长时间处于 PAUSED 状态的任务
+            paused_timeout_sec = settings.paused_timeout_sec if hasattr(settings, 'paused_timeout_sec') else 3600
+            paused_threshold = now - timedelta(seconds=paused_timeout_sec)
+            
+            stmt = select(TaskInstanceDB).where(
+                and_(
+                    TaskInstanceDB.status == "PAUSED",
+                    TaskInstanceDB.updated_at < paused_threshold
+                )
+            ).limit(100)
+            result = await db_session.execute(stmt)
+            paused_tasks = result.scalars().all()
+            
+            for task in paused_tasks:
+                # 告警：长时间处于 PAUSED 状态的任务
+                print(f"ALERT: Task {task.id} has been PAUSED for more than {paused_timeout_sec} seconds")
         
         # 每隔指定秒数执行一次健康检查
         await asyncio.sleep(settings.health_check_interval)

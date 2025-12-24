@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # 导入本地模块
-from .external.messaging import message_broker
-from .drivers.schedulers.dispatcher import TaskDispatcher
-from .services.lifecycle_service import LifecycleService
-from .drivers.schedulers.cron_generator import cron_scheduler
-from .drivers.schedulers.health_checker import health_checker
-from .external.db.session import async_session_factory, create_tables
-from .entry.api.routes import router, set_lifecycle_service
-from .config.settings import settings
+from external.messaging import message_broker
+from services.lifecycle_service import LifecycleService
+from drivers import health_checker, cron_scheduler
+from external.db.session import async_session_factory, create_tables
+from entry.api.routes import router, set_lifecycle_service
+from config.settings import settings
+from services.schedule_scanner import ScheduleScanner
+from drivers.schedulers.schedule_dispatcher import ScheduleDispatcher
 
 # 初始化服务实例
 broker = message_broker
@@ -52,9 +52,18 @@ async def lifespan(app: FastAPI):
     # 启动CRON调度器
     tasks.append(asyncio.create_task(cron_scheduler(lifecycle_svc, async_session_factory)))
     
-    # 启动任务分发器
+    # 启动任务分发器 (旧版，兼容现有代码)
+    from drivers import TaskDispatcher
     dispatcher = TaskDispatcher(broker=broker, lifecycle_service=lifecycle_svc)
     tasks.append(asyncio.create_task(dispatcher.start()))
+    
+    # 启动新的调度扫描器
+    scanner = ScheduleScanner(broker=broker, scan_interval=10)
+    tasks.append(asyncio.create_task(scanner.start()))
+    
+    # 启动新的调度分发器
+    schedule_dispatcher = ScheduleDispatcher(broker=broker, lifecycle_service=lifecycle_svc)
+    tasks.append(asyncio.create_task(schedule_dispatcher.start()))
     
     # 启动健康检查器
     tasks.append(asyncio.create_task(health_checker(async_session_factory)))

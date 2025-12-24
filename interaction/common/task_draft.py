@@ -2,7 +2,14 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 from uuid import uuid4
+from enum import Enum
 from .base import SlotSource
+
+class TaskDraftStatus(str, Enum):
+    FILLING = "FILLING"           # 填槽中
+    PENDING_CONFIRM = "PENDING_CONFIRM" # 待确认
+    SUBMITTED = "SUBMITTED"       # 已提交/进入执行
+    CANCELLED = "CANCELLED"       # 已取消
 
 class SlotValueDTO(BaseModel):
     """槽位详细状态"""
@@ -26,8 +33,8 @@ class TaskDraftDTO(BaseModel):
     draft_id: str = Field(default_factory=lambda: str(uuid4()))
     task_type: str          # 如 "CRAWLER", "BOOKING"
     
-    # 状态流转：DRAFT -> PENDING_CONFIRM -> SUBMITTED
-    status: str = "DRAFT"
+    # 状态流转：FILLING -> PENDING_CONFIRM -> SUBMITTED -> CANCELLED
+    status: TaskDraftStatus = TaskDraftStatus.FILLING
 
     # 核心槽位存储：Key为槽位名
     slots: Dict[str, SlotValueDTO] = Field(default_factory=dict)
@@ -45,3 +52,12 @@ class TaskDraftDTO(BaseModel):
     original_utterances: List[str] = [] # 这一轮填槽过程中的用户历史输入
     created_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
+    
+    # 新增：是否是动态/开放任务，决定是否走硬编码的必填项检查
+    is_dynamic_schema: bool = True
+    
+    # 新增：LLM认为还需要澄清的问题
+    next_clarification_question: Optional[str] = None
+    
+    # 新增：LLM对当前任务完整度的信心 (0.0 - 1.0)
+    completeness_score: float = 0.0

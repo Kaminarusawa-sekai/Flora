@@ -14,6 +14,7 @@ from common import (
 class BaseManager(CapabilityBase):
     """所有管理器的基类"""
     def __init__(self, context: Dict[str, Any] = None):
+        super().__init__()
         self.context = context or {}
     
     @abstractmethod

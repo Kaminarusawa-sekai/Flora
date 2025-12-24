@@ -1,9 +1,9 @@
 import asyncio
 from typing import Dict, Any
-from ...external.messaging.base import MessageBroker
-from ...services.lifecycle_service import LifecycleService
-from ...external.db.session import async_session_factory, dialect
-from ...external.db.impl import create_task_instance_repo
+from external.messaging.base import MessageBroker
+from services.lifecycle_service import LifecycleService
+from external.db.session import async_session_factory, dialect
+from external.db.impl import create_task_instance_repo
 
 
 class TaskDispatcher:

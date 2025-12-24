@@ -1,16 +1,21 @@
 from enum import Enum
 
 
-class TaskInstanceStatus(Enum):
-    """任务实例状态枚举"""
-    PENDING = "PENDING"    # 等待执行
-    RUNNING = "RUNNING"    # 正在执行
-    SUCCESS = "SUCCESS"    # 执行成功
-    FAILED = "FAILED"      # 执行失败
-
-
-class ScheduleType(Enum):
+class ScheduleType(str, Enum):
     """调度类型枚举"""
-    ONCE = "ONCE"          # 单次执行
-    CRON = "CRON"          # 定时执行
-    LOOP = "LOOP"          # 循环执行
+    IMMEDIATE = "IMMEDIATE"  # 即时任务
+    CRON = "CRON"          # 定时任务
+    DELAYED = "DELAYED"    # 延迟任务
+    LOOP = "LOOP"          # 循环任务
+    INTERVAL_LOOP = "INTERVAL_LOOP"  # 带间隔的循环任务
+
+
+class TaskStatus(str, Enum):
+    """任务状态枚举"""
+    PENDING = "PENDING"        # 等待调度
+    SCHEDULED = "SCHEDULED"    # 已调度
+    DISPATCHED = "DISPATCHED"  # 已分发到外部系统
+    RUNNING = "RUNNING"        # 执行中
+    SUCCESS = "SUCCESS"        # 成功
+    FAILED = "FAILED"          # 失败
+    CANCELLED = "CANCELLED"    # 已取消

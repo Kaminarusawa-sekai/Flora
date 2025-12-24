@@ -46,7 +46,9 @@ class Settings:
                 "redis_url": "redis://localhost:6379/0",
                 "rabbitmq_url": "amqp://guest:guest@localhost:5672/",
                 "worker_url": "http://localhost:8001",
-                "message_broker_type": "redis"
+                "message_broker_type": "redis",
+                "external_system_url": "http://localhost:8003",
+                "external_system_api_key": "default_api_key"
             }
             self._apply_config()
     
@@ -79,6 +81,12 @@ class Settings:
         # 消息队列配置
         # 支持的值: "redis", "rabbitmq"
         self.message_broker_type = os.getenv("MESSAGE_BROKER_TYPE", self._config_data.get("message_broker_type", "redis"))
+        
+        # 外部系统配置
+        self.EXTERNAL_SYSTEM_URL = os.getenv("EXTERNAL_SYSTEM_URL", self._config_data.get("external_system_url", "http://localhost:8003"))
+        self.EXTERNAL_SYSTEM_API_KEY = os.getenv("EXTERNAL_SYSTEM_API_KEY", self._config_data.get("external_system_api_key", "default_api_key"))
+        # 外部事件开关
+        self.SKIP_EXTERNAL_EVENTS = os.getenv("SKIP_EXTERNAL_EVENTS", "true").lower() == "true"
     
     def _start_watcher(self):
         """启动配置文件监控"""

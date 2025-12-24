@@ -19,10 +19,12 @@ class CommonDialogState(IDialogStateManagerCapability):
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化对话状态管理器"""
+        self.logger.info("初始化对话状态管理器")
         self.config = config
         # 获取LLM能力
         self._llm = None
         self.dialog_repo = DialogStateRepository()
+        self.logger.info("对话状态管理器初始化完成")
     
     @property
     def llm(self):
@@ -40,11 +42,12 @@ class CommonDialogState(IDialogStateManagerCapability):
         """返回能力类型"""
         return "dialog_management"
     
-    def get_or_create_dialog_state(self, session_id: str) -> DialogStateDTO:
+    def get_or_create_dialog_state(self, session_id: str, user_id: str) -> DialogStateDTO:
         """获取或创建对话状态
         
         Args:
             session_id: 会话ID
+            user_id: 用户ID
             
         Returns:
             对话状态DTO
@@ -56,6 +59,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         if not state:
             state = DialogStateDTO(
                 session_id=session_id,
+                user_id=user_id,  # 关联到用户
                 current_intent=None,
                 active_task_draft=None,
                 active_task_execution=None,
@@ -65,6 +69,12 @@ class CommonDialogState(IDialogStateManagerCapability):
                 is_in_idle_mode=False
             )
             self.dialog_repo.save_dialog_state(state)
+        else:
+            # 校验 user_id 一致性
+            if state.user_id != user_id:
+                # 更新 user_id
+                state.user_id = user_id
+                self.dialog_repo.update_dialog_state(state)
         
         return state
     
@@ -89,7 +99,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         state.active_task_draft = draft
         self.update_dialog_state(state)
         return state
@@ -104,7 +117,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         state.active_task_execution = task_id
         self.update_dialog_state(state)
         return state
@@ -119,7 +135,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         
         # 限制最近任务的数量
         MAX_RECENT_TASKS = 5
@@ -140,7 +159,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         state.last_mentioned_task_id = task_id
         self.update_dialog_state(state)
         return state
@@ -154,7 +176,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             最后提及的任务ID
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         return state.last_mentioned_task_id
     
     def add_pending_task(self, session_id: str, task_id: str) -> DialogStateDTO:
@@ -167,7 +192,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         if task_id not in state.pending_tasks:
             state.pending_tasks.append(task_id)
             self.update_dialog_state(state)
@@ -183,7 +211,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         if task_id in state.pending_tasks:
             state.pending_tasks.remove(task_id)
             self.update_dialog_state(state)
@@ -207,7 +238,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
-        state = self.get_or_create_dialog_state(session_id)
+        # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
+        existing_state = self.dialog_repo.get_dialog_state(session_id)
+        user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
+        state = self.get_or_create_dialog_state(session_id, user_id)
         
         # 1. 【意图修正】基于上下文调整主意图
         corrected_intent = self._resolve_ambiguous_intent(intent_result, state)
@@ -224,13 +258,6 @@ class CommonDialogState(IDialogStateManagerCapability):
             # 例如：QUERY 不影响草稿，DELETE 可能清除
             pass
 
-        # 3. 【实体填充】将识别出的实体填入活跃草稿
-        if state.active_task_draft and intent_result.entities:
-            for entity in intent_result.entities:
-                # resolved_value 优先，否则用 value
-                val = entity.resolved_value if entity.resolved_value is not None else entity.value
-                state.active_task_draft.slots[entity.name] = val
-
         # 4. 【指代消解】如果有代词，尝试解析指代的任务
         if state.active_task_draft and user_input and user_input.utterance:
             resolved_id = self._resolve_pronoun_reference(user_input.utterance, state)
@@ -240,12 +267,6 @@ class CommonDialogState(IDialogStateManagerCapability):
                 target_task = self._find_task_by_id(resolved_id, state.recent_tasks)
                 if target_task:
                     state.active_task_draft.slots.setdefault("title", target_task.title)
-
-        # 5. 【智能槽位判断】确定是否需要追问缺失的槽位
-        if state.active_task_draft:
-            missing_slots = self._should_request_missing_slots(state.active_task_draft)
-            if missing_slots:
-                state.missing_required_slots = missing_slots  # 新增字段
 
         # 6. 【歧义处理】标记是否需要澄清（供 Orchestrator 使用）
         if intent_result.is_ambiguous:
@@ -380,47 +401,15 @@ class CommonDialogState(IDialogStateManagerCapability):
         """
         candidates = ", ".join(intent for intent, _ in context["candidate_intents"])
         prompt = f"""
-用户输入：“{context['original_utterance']}”
-系统识别出多个可能意图：{candidates}
+        用户输入："{context['original_utterance']}"
+        系统识别出多个可能意图：{candidates}
 
-请用一句简洁友好的中文提问，帮助用户澄清真实意图。
-例如：“你是想创建新任务，还是修改已有任务？”
+        请用一句简洁友好的中文提问，帮助用户澄清真实意图。
+        例如："你是想创建新任务，还是修改已有任务？"
 
-只返回问题，不要解释。
-"""
-        return self.llm.generate(prompt).strip()
-    
-    def _should_request_missing_slots(self, draft: TaskDraftDTO) -> List[str]:
-        """智能槽位填充与缺失判断：确定是否需要追问缺失的槽位
-        
-        Args:
-            draft: 当前任务草稿
-            
-        Returns:
-            需要追问的槽位列表
+        只返回问题，不要解释。
         """
-        filled = set(draft.slots.keys())
-        all_required = {"title", "due_date"}  # 假设这些是必需的
-        
-        missing = list(all_required - filled)
-        if not missing:
-            return []
-
-        # 用 LLM 判断是否值得追问（例如用户刚提了模糊请求）
-        prompt = f"""
-用户正在创建任务，目前已提供信息：{draft.slots}
-缺失字段：{missing}
-
-请问是否应该立即追问这些缺失信息？还是可以稍后处理？
-请回答 "yes" 或 "no"。
-"""
-        try:
-            result = self.llm.generate(prompt).strip().lower()
-            if result == "yes":
-                return missing
-        except:
-            pass
-        return []
+        return self.llm.generate(prompt).strip()
     
     def _find_task_by_id(self, task_id: str, recent_tasks: List[TaskSummary]) -> Optional[TaskSummary]:
         """根据任务ID查找最近任务
@@ -436,3 +425,45 @@ class CommonDialogState(IDialogStateManagerCapability):
             if task.task_id == task_id:
                 return task
         return None
+    
+    def set_waiting_for_confirmation(self, dialog_state: DialogStateDTO, action: str, payload: dict) -> DialogStateDTO:
+        """设置等待确认状态
+        
+        Args:
+            dialog_state: 对话状态DTO
+            action: 等待确认的动作类型
+            payload: 确认所需的上下文数据
+            
+        Returns:
+            更新后的对话状态
+        """
+        dialog_state.waiting_for_confirmation = True
+        dialog_state.confirmation_action = action
+        dialog_state.confirmation_payload = payload
+        return dialog_state
+    
+    def clear_waiting_for_confirmation(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
+        """清除等待确认状态
+        
+        Args:
+            dialog_state: 对话状态DTO
+            
+        Returns:
+            更新后的对话状态
+        """
+        dialog_state.waiting_for_confirmation = False
+        dialog_state.confirmation_action = None
+        dialog_state.confirmation_payload = None
+        return dialog_state
+    
+    def clear_active_draft(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
+        """清除活跃的任务草稿
+        
+        Args:
+            dialog_state: 对话状态DTO
+            
+        Returns:
+            更新后的对话状态
+        """
+        dialog_state.active_task_draft = None
+        return dialog_state

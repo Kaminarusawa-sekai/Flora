@@ -25,7 +25,8 @@ from .input_nlu import (
 from .task_draft import (
     SlotValueDTO,
     ScheduleDTO,
-    TaskDraftDTO
+    TaskDraftDTO,
+    TaskDraftStatus
 )
 
 # 任务执行上下文
@@ -60,6 +61,7 @@ __all__ = [
     "SlotValueDTO",
     "ScheduleDTO",
     "TaskDraftDTO",
+    "TaskDraftStatus",
     
     # 任务执行上下文
     "TaskExecutionContextDTO",

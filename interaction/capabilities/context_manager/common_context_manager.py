@@ -3,12 +3,15 @@ from common.dialog import DialogTurn
 from .interface import IContextManagerCapability
 from external.database import SQLiteConnectionPool, DialogRepository
 
+
+
 class CommonContextManager(IContextManagerCapability):
     """
     通用上下文管理器实现，使用SQLite存储对话历史
     """
     
     def __init__(self):
+        super().__init__()
         self.pool = None
         self.repo = None
         self.db_path = None
@@ -22,17 +25,22 @@ class CommonContextManager(IContextManagerCapability):
         """
         self.db_path = config.get("db_path", "./dialog.db")
         max_connections = config.get("max_connections", 5)
+        self.logger.info(f"初始化上下文管理器，数据库路径: {self.db_path}，最大连接数: {max_connections}")
         self.pool = SQLiteConnectionPool(self.db_path, max_connections)
         self.repo = DialogRepository(self.pool)
+        self.logger.info("上下文管理器初始化完成")
     
     def shutdown(self) -> None:
         """
         关闭上下文管理器，释放资源
         """
+        self.logger.info("关闭上下文管理器，释放资源")
         if self.pool:
             self.pool.close_all()
             self.pool = None
+            self.logger.info("数据库连接池已关闭")
         self.repo = None
+        self.logger.info("上下文管理器关闭完成")
     
     def get_capability_type(self) -> str:
         """
@@ -136,11 +144,16 @@ class CommonContextManager(IContextManagerCapability):
         # 创建新的压缩轮次
         from common.dialog import DialogTurn
         import time
+        # 使用第一个旧轮次的 session_id 和 user_id
+        session_id = old_turns[0].get('session_id', 'compressed')
+        user_id = old_turns[0].get('user_id', 'system')
         compressed_turn = DialogTurn(
             role="system",
             utterance=f"[压缩摘要] {compressed_text}",
             timestamp=time.time(),
-            enhanced_utterance="压缩后的对话摘要"
+            enhanced_utterance="压缩后的对话摘要",
+            session_id=session_id,
+            user_id=user_id
         )
         
         # 获取要删除的轮次ID
@@ -177,4 +190,51 @@ class CommonContextManager(IContextManagerCapability):
             raise ValueError("Context manager not initialized")
         all_turns = self.repo.get_all_turns()
         return len(all_turns)
+    
+    def get_turns_by_session(self, session_id: str, limit: int = 20, offset: int = 0) -> List[DialogTurn]:
+        """
+        根据会话ID获取对话轮次
         
+        Args:
+            session_id: 会话ID
+            limit: 返回的最大轮次数
+            offset: 偏移量
+            
+        Returns:
+            对话轮次列表，按时间戳倒序排列
+        """
+        if not self.repo:
+            raise ValueError("Context manager not initialized")
+        return self.repo.get_turns_by_session(session_id, limit, offset)
+    
+    def get_turns_by_user(self, user_id: str, limit: int = 20, offset: int = 0) -> List[DialogTurn]:
+        """
+        根据用户ID获取对话轮次
+        
+        Args:
+            user_id: 用户ID
+            limit: 返回的最大轮次数
+            offset: 偏移量
+            
+        Returns:
+            对话轮次列表，按时间戳倒序排列
+        """
+        if not self.repo:
+            raise ValueError("Context manager not initialized")
+        return self.repo.get_turns_by_user(user_id, limit, offset)
+    
+    def update_turn_user_id(self, session_id: str, old_user_id: str, new_user_id: str) -> bool:
+        """
+        更新会话中所有轮次的用户ID（用于匿名转正式）
+        
+        Args:
+            session_id: 会话ID
+            old_user_id: 旧用户ID
+            new_user_id: 新用户ID
+            
+        Returns:
+            更新是否成功
+        """
+        if not self.repo:
+            raise ValueError("Context manager not initialized")
+        return self.repo.update_turns_user_id(session_id, old_user_id, new_user_id)

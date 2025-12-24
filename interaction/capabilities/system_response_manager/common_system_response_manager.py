@@ -13,8 +13,10 @@ class CommonSystemResponse(ISystemResponseManagerCapability):
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化系统响应管理器"""
+        self.logger.info("初始化系统响应管理器")
         self.config = config
         self._llm = None
+        self.logger.info("系统响应管理器初始化完成")
         
     @property
     def llm(self):

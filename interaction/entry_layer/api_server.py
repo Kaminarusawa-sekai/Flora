@@ -203,5 +203,104 @@ async def resume_task(
         raise HTTPException(status_code=500, detail=f"恢复任务失败: {str(e)}")
 
 
+# 添加设计文档中指定的新接口
+
+@app.get("/session/{session_id}", tags=["会话管理"])
+async def get_session_info(session_id: str):
+    """查询当前 Session 信息"""
+    try:
+        from capabilities.registry import capability_registry
+        from capabilities.dialog_state_manager.interface import IDialogStateManagerCapability
+        dialog_state_manager = capability_registry.get_capability("dialog_state", IDialogStateManagerCapability)
+        # 从现有状态获取 user_id
+        from external.database.dialog_state_repo import DialogStateRepository
+        dialog_repo = DialogStateRepository()
+        state = dialog_repo.get_dialog_state(session_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {
+            "session_id": state.session_id,
+            "user_id": state.user_id,
+            "created_at": state.last_updated.isoformat() if hasattr(state, 'last_updated') else None,
+            "last_active": state.last_updated.isoformat() if hasattr(state, 'last_updated') else None,
+            "current_intent": state.current_intent,
+            "waiting_for_confirmation": state.waiting_for_confirmation
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get session info: {str(e)}")
+
+
+@app.get("/user/{user_id}/sessions", tags=["会话管理"])
+async def get_user_sessions(user_id: str):
+    """查询用户所有活跃 Sessions"""
+    try:
+        from external.database.dialog_state_repo import DialogStateRepository
+        dialog_repo = DialogStateRepository()
+        # 这里需要实现获取用户所有会话的逻辑
+        # 由于当前 dialog_state_repo 没有直接的方法，我们需要扩展它
+        # 暂时返回空列表
+        return []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get user sessions: {str(e)}")
+
+
+@app.post("/session/{session_id}/bind-user", tags=["会话管理"])
+async def bind_user_to_session(session_id: str, user_id: str):
+    """绑定用户到会话（匿名转正式）"""
+    try:
+        from capabilities.registry import capability_registry
+        from capabilities.context_manager.interface import IContextManagerCapability
+        context_manager = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        
+        # 从现有状态获取旧的 user_id
+        from external.database.dialog_state_repo import DialogStateRepository
+        dialog_repo = DialogStateRepository()
+        state = dialog_repo.get_dialog_state(session_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        old_user_id = state.user_id
+        
+        # 更新会话中所有轮次的用户ID
+        success = context_manager.update_turn_user_id(session_id, old_user_id, user_id)
+        
+        # 更新会话状态的 user_id
+        state.user_id = user_id
+        dialog_repo.save_dialog_state(state)
+        
+        return {
+            "success": success,
+            "message": "User bound to session successfully" if success else "Failed to bind user to session"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to bind user to session: {str(e)}")
+
+
+@app.get("/session/{session_id}/history", tags=["对话历史"])
+async def get_session_history(session_id: str, limit: int = 20, offset: int = 0):
+    """查询会话对话历史"""
+    try:
+        from capabilities.registry import capability_registry
+        from capabilities.context_manager.interface import IContextManagerCapability
+        context_manager = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        turns = context_manager.get_turns_by_session(session_id, limit, offset)
+        return [turn.model_dump() for turn in turns]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get session history: {str(e)}")
+
+
+@app.get("/user/{user_id}/history", tags=["对话历史"])
+async def get_user_history(user_id: str, limit: int = 20, offset: int = 0):
+    """查询用户所有对话历史"""
+    try:
+        from capabilities.registry import capability_registry
+        from capabilities.context_manager.interface import IContextManagerCapability
+        context_manager = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        turns = context_manager.get_turns_by_user(user_id, limit, offset)
+        return [turn.model_dump() for turn in turns]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get user history: {str(e)}")
+
+
 # 初始化对话编排器
 init_orchestrator()

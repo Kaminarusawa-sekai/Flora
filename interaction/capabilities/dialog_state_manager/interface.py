@@ -16,11 +16,12 @@ class IDialogStateManagerCapability(BaseManager):
         super().__init__()
     
     @abstractmethod
-    def get_or_create_dialog_state(self, session_id: str) -> DialogStateDTO:
+    def get_or_create_dialog_state(self, session_id: str, user_id: str) -> DialogStateDTO:
         """获取或创建对话状态
         
         Args:
             session_id: 会话ID
+            user_id: 用户ID
             
         Returns:
             对话状态DTO
@@ -157,5 +158,43 @@ class IDialogStateManagerCapability(BaseManager):
             
         Returns:
             清理的会话数量
+        """
+        pass
+    
+    @abstractmethod
+    def set_waiting_for_confirmation(self, dialog_state: DialogStateDTO, action: str, payload: dict) -> DialogStateDTO:
+        """设置等待确认状态
+        
+        Args:
+            dialog_state: 对话状态DTO
+            action: 等待确认的动作类型
+            payload: 确认所需的上下文数据
+            
+        Returns:
+            更新后的对话状态
+        """
+        pass
+    
+    @abstractmethod
+    def clear_waiting_for_confirmation(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
+        """清除等待确认状态
+        
+        Args:
+            dialog_state: 对话状态DTO
+            
+        Returns:
+            更新后的对话状态
+        """
+        pass
+    
+    @abstractmethod
+    def clear_active_draft(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
+        """清除活跃的任务草稿
+        
+        Args:
+            dialog_state: 对话状态DTO
+            
+        Returns:
+            更新后的对话状态
         """
         pass

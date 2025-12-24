@@ -30,6 +30,7 @@ class SystemResponseDTO(BaseModel):
 class DialogStateDTO(BaseModel):
     """💬 [5. DialogStateDTO] 全局会话状态"""
     session_id: str
+    user_id: str  # 新增：关联到具体用户
     current_intent: Optional[str] = None
     
     # 指针
@@ -56,7 +57,7 @@ class DialogStateDTO(BaseModel):
     # ✅ 【新增】待确认状态锁
     # 当这个为 True 时，系统的第一优先级是判断用户是否确认
     waiting_for_confirmation: bool = False 
-    
+    confirmation_action: Optional[str] = None  # 等待确认的动作类型
     # (可选) 存一下到底在确认什么，防止上下文丢失
     confirmation_payload: Optional[Dict[str, Any]] = None
 

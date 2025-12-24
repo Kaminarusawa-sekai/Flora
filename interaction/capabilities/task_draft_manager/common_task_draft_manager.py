@@ -6,7 +6,8 @@ from common import (
     SlotValueDTO,
     ScheduleDTO,
     SlotSource,
-    IntentRecognitionResultDTO
+    IntentRecognitionResultDTO,
+    TaskDraftStatus
 )
 from external.database.task_draft_repo import TaskDraftRepository
 from ..llm.interface import ILLMCapability
@@ -16,12 +17,14 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化任务草稿管理器"""
+        self.logger.info("初始化任务草稿管理器")
         self.config = config
         self._llm = None
         # 初始化 storage
         
             # 如果没有提供storage，创建一个默认的TaskDraftRepository实例
         self.draft_storage = TaskDraftRepository()
+        self.logger.info("任务草稿管理器初始化完成")
         
     @property
     def llm(self) -> ILLMCapability:
@@ -52,7 +55,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         """
         draft = TaskDraftDTO(
             task_type=task_type,
-            status="DRAFT",
+            status=TaskDraftStatus.FILLING,
             slots={},
             missing_slots=[],
             invalid_slots=[],
@@ -65,6 +68,71 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         # 保存到存储
         self.draft_storage.save_draft(draft)
         return draft
+    
+    def submit_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """提交草稿，执行提交前校验
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            提交后的任务草稿
+        """
+        # 1. 执行必填项校验
+        self._validate_required_slots(draft)
+        # 2. 更新状态
+        draft.status = TaskDraftStatus.SUBMITTED
+        # 3. 保存到数据库
+        self.draft_storage.save_draft(draft)
+        return draft
+    
+    def cancel_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """取消草稿
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            取消后的任务草稿
+        """
+        draft.status = TaskDraftStatus.CANCELLED
+        self.draft_storage.save_draft(draft)
+        return draft
+    
+    def set_draft_pending_confirm(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """将草稿设置为待确认状态
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            更新后的任务草稿
+        """
+        draft.status = TaskDraftStatus.PENDING_CONFIRM
+        self.draft_storage.save_draft(draft)
+        return draft
+    
+    def _validate_required_slots(self, draft: TaskDraftDTO) -> None:
+        """校验必填项，抛出异常如果不满足
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Raises:
+            ValueError: 如果必填项不满足
+        """
+        # 调用现有的validate_draft方法进行校验
+        validated_draft = self.validate_draft(draft)
+        if validated_draft.missing_slots or validated_draft.invalid_slots:
+            error_msg = """
+            任务草稿不满足提交条件：
+            缺失必填项：{}
+            无效项：{}
+            """.format(
+                ", ".join(validated_draft.missing_slots),
+                ", ".join(validated_draft.invalid_slots)
+            )
+            raise ValueError(error_msg.strip())
     
     def update_draft(self, draft: TaskDraftDTO) -> bool:
         """更新任务草稿
@@ -382,6 +450,12 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         """
         [修改后] 根据意图更新草稿，并动态生成下一步回复
         适应场景：无固定Schema，依靠LLM动态判断缺什么参数
+        
+        核心流程：
+        1. 实体填充：将识别到的实体填入槽位（不要使用NLU，直接使用llm进行实体填充）
+        2. 动态评估：调用LLM评估完整性
+        3. 更新状态：根据评估结果更新draft状态
+        4. 生成回复：根据状态生成合适的回复文本
         """
         
         # 1. 把识别到的实体（Entities）全部填入槽位（Slots）
@@ -399,56 +473,110 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         # 2. 持久化保存一下当前的草稿状态
         self.update_draft(draft)
         
-        # 3. [关键] 调用 LLM 动态生成回复
-        # 不再去查 required_slots 列表，而是直接问 LLM 下一步该怎么办
-        response_text, should_execute = self._generate_dynamic_response(draft, intent_result.raw_nlu_output.get("original_utterance", ""))
-
-        # 4. 返回 InteractionHandler 能够理解的字典格式
+        # 3. [关键] 调用 LLM 动态评估当前草稿的完整性
+        ##TODO：这里填槽前查询已知信息（放在event里）
+        original_utterance = intent_result.raw_nlu_output.get("original_utterance", "")
+        evaluation_result = self._evaluate_draft_completeness(draft, original_utterance)
+        
+        # 4. 根据评估结果更新Draft状态
+        is_ready = evaluation_result["is_ready"]
+        
+        if is_ready:
+            # 如果LLM认为信息足够，设置为待确认状态
+            draft.status = TaskDraftStatus.PENDING_CONFIRM
+            draft.completeness_score = 1.0
+            draft.next_clarification_question = None
+        else:
+            # 如果还需要更多信息，保持填槽状态
+            draft.status = TaskDraftStatus.FILLING
+            draft.completeness_score = 0.5  # 可以根据LLM的分析调整
+            draft.next_clarification_question = evaluation_result["response_to_user"]
+        
+        # 5. 更新草稿
+        self.update_draft(draft)
+        
+        # 6. 返回 InteractionHandler 能够理解的字典格式
         return {
             "task_draft": draft,
-            "response_text": response_text,       # 必须有这个，否则用户收不到消息
-            "requires_input": not should_execute, # 如果还没决定执行，就继续等待用户输入
-            "should_execute": should_execute      # 如果 LLM 觉得信息够了，可以设为 True
+            "response_text": evaluation_result["response_to_user"],  # 直接发给用户的回复
+            "requires_input": not is_ready,  # 如果还没决定执行，就继续等待用户输入
+            "should_execute": is_ready       # 如果 LLM 觉得信息够了，可以设为 True
         }
 
-    def _generate_dynamic_response(self, draft: TaskDraftDTO, last_user_utterance: str) -> tuple[str, bool]:
+    def _evaluate_draft_completeness(self, draft: TaskDraftDTO, last_user_utterance: str) -> Dict[str, Any]:
         """
-        [新增] 动态决策助手
-        由 LLM 根据当前收集到的槽位，决定是追问参数，还是进行确认
-        Returns: (回复文本, 是否建议立即执行)
+        使用LLM评估当前任务草稿的完整性
+        核心功能：
+        - 调用LLM分析当前收集的参数
+        - 判断是否满足最小必要条件
+        - 生成追问或确认摘要
+        
+        Args:
+            draft: 当前任务草稿
+            last_user_utterance: 用户最新输入
+            
+        Returns:
+            评估结果，包含is_ready、missing_slot、analysis、response_to_user
         """
         # 提取当前已有的所有参数（kv对）
-        current_slots_str = json.dumps(
-            {k: v.resolved for k, v in draft.slots.items()}, 
-            ensure_ascii=False
-        )
+        current_slots = {k: v.resolved for k, v in draft.slots.items()}
+        current_slots_str = json.dumps(current_slots, ensure_ascii=False, indent=2)
         
-        task_type = draft.task_type
+        # 最近对话历史
+        dialog_history = "\n".join(draft.original_utterances[-5:])  # 最近5轮对话
         
-        # 构造 Prompt：让 LLM 充当业务专家
+        # 参考prompt：
         prompt = f"""
-你是一个智能任务助理。用户正在试图创建一个「{task_type}」任务。
+        你是一个专业的任务分析师。用户想要执行一个「{draft.task_type}」任务。
 
-【当前已知信息】
-{current_slots_str}
+        【已收集的参数】
+        {current_slots_str}
 
-【用户刚才说】
-"{last_user_utterance}"
+        【最近对话历史】
+        {dialog_history}
 
-【你的任务】
-请判断当前收集的信息是否足以创建一个最基础的任务草稿。
-1. 如果信息太少（比如完全没有关键参数），请用自然的中文向用户追问下一个最需要的参数（例如：时间、对象、预算等，一次只问一个）。
-2. 如果信息看起来包含了基本要素，或者用户明确表示“就这样”，请输出一段任务确认摘要，并询问用户是否确认执行。
+        【你的判断逻辑】
+        1. 这是一个开放式任务。请判断当前收集的参数是否满足了任务执行的**最小必要条件**。
+        2. 不要过度索取细节。如果核心意图明确，且关键参数（如对象、内容、时间等）已有，即可认为就绪。
+        3. 如果就绪：请生成一段"确认摘要"，并询问用户是否确认。
+        4. 如果**不**就绪：请找出**当前最缺失的一个**关键参数，并生成一句自然的追问。
 
-请直接输出回复给用户的内容，不要输出任何思考过程。
-"""
-        # 调用 LLM 生成回复
-        response = self.llm.generate(prompt, max_tokens=150, temperature=0.5).strip()
+        【输出格式(JSON)】
+        {{
+            "is_ready": boolean,  // true 表示可以执行/待确认，false 表示还需要参数
+            "missing_slot": "string or null", // 如果 false，指出缺什么
+            "analysis": "string", // 简短的分析理由
+            "response_to_user": "string" // 直接发给用户的回复（追问或确认请求）
+        }}
+        """
         
-        # 简单的启发式规则：如果 LLM 的回复里包含“确认”或“执行”等字眼，可能意味着可以推进状态
-        # (这里是一个简单的判断，实际场景中你可以让 LLM 返回 JSON 来更精准控制 should_execute)
-        should_execute = False 
-        
-        # 如果你想做得更智能，可以让 LLM 返回特定标记，目前先默认由用户在下一轮显式确认
-        
-        return response, should_execute
+        try:
+            # 调用LLM生成评估结果
+            response = self.llm.generate(prompt, max_tokens=200, temperature=0.3)
+            
+            # 清理并解析JSON结果
+            sanitized_json = self._sanitize_json(response)
+            evaluation_result = json.loads(sanitized_json)
+            
+            # 验证必要字段
+            if not all(key in evaluation_result for key in ["is_ready", "missing_slot", "analysis", "response_to_user"]):
+                raise ValueError("LLM返回的评估结果缺少必要字段")
+            
+            return evaluation_result
+        except Exception as e:
+            # LLM调用失败时的兜底逻辑
+            print(f"[ERROR] _evaluate_draft_completeness failed: {e}")
+            return {
+                "is_ready": False,
+                "missing_slot": "unknown",
+                "analysis": "系统暂时无法评估任务完整性",
+                "response_to_user": "抱歉，我刚刚走神了，没听清您的要求，能麻烦您再详细描述一遍任务吗？"
+            }
+    
+    def _generate_dynamic_response(self, draft: TaskDraftDTO, last_user_utterance: str) -> tuple[str, bool]:
+        """
+        动态决策助手 - 已整合到_evaluate_draft_completeness方法中
+        保留此方法以保持向后兼容
+        """
+        evaluation_result = self._evaluate_draft_completeness(draft, last_user_utterance)
+        return evaluation_result["response_to_user"], evaluation_result["is_ready"]

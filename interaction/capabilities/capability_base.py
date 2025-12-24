@@ -1,4 +1,5 @@
 """能力基类定义"""
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, TypeVar, Generic
 
@@ -10,6 +11,9 @@ class CapabilityBase(ABC):
     """
     所有能力的基类，只负责生命周期和基础元数据
     """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(self.__class__.__module__)
     
     @abstractmethod
     def initialize(self, config: Dict[str, Any]) -> None:

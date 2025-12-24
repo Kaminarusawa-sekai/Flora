@@ -4,10 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from ...external.db.session import get_db
-from ...external.db.impl import create_task_definition_repo, create_task_instance_repo
-from ...external.db.session import dialect
-from ...services.lifecycle_service import LifecycleService
+from external.db.session import get_db
+from external.db.impl import create_task_definition_repo, create_task_instance_repo
+from external.db.session import dialect
+from services.lifecycle_service import LifecycleService
 
 router = APIRouter()
 
@@ -53,12 +53,28 @@ class AdHocTaskRequest(BaseModel):
     input_params: dict
     loop_config: Optional[dict] = None
     is_temporary: bool = True
+    schedule_type: str = "IMMEDIATE"  # 调度类型：IMMEDIATE, CRON, LOOP, DELAYED
+    schedule_config: Optional[dict] = None  # 调度配置，根据schedule_type不同而不同
+    # - IMMEDIATE/ONCE: 无需配置
+    # - CRON: 需包含 {"cron_expression": "* * * * *"} (cron表达式)
+    # - DELAYED: 需包含 {"delay_seconds": 60} (延迟秒数)
+    # - LOOP: 使用loop_config字段配置，schedule_config可不传
 
 # 定义即席任务响应模型
 class AdHocTaskResponse(BaseModel):
     trace_id: str
     status: str
     message: str
+
+# 任务控制相关的 Pydantic 模型
+class TaskControlResponse(BaseModel):
+    success: bool
+    message: str
+    details: Optional[dict] = None
+
+class TaskModifyRequest(BaseModel):
+    input_params: Optional[dict] = None
+    schedule_config: Optional[dict] = None
 
 # 全局服务变量，将在 main.py 中初始化
 _lifecycle_svc = None
@@ -101,7 +117,7 @@ async def list_task_definitions(
     return active_defs
 
 
-@router.post("/definitions/{def_id}/trigger")
+@router.post("/definitions/{def_id}/trigger", response_model=AdHocTaskResponse)
 async def manual_trigger(
     def_id: str,
     db: AsyncSession = Depends(get_db),
@@ -115,12 +131,17 @@ async def manual_trigger(
         raise HTTPException(status_code=404, detail="Task definition not found")
     
     # 手动触发任务
-    await lifecycle_svc.trigger_by_id(
+    task_id = await lifecycle_svc.trigger_by_id(
         session=db,
         def_id=def_id,
         input_params={"trigger": "manual"}
     )
-    return {"status": "triggered", "message": f"Task {def_id} triggered manually"}
+    
+    return AdHocTaskResponse(
+        trace_id=task_id,
+        status="success",
+        message=f"Task {def_id} triggered manually with task ID {task_id}"
+    )
 
 
 @router.post("/ad-hoc-tasks", response_model=AdHocTaskResponse)
@@ -138,7 +159,9 @@ async def submit_ad_hoc_task(
             task_content=task_in.task_content,
             input_params=task_in.input_params,
             loop_config=task_in.loop_config,
-            is_temporary=task_in.is_temporary
+            is_temporary=task_in.is_temporary,
+            schedule_type=task_in.schedule_type,
+            schedule_config=task_in.schedule_config
         )
         
         if not trace_id:
@@ -147,9 +170,110 @@ async def submit_ad_hoc_task(
         return AdHocTaskResponse(
             trace_id=trace_id,
             status="success",
-            message="Ad-hoc task submitted successfully"
+            message=f"Ad-hoc task submitted successfully with trace ID {trace_id}"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error submitting ad-hoc task: {str(e)}")
+
+
+# 任务控制相关的 API 端点
+@router.post("/instances/{instance_id}/cancel", response_model=TaskControlResponse)
+async def cancel_task(
+    instance_id: str,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
+):
+    """取消指定的任务实例"""
+    result = await lifecycle_svc.cancel_task(
+        session=db,
+        instance_id=instance_id
+    )
+    return TaskControlResponse(
+        success=result["success"],
+        message=result["message"],
+        details={
+            "instance_id": instance_id,
+            **result.get("details", {})
+        }
+    )
+
+
+@router.post("/traces/{trace_id}/cancel", response_model=TaskControlResponse)
+async def cancel_trace_tasks(
+    trace_id: str,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
+):
+    """取消指定trace下的所有任务实例"""
+    result = await lifecycle_svc.cancel_task(
+        session=db,
+        trace_id=trace_id
+    )
+    return TaskControlResponse(
+        success=result["success"],
+        message=result["message"],
+        details={
+            "trace_id": trace_id,
+            "affected_instances": result.get("affected_instances", []),
+            "failed_instances": result.get("failed_instances", [])
+        }
+    )
+
+
+@router.post("/instances/{instance_id}/pause", response_model=TaskControlResponse)
+async def pause_task(
+    instance_id: str,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
+):
+    """暂停指定的任务实例"""
+    result = await lifecycle_svc.pause_task(
+        session=db,
+        instance_id=instance_id
+    )
+    return TaskControlResponse(
+        success=result["success"],
+        message=result["message"],
+        details=result.get("details", {})
+    )
+
+
+@router.post("/instances/{instance_id}/resume", response_model=TaskControlResponse)
+async def resume_task(
+    instance_id: str,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
+):
+    """继续指定的任务实例"""
+    result = await lifecycle_svc.resume_task(
+        session=db,
+        instance_id=instance_id
+    )
+    return TaskControlResponse(
+        success=result["success"],
+        message=result["message"],
+        details=result.get("details", {})
+    )
+
+
+@router.patch("/instances/{instance_id}/modify", response_model=TaskControlResponse)
+async def modify_task(
+    instance_id: str,
+    task_modify: TaskModifyRequest,
+    db: AsyncSession = Depends(get_db),
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service)
+):
+    """修改指定的任务实例"""
+    result = await lifecycle_svc.modify_task(
+        session=db,
+        instance_id=instance_id,
+        input_params=task_modify.input_params,
+        schedule_config=task_modify.schedule_config
+    )
+    return TaskControlResponse(
+        success=result["success"],
+        message=result["message"],
+        details=result.get("details", {})
+    )
 
 

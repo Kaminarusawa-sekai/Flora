@@ -59,9 +59,9 @@ class CommonUserInput(IUserInputManagerCapability):
             处理后的输入数据，包含会话信息
         """
         # 1. 读取会话历史
-        # 注意：我们的上下文管理器get_recent_turns方法返回的是DialogTurn对象列表
+        # 注意：我们的上下文管理器get_turns_by_session方法返回的是DialogTurn对象列表
         # 我们需要转换为方案中期望的格式
-        recent_turns = self.history_store.get_recent_turns(limit=self.context_window)
+        recent_turns = self.history_store.get_turns_by_session(session_id=user_input.session_id, limit=self.context_window)
         
 
         dialog_history = [
@@ -127,5 +127,5 @@ class CommonUserInput(IUserInputManagerCapability):
             "timestamp": user_input.timestamp,
             "metadata": user_input.metadata
         }
-        self.history_store.add_turn(DialogTurn(role="user", utterance=user_input.utterance, enhanced_utterance=str(enriched_input), timestamp=user_input.timestamp))
+        self.history_store.add_turn(DialogTurn(role="user", utterance=user_input.utterance, enhanced_utterance=parsed_result["enhanced_utterance"], timestamp=user_input.timestamp, session_id=user_input.session_id, user_id=user_input.user_id))
         return enriched_input

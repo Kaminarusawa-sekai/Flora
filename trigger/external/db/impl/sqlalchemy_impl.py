@@ -1,10 +1,10 @@
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_
+from sqlalchemy import select, update, and_, or_
 
-from ..repo import TaskDefinitionRepo, TaskInstanceRepo
-from ..models import TaskDefinitionDB, TaskInstanceDB
+from ..repo import TaskDefinitionRepo, TaskInstanceRepo, ScheduledTaskRepo
+from ..models import TaskDefinitionDB, TaskInstanceDB, ScheduledTaskDB
 
 
 class SQLAlchemyTaskDefinitionRepo(TaskDefinitionRepo):
@@ -13,12 +13,17 @@ class SQLAlchemyTaskDefinitionRepo(TaskDefinitionRepo):
     def __init__(self, session: AsyncSession):
         self.session = session
     
-    async def create(self, name: str, cron_expr: Optional[str] = None, loop_config: dict = None, is_active: bool = True) -> TaskDefinitionDB:
+    async def create(self, name: str, content: dict = None, cron_expr: Optional[str] = None, loop_config: dict = None, schedule_type: str = "IMMEDIATE", schedule_config: dict = None, is_active: bool = True, is_temporary: bool = False, created_at: datetime = None) -> TaskDefinitionDB:
         new_def = TaskDefinitionDB(
             name=name,
+            content=content or {},
             cron_expr=cron_expr,
             loop_config=loop_config or {},
-            is_active=is_active
+            schedule_type=schedule_type,
+            schedule_config=schedule_config or {},
+            is_active=is_active,
+            is_temporary=is_temporary,
+            created_at=created_at or datetime.now(timezone.utc)
         )
         self.session.add(new_def)
         await self.session.commit()
@@ -134,3 +139,92 @@ class SQLAlchemyTaskInstanceRepo(TaskInstanceRepo):
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+
+
+
+
+class SQLAlchemyScheduledTaskRepo(ScheduledTaskRepo):
+    """基于SQLAlchemy的调度任务仓库实现"""
+    
+    def __init__(self, session: AsyncSession):
+        self.session = session
+    
+    async def create(self, task) -> any:
+        """创建调度任务"""
+        db_task = ScheduledTaskDB(
+            id=task.id,
+            definition_id=task.definition_id,
+            trace_id=task.trace_id,
+            status=task.status,
+            schedule_type=task.schedule_type,
+            scheduled_time=task.scheduled_time,
+            execute_after=task.execute_after,
+            schedule_config=task.schedule_config,
+            round_index=task.round_index,
+            input_params=task.input_params,
+            priority=task.priority,
+            max_retries=task.max_retries,
+            retry_count=task.retry_count,
+            created_at=task.created_at,
+            depends_on=task.depends_on
+        )
+        
+        self.session.add(db_task)
+        await self.session.flush()
+        await self.session.commit()
+        await self.session.refresh(db_task)
+        return db_task
+    
+    async def get(self, task_id: str) -> Optional[ScheduledTaskDB]:
+        """获取单个调度任务"""
+        return await self.session.get(ScheduledTaskDB, task_id)
+    
+    async def get_pending_tasks(self, before_time: datetime, limit: int = 100) -> List[ScheduledTaskDB]:
+        """获取待处理的调度任务"""
+        stmt = (
+            select(ScheduledTaskDB)
+            .where(
+                and_(
+                    ScheduledTaskDB.status == "PENDING",
+                    ScheduledTaskDB.scheduled_time <= before_time,
+                    or_(
+                        ScheduledTaskDB.execute_after.is_(None),
+                        ScheduledTaskDB.execute_after <= before_time
+                    ),
+                    ScheduledTaskDB.cancelled_at.is_(None)
+                )
+            )
+            .order_by(
+                ScheduledTaskDB.priority.desc(),
+                ScheduledTaskDB.scheduled_time.asc()
+            )
+            .limit(limit)
+        )
+        
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+    
+    async def update_status(self, task_id: str, status: str) -> bool:
+        """更新调度任务状态"""
+        stmt = (
+            update(ScheduledTaskDB)
+            .where(ScheduledTaskDB.id == task_id)
+            .values(
+                status=status
+            )
+        )
+        
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        return result.rowcount > 0
+    
+    async def record_retry(self, task_id: str, error_msg: str) -> None:
+        """记录任务重试"""
+        # 先获取当前任务
+        task = await self.session.get(ScheduledTaskDB, task_id)
+        if task:
+            task.retry_count += 1
+            task.error_msg = error_msg
+            await self.session.commit()
+            await self.session.refresh(task)

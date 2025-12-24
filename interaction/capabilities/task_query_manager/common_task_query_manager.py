@@ -1,6 +1,5 @@
 from typing import Dict, Any, List, Optional
 import json
-import logging
 from .interface import ITaskQueryManagerCapability
 from common import (
     TaskSummary,
@@ -11,18 +10,18 @@ from common import (
 from external.client import TaskStorage
 from ..llm.interface import ILLMCapability
 
-logger = logging.getLogger(__name__)
-
 class CommonTaskQuery(ITaskQueryManagerCapability):
     """任务查询管理器 - 查询任务的状态和结果"""
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化任务查询管理器"""
+        self.logger.info("初始化任务查询管理器")
         self.config = config
         # 获取LLM能力
         self._llm = None
         # 初始化任务存储
         self.task_storage = TaskStorage()
+        self.logger.info("任务查询管理器初始化完成")
     
     @property
     def llm(self):
@@ -303,7 +302,7 @@ class CommonTaskQuery(ITaskQueryManagerCapability):
             filters = json.loads(response.strip())
             return self._validate_and_clean_filters(filters)
         except Exception as e:
-            logger.warning(f"LLM parsing failed, fallback to rule-based: {e}")
+            self.logger.warning(f"LLM parsing failed, fallback to rule-based: {e}")
             return self._parse_query_filters_rule_based(intent_result, last_mentioned_task_id)
     
     def _parse_query_filters(self, intent_result: IntentRecognitionResultDTO, last_mentioned_task_id: Optional[str] = None) -> Dict[str, Any]:

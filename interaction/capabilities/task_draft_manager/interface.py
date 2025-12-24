@@ -156,3 +156,39 @@ class ITaskDraftManagerCapability(BaseManager):
             更新后的任务草稿
         """
         pass
+    
+    @abstractmethod
+    def submit_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """提交草稿，执行提交前校验
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            提交后的任务草稿
+        """
+        pass
+    
+    @abstractmethod
+    def cancel_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """取消草稿
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            取消后的任务草稿
+        """
+        pass
+    
+    @abstractmethod
+    def set_draft_pending_confirm(self, draft: TaskDraftDTO) -> TaskDraftDTO:
+        """将草稿设置为待确认状态
+        
+        Args:
+            draft: 任务草稿DTO
+            
+        Returns:
+            更新后的任务草稿
+        """
+        pass

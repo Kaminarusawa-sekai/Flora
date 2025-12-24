@@ -7,7 +7,7 @@ class TaskDefinitionRepo(ABC):
     """任务定义仓库接口"""
     
     @abstractmethod
-    async def create(self, name: str, cron_expr: Optional[str] = None, loop_config: dict = None, is_active: bool = True) -> any:
+    async def create(self, name: str, content: dict = None, cron_expr: Optional[str] = None, loop_config: dict = None, schedule_type: str = "IMMEDIATE", schedule_config: dict = None, is_active: bool = True, is_temporary: bool = False, created_at: datetime = None) -> any:
         """创建任务定义"""
         pass
     
@@ -68,4 +68,33 @@ class TaskInstanceRepo(ABC):
     @abstractmethod
     async def get_running_instances(self, timeout_seconds: int = 3600) -> List[any]:
         """获取运行超时的任务实例"""
+        pass
+
+
+class ScheduledTaskRepo(ABC):
+    """调度任务仓库接口"""
+    
+    @abstractmethod
+    async def create(self, task) -> any:
+        """创建调度任务"""
+        pass
+    
+    @abstractmethod
+    async def get(self, task_id: str) -> any:
+        """获取单个调度任务"""
+        pass
+    
+    @abstractmethod
+    async def get_pending_tasks(self, before_time: datetime, limit: int = 100) -> List[any]:
+        """获取待处理的调度任务"""
+        pass
+    
+    @abstractmethod
+    async def update_status(self, task_id: str, status: str) -> None:
+        """更新调度任务状态"""
+        pass
+    
+    @abstractmethod
+    async def record_retry(self, task_id: str, error_msg: str) -> None:
+        """记录任务重试"""
         pass

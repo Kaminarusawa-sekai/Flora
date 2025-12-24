@@ -4,7 +4,8 @@ from ..base import BaseManager
 from common import (
     IntentRecognitionResultDTO,
     UserInputDTO,
-    EntityDTO
+    EntityDTO,
+    DialogStateDTO
 )
 
 class IIntentRecognitionManagerCapability(BaseManager):
@@ -31,5 +32,18 @@ class IIntentRecognitionManagerCapability(BaseManager):
             
         Returns:
             实体列表
+        """
+        pass
+    
+    @abstractmethod
+    def judge_special_intent(self, user_input: str, dialog_state: DialogStateDTO) -> str:
+        """判断特殊意图：确认、修改草稿或拒绝
+        
+        Args:
+            user_input: 用户输入文本
+            dialog_state: 对话状态DTO
+            
+        Returns:
+            字符串表示的意图类型："CONFIRM"、"CANCEL"、"MODIFY" 或空字符串
         """
         pass

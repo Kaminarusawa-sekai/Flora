@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 # 导入配置
-from ...config.settings import settings
+from config.settings import settings
 
 # 创建异步引擎
 engine = create_async_engine(

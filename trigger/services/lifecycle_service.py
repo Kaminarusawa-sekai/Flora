@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Dict, Any
 
-from ..external.db.impl import create_task_definition_repo, create_task_instance_repo
-from ..external.db.session import dialect
-from ..external.messaging.base import MessageBroker
-from ..events.event_publisher import event_publisher
+from external.db.impl import create_task_definition_repo, create_task_instance_repo
+from external.db.session import dialect
+from external.messaging.base import MessageBroker
+from events.event_publisher import event_publisher
+from common.enums import ScheduleType
+from .scheduler_service import SchedulerService
 
 
 class LifecycleService:
@@ -14,6 +16,7 @@ class LifecycleService:
     
     def __init__(self, broker: MessageBroker):
         self.broker = broker
+        self.scheduler = SchedulerService(broker)
 
     # =========================================================================
     # 核心场景：即席任务 (Ad-hoc)
@@ -26,7 +29,10 @@ class LifecycleService:
         task_content: Dict[str, Any],  # 具体的执行逻辑，如 {"script": "print('hello')", "image": "python:3.9"}
         input_params: Dict[str, Any],
         loop_config: Optional[Dict[str, Any]] = None, # 如果这个临时任务需要循环，就在这里传
-        is_temporary: bool = True # 标记是否为临时定义，方便后续清理
+        is_temporary: bool = True, # 标记是否为临时定义，方便后续清理
+        # 新增参数，用于指定调度类型
+        schedule_type: str = "IMMEDIATE",  # 保持兼容，可以是 "IMMEDIATE", "CRON", "LOOP", "DELAYED"
+        schedule_config: Optional[Dict[str, Any]] = None
     ):
         """
         处理【定义+实例】一起过来的请求。
@@ -43,7 +49,7 @@ class LifecycleService:
         new_def = await def_repo.create(
             name=task_name,
             content=task_content,       # 核心逻辑：代码、镜像地址等
-            loop_config=loop_config,    # 循环配置：如果有，存入数据库
+            loop_config=loop_config or {},    # 循环配置：如果有，存入数据库
             is_temporary=is_temporary,  # 标记位：这是一个临时生成的定义
             created_at=datetime.now(timezone.utc)
         )
@@ -51,27 +57,61 @@ class LifecycleService:
         # 拿到生成的 ID
         def_id = new_def.id
         
-        # --- 步骤 2: 启动实例 (Instance) ---
-        # 既然定义里已经存了 loop_config，我们直接用通用逻辑启动即可
-        # 如果 loop_config 有值，_start_trace_core 会自动识别为 LOOP 模式
-        # 如果 loop_config 为空，则自动识别为 ONCE 模式
+        # --- 步骤 2: 根据调度类型创建调度任务 ---
+        trace_id = str(uuid.uuid4())
         
-        return await self._start_trace_core(
-            session=session,
-            def_id=def_id,
-            input_params=input_params,
-            trigger_type="API", # 标记为 API 触发
-            force_run_once=False
-        )
+        if schedule_type in ["ONCE", "IMMEDIATE"] or not schedule_config:
+            # 即时任务
+            await self.scheduler.schedule_immediate(
+                session=session,
+                definition_id=def_id,
+                input_params=input_params,
+                trace_id=trace_id
+            )
+        elif schedule_type == "CRON":
+            cron_expr = schedule_config.get("cron_expression")
+            if cron_expr:
+                await self.scheduler.schedule_cron(
+                    session=session,
+                    definition_id=def_id,
+                    cron_expression=cron_expr,
+                    input_params=input_params,
+                    trace_id=trace_id
+                )
+        elif schedule_type == "LOOP":
+            max_rounds = loop_config.get("max_rounds", 1) if loop_config else 1
+            interval_sec = loop_config.get("interval_sec") if loop_config else None
+            
+            await self.scheduler.schedule_loop(
+                session=session,
+                definition_id=def_id,
+                input_params=input_params,
+                max_rounds=max_rounds,
+                loop_interval=interval_sec,
+                trace_id=trace_id
+            )
+        elif schedule_type == "DELAYED":
+            delay_seconds = schedule_config.get("delay_seconds", 0)
+            await self.scheduler.schedule_delayed(
+                session=session,
+                definition_id=def_id,
+                input_params=input_params,
+                delay_seconds=delay_seconds,
+                trace_id=trace_id
+            )
+        
+        return trace_id
 
     # =========================================================================
     # 兼容旧场景：基于已有 ID 触发 (Pre-defined)
     # =========================================================================
     async def trigger_by_id(self, session: AsyncSession, def_id: str, input_params: dict):
         """基于已有的定义ID触发 (适用于定时任务调度器或引用公共库任务)"""
-        return await self._start_trace_core(
-            session=session, def_id=def_id, input_params=input_params,
-            trigger_type="API"
+        # 使用新的调度服务直接触发即时任务
+        return await self.scheduler.schedule_immediate(
+            session=session,
+            definition_id=def_id,
+            input_params=input_params
         )
 
     # =========================================================================
@@ -92,44 +132,26 @@ class LifecycleService:
         
         trace_id = str(uuid.uuid4())
         
-        # 2. 判定调度逻辑
-        if force_run_once:
-            schedule_type = "ONCE"
+        # 2. 根据触发类型使用新的调度服务
+        if trigger_type == "CRON" and task_def.cron_expr:
+            # 需要先获取任务定义的CRON表达式
+            await self.scheduler.schedule_cron(
+                session=session,
+                definition_id=def_id,
+                cron_expression=task_def.cron_expr,
+                input_params=input_params,
+                trace_id=trace_id
+            )
         else:
-            # 这里的逻辑完美兼容了 Ad-hoc 任务：
-            # 如果你在 submit_ad_hoc_task 里传了 loop_config，这里就会读出来变成 LOOP
-            # 如果没传，这里就是 ONCE
-            base_type = "CRON" if trigger_type == "CRON" else "ONCE"
-            if task_def.loop_config and task_def.loop_config.get("max_rounds", 0) > 0:
-                schedule_type = "LOOP"
-            else:
-                schedule_type = base_type
-
-        # 3. 创建实例
-        instance_repo = create_task_instance_repo(session, dialect)
-        new_instance = await instance_repo.create(
-            definition_id=def_id,
-            trace_id=trace_id,
-            input_params=input_params,
-            schedule_type=schedule_type,
-            round_index=0,
-            depends_on=[]
-        )
+            # 其他类型当作即时任务处理
+            await self.scheduler.schedule_immediate(
+                session=session,
+                definition_id=def_id,
+                input_params=input_params,
+                trace_id=trace_id
+            )
         
-        # 4. 发消息 (Worker 收到消息后，会根据 definition_id 去库里查刚才存的 content)
-        await self.broker.publish(
-            topic="task.execute",
-            message={
-                "instance_id": new_instance.id,
-                "trace_id": trace_id,
-                "definition_id": def_id,
-                "input_params": input_params,
-                "schedule_type": schedule_type,
-                "round_index": 0
-            }
-        )
-        
-        # 5. 发事件
+        # 3. 发事件
         await event_publisher.publish_start_trace(
             root_def_id=def_id,
             trace_id=trace_id,
@@ -251,3 +273,409 @@ class LifecycleService:
             instance_id=instance_id,
             status="RUNNING"
         )
+    
+    # =========================================================================
+    # 任务控制功能
+    # =========================================================================
+    async def cancel_task(
+        self,
+        session: AsyncSession,
+        instance_id: Optional[str] = None,
+        trace_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """取消任务
+        
+        Args:
+            session: 数据库会话
+            instance_id: 任务实例ID（可选）
+            trace_id: 跟踪ID（可选）- 如果提供，取消该trace下的所有任务
+        
+        Returns:
+            Dict[str, Any]: 取消操作结果，包含success、message和affected_instances
+        """
+        from ..events.event_publisher import control_external_task
+        
+        # 1. 获取需要取消的任务实例
+        instance_repo = create_task_instance_repo(session, dialect)
+        instances = []
+        
+        if instance_id:
+            instance = await instance_repo.get(instance_id)
+            if instance:
+                instances = [instance]
+        elif trace_id:
+            instances = await instance_repo.list_by_trace_id(trace_id)
+        
+        if not instances:
+            return {
+                "success": False,
+                "message": "No tasks found to cancel",
+                "affected_instances": []
+            }
+        
+        # 2. 逐个取消任务
+        success_count = 0
+        failed_instances = []
+        affected_instances = []
+        
+        for instance in instances:
+            try:
+                affected_instances.append(instance.id)
+                
+                # 3. 检查任务状态，判断是内部取消还是外部取消
+                if instance.status in ["RUNNING", "DISPATCHED"]:
+                    # 已发出去的任务，调用外部系统取消
+                    external_success = await control_external_task(
+                        task_id=instance.id,
+                        action="CANCEL"
+                    )
+                    # 更新内部状态
+                    await instance_repo.update_status(
+                        instance_id=instance.id,
+                        status="CANCELLED",
+                        error_msg="Task cancelled by user"
+                    )
+                    
+                    if external_success:
+                        success_count += 1
+                    else:
+                        failed_instances.append(instance.id)
+                else:
+                    # 未发出去的任务，直接内部取消
+                    await instance_repo.update_status(
+                        instance_id=instance.id,
+                        status="CANCELLED",
+                        error_msg="Task cancelled internally"
+                    )
+                    success_count += 1
+            except Exception as e:
+                failed_instances.append(instance.id)
+        
+        if success_count == len(instances):
+            return {
+                "success": True,
+                "message": f"Successfully cancelled {success_count} task(s)",
+                "affected_instances": affected_instances,
+                "failed_instances": []
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Cancelled {success_count} task(s), failed to cancel {len(failed_instances)} task(s)",
+                "affected_instances": affected_instances,
+                "failed_instances": failed_instances
+            }
+    
+    async def pause_task(
+        self,
+        session: AsyncSession,
+        instance_id: str
+    ) -> Dict[str, Any]:
+        """暂停任务
+        
+        Args:
+            session: 数据库会话
+            instance_id: 任务实例ID
+        
+        Returns:
+            Dict[str, Any]: 暂停操作结果，包含success、message和details
+        """
+        from ..events.event_publisher import control_external_task
+        
+        # 1. 获取任务实例
+        instance_repo = create_task_instance_repo(session, dialect)
+        instance = await instance_repo.get(instance_id)
+        
+        if not instance:
+            return {
+                "success": False,
+                "message": f"Task instance {instance_id} not found",
+                "details": {
+                    "instance_id": instance_id,
+                    "current_status": None
+                }
+            }
+        
+        try:
+            original_status = instance.status
+            
+            # 2. 检查任务状态，判断是内部暂停还是外部暂停
+            if instance.status in ["RUNNING", "DISPATCHED"]:
+                # 已发出去的任务，调用外部系统暂停
+                external_success = await control_external_task(
+                    task_id=instance.id,
+                    action="PAUSE"
+                )
+                
+                if external_success:
+                    # 更新内部状态
+                    await instance_repo.update_status(
+                        instance_id=instance.id,
+                        status="PAUSED"
+                    )
+                    return {
+                        "success": True,
+                        "message": f"Successfully paused task {instance_id}",
+                        "details": {
+                            "instance_id": instance_id,
+                            "original_status": original_status,
+                            "new_status": "PAUSED",
+                            "control_type": "external"
+                        }
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Failed to pause task {instance_id} via external system",
+                        "details": {
+                            "instance_id": instance_id,
+                            "current_status": original_status,
+                            "control_type": "external"
+                        }
+                    }
+            else:
+                # 未发出去的任务，直接内部暂停
+                await instance_repo.update_status(
+                    instance_id=instance.id,
+                    status="PAUSED"
+                )
+                return {
+                    "success": True,
+                    "message": f"Successfully paused task {instance_id} internally",
+                    "details": {
+                        "instance_id": instance_id,
+                        "original_status": original_status,
+                        "new_status": "PAUSED",
+                        "control_type": "internal"
+                    }
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error pausing task {instance_id}: {str(e)}",
+                "details": {
+                    "instance_id": instance_id,
+                    "error": str(e)
+                }
+            }
+    
+    async def resume_task(
+        self,
+        session: AsyncSession,
+        instance_id: str
+    ) -> Dict[str, Any]:
+        """继续任务
+        
+        Args:
+            session: 数据库会话
+            instance_id: 任务实例ID
+        
+        Returns:
+            Dict[str, Any]: 继续操作结果，包含success、message和details
+        """
+        from ..events.event_publisher import control_external_task
+        
+        # 1. 获取任务实例
+        instance_repo = create_task_instance_repo(session, dialect)
+        instance = await instance_repo.get(instance_id)
+        
+        if not instance:
+            return {
+                "success": False,
+                "message": f"Task instance {instance_id} not found",
+                "details": {
+                    "instance_id": instance_id,
+                    "current_status": None
+                }
+            }
+        
+        try:
+            original_status = instance.status
+            
+            # 2. 检查任务状态，判断是内部继续还是外部继续
+            if instance.status == "PAUSED":
+                # 已暂停的任务，判断是外部暂停还是内部暂停
+                if hasattr(instance, "external_status_pushed") and instance.external_status_pushed:
+                    # 调用外部系统继续
+                    external_success = await control_external_task(
+                        task_id=instance.id,
+                        action="RESUME"
+                    )
+                    
+                    if external_success:
+                        # 更新内部状态
+                        await instance_repo.update_status(
+                            instance_id=instance.id,
+                            status="RUNNING"
+                        )
+                        return {
+                            "success": True,
+                            "message": f"Successfully resumed task {instance_id}",
+                            "details": {
+                                "instance_id": instance_id,
+                                "original_status": original_status,
+                                "new_status": "RUNNING",
+                                "control_type": "external"
+                            }
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Failed to resume task {instance_id} via external system",
+                            "details": {
+                                "instance_id": instance_id,
+                                "current_status": original_status,
+                                "control_type": "external"
+                            }
+                        }
+                else:
+                    # 内部暂停的任务，直接更新状态
+                    new_status = "PENDING"
+                    await instance_repo.update_status(
+                        instance_id=instance.id,
+                        status=new_status
+                    )
+                    return {
+                        "success": True,
+                        "message": f"Successfully resumed task {instance_id} internally",
+                        "details": {
+                            "instance_id": instance_id,
+                            "original_status": original_status,
+                            "new_status": new_status,
+                            "control_type": "internal"
+                        }
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": f"Cannot resume task {instance_id}: current status is {original_status}",
+                    "details": {
+                        "instance_id": instance_id,
+                        "current_status": original_status
+                    }
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error resuming task {instance_id}: {str(e)}",
+                "details": {
+                    "instance_id": instance_id,
+                    "error": str(e)
+                }
+            }
+    
+    async def modify_task(
+        self,
+        session: AsyncSession,
+        instance_id: str,
+        input_params: Optional[Dict[str, Any]] = None,
+        schedule_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """修改任务
+        
+        Args:
+            session: 数据库会话
+            instance_id: 任务实例ID
+            input_params: 新的输入参数（可选）
+            schedule_config: 新的调度配置（可选）
+        
+        Returns:
+            Dict[str, Any]: 修改操作结果，包含success、message和details
+        """
+        from ..events.event_publisher import control_external_task
+        
+        # 1. 获取任务实例
+        instance_repo = create_task_instance_repo(session, dialect)
+        instance = await instance_repo.get(instance_id)
+        
+        if not instance:
+            return {
+                "success": False,
+                "message": f"Task instance {instance_id} not found",
+                "details": {
+                    "instance_id": instance_id,
+                    "current_status": None
+                }
+            }
+        
+        try:
+            original_status = instance.status
+            
+            # 2. 检查任务状态
+            if instance.status in ["RUNNING", "DISPATCHED"]:
+                # 已发出去的任务，没法修改，直接返回失败
+                modified_fields = []
+                if input_params:
+                    modified_fields.append("input_params")
+                if schedule_config:
+                    modified_fields.append("schedule_config")
+                    
+                return {
+                    "success": False,
+                    "message": f"Cannot modify task {instance_id}: task is already running or dispatched",
+                    "details": {
+                        "instance_id": instance_id,
+                        "current_status": original_status,
+                        "modified_fields": modified_fields
+                    }
+                }
+            else:
+                # 未发出去的任务，直接更新内部数据
+                update_data = {}
+                modified_fields = []
+                
+                if input_params:
+                    update_data["input_params"] = input_params
+                    modified_fields.append("input_params")
+                if schedule_config:
+                    update_data["schedule_config"] = schedule_config
+                    modified_fields.append("schedule_config")
+                
+                if not modified_fields:
+                    return {
+                        "success": False,
+                        "message": f"No fields provided to modify for task {instance_id}",
+                        "details": {
+                            "instance_id": instance_id,
+                            "current_status": original_status
+                        }
+                    }
+                
+                # 调用存储库更新方法（假设存在）
+                if hasattr(instance_repo, "update_instance"):
+                    await instance_repo.update_instance(
+                        instance_id=instance_id,
+                        **update_data
+                    )
+                else:
+                    # 如果没有直接的update_instance方法，可能需要更新特定字段
+                    if input_params:
+                        await instance_repo.update_input_params(
+                            instance_id=instance_id,
+                            input_params=input_params
+                        )
+                    if schedule_config:
+                        await instance_repo.update_schedule_config(
+                            instance_id=instance_id,
+                            schedule_config=schedule_config
+                        )
+                
+                return {
+                    "success": True,
+                    "message": f"Successfully modified task {instance_id} internally",
+                    "details": {
+                        "instance_id": instance_id,
+                        "current_status": original_status,
+                        "control_type": "internal",
+                        "modified_fields": modified_fields
+                    }
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error modifying task {instance_id}: {str(e)}",
+                "details": {
+                    "instance_id": instance_id,
+                    "error": str(e)
+                }
+            }

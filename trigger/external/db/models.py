@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Boolean, Text
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Boolean, Text, Index
 from sqlalchemy.orm import declarative_base
 from datetime import datetime, timezone
 import uuid
@@ -10,14 +10,17 @@ class TaskDefinitionDB(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)
+    content = Column(JSON, nullable=False, default={})
     cron_expr = Column(String, nullable=True)  # 例如 "*/5 * * * *"
-    is_active = Column(Boolean, default=True)
-    
+    schedule_type = Column(String, nullable=False, default="IMMEDIATE")
+    schedule_config = Column(JSON, default={})
     # 存储循环配置，例如 {"max_rounds": 5, "interval_sec": 10}
     loop_config = Column(JSON, default={})
-    
+    is_active = Column(Boolean, default=True)
     last_triggered_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+    is_temporary = Column(Boolean, default=False)
 
 class TaskInstanceDB(Base):
     __tablename__ = "task_instances"
@@ -43,3 +46,42 @@ class TaskInstanceDB(Base):
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
+
+
+class ScheduledTaskDB(Base):
+    __tablename__ = "scheduled_tasks"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    definition_id = Column(String, nullable=False, index=True)
+    trace_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="PENDING")
+    
+    # 调度相关
+    schedule_type = Column(String, nullable=False, default="IMMEDIATE")
+    scheduled_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    execute_after = Column(DateTime(timezone=True), index=True)
+    schedule_config = Column(JSON, default={})
+    
+    # 执行相关
+    round_index = Column(Integer, default=0)
+    input_params = Column(JSON, default={})
+    output_ref = Column(String, nullable=True)
+    error_msg = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
+    depends_on = Column(JSON, default=[])  # 存储为JSON数组
+    
+    # 调度控制
+    priority = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    retry_count = Column(Integer, default=0)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    external_status_pushed = Column(Boolean, default=False)
+    
+    # 索引
+    __table_args__ = (
+        Index('idx_scheduled_tasks_status_scheduled_time', 'status', 'scheduled_time'),
+        Index('idx_scheduled_tasks_trace_id', 'trace_id'),
+        {'extend_existing': True}
+    )
