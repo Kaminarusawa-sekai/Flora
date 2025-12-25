@@ -5,9 +5,9 @@ from typing import List, Optional, Dict, Any, Set
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入本地模块
-from ..common.event_instance import EventInstance
-from ..common.enums import EventInstanceStatus
-from ..common.events import (
+from common.event_instance import EventInstance
+from common.enums import EventInstanceStatus
+from common.events import (
     TaskStatusEvent,
     TaskStartedEvent,
     TaskCompletedEvent,
@@ -18,10 +18,10 @@ from ..common.events import (
 
 # 导入外部依赖
 
-from ..external.cache.base import CacheClient  # 需要 Cache 来读取大字段
-from ..external.db.session import dialect
-from ..external.db.impl import create_event_instance_repo
-from ..external.events.bus import EventBus
+from external.cache.base import CacheClient  # 需要 Cache 来读取大字段
+from external.db.session import dialect
+from external.db.impl import create_event_instance_repo
+from external.events.bus import EventBus
 
 # 导入WebSocket管理器
 from .websocket_manager import ConnectionManager
@@ -229,53 +229,56 @@ class ObserverService:
             "edges": edges
         }
 
-    async def get_task_detail(
+    async def get_trace_detail(
         self,
         session: AsyncSession,
-        task_id: str,
+        trace_id: str,
         fetch_payload: bool = False
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """
-        获取单个任务详情
+        获取单个trace_id下的所有任务详情
         增强：支持从 input_ref / output_ref 还原真实大字段数据
         """
         inst_repo = create_event_instance_repo(session, dialect)
-        task = await inst_repo.get(task_id)
+        tasks = await inst_repo.find_by_trace_id(trace_id)
         
-        if not task:
-            return None
+        if not tasks:
+            return []
             
-        # 转换为字典
-        # 假设 EventInstance 有 to_dict 方法，或者手动构建
-        result = {
-            "id": task.id,
-            "trace_id": task.trace_id,
-            "def_id": task.def_id,
-            "name": task.name,
-            "actor_type": task.actor_type,
-            "status": task.status.value,
-            "input_ref": task.input_ref,
-            "output_ref": task.output_ref,
-            "error_msg": task.error_msg,
-            "depth": task.depth,
-            "layer": task.layer,
-            "parent_id": task.parent_id,
-            "job_id": task.job_id,
-            "created_at": task.created_at,
-            "updated_at": task.updated_at,
-            "control_signal": task.control_signal if hasattr(task, 'control_signal') else None
-        }
+        results = []
+        for task in tasks:
+            # 转换为字典
+            result = {
+                "id": task.id,
+                "trace_id": task.trace_id,
+                "def_id": task.def_id,
+                "name": task.name,
+                "actor_type": task.actor_type,
+                "status": task.status.value,
+                "input_ref": task.input_ref,
+                "output_ref": task.output_ref,
+                "error_msg": task.error_msg,
+                "depth": task.depth,
+                "layer": task.layer,
+                "parent_id": task.parent_id,
+                "job_id": task.job_id,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "control_signal": task.control_signal if hasattr(task, 'control_signal') else None
+            }
+            
+            # 如果需要，且存在 cache client，尝试还原大字段
+            if fetch_payload and self.cache:
+                if task.input_ref and task.input_ref.startswith("payload-"):
+                    # 模拟从 LifecycleService._save_payload 保存的地方读取
+                    # 实际 key 可能是 task.input_ref
+                    payload_data = await self.cache.get(task.input_ref)
+                    if payload_data:
+                        result["input_params_full"] = payload_data
+            
+            results.append(result)
         
-        # 如果需要，且存在 cache client，尝试还原大字段
-        if fetch_payload and self.cache:
-            if task.input_ref and task.input_ref.startswith("payload-"):
-                # 模拟从 LifecycleService._save_payload 保存的地方读取
-                # 实际 key 可能是 task.input_ref
-                payload_data = await self.cache.get(task.input_ref)
-                if payload_data:
-                    result["input_params_full"] = payload_data
-        
-        return result
+        return results
 
     # 保留原有方法以兼容旧代码
     async def get_task_instance(

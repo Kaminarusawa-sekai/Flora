@@ -1,8 +1,9 @@
-from typing import Literal, Optional
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..external.cache.base import CacheClient
-from ..external.db.session import dialect
-from ..external.db.impl import create_event_instance_repo
+from external.cache.base import CacheClient
+from external.db.session import dialect
+from external.db.impl import create_event_instance_repo
+from events.common.signal import SignalStatus
 
 
 class SignalService:
@@ -18,7 +19,7 @@ class SignalService:
         session: AsyncSession,
         trace_id: str = None,
         instance_id: str = None,
-        signal: str = "CANCEL"
+        signal: SignalStatus = SignalStatus.CANCELLED
     ) -> None:
         """
         发送控制信号，支持两种模式：
@@ -46,7 +47,7 @@ class SignalService:
                 raise ValueError(f"Instance {instance_id} does not belong to trace {trace_id}")
             
             # 2. 更新当前节点
-            await inst_repo.update(instance_id, {"control_signal": signal})
+            await inst_repo.update(instance_id, {"control_signal": signal.value})
             
             trace_id = current_node.trace_id
             
@@ -55,7 +56,7 @@ class SignalService:
             await inst_repo.bulk_update_signal_by_path(
                 trace_id=trace_id,
                 path_pattern=path_pattern,
-                signal=signal
+                signal=signal.value
             )
         else:
             # 模式2：整个 trace 控制 - 向整个 trace 发送信号
@@ -65,24 +66,24 @@ class SignalService:
             # 更新该 trace 下所有任务的信号
             await inst_repo.update_signal_by_trace(
                 trace_id,
-                signal=signal
+                signal=signal.value
             )
         
         # 4. 同时发送缓存信号
         cache_key = self._get_cache_key(trace_id)
-        await self.cache.set(cache_key, signal, ttl=3600)
+        await self.cache.set(cache_key, signal.value, ttl=3600)
     
     # 兼容旧接口
     async def cancel_trace(self, session: AsyncSession, trace_id: str):
         """取消跟踪（兼容旧版接口）"""
-        await self.send_signal(session, trace_id=trace_id, signal="CANCEL")
+        await self.send_signal(session, trace_id=trace_id, signal=SignalStatus.CANCELLED)
     
     async def stop_trace(self, session: AsyncSession, trace_id: str):
         """
         [远程遥控]
         将整个链路标记为 CANCEL。
         """
-        await self.send_signal(session, trace_id=trace_id, signal="CANCEL")
+        await self.send_signal(session, trace_id=trace_id, signal=SignalStatus.CANCELLED)
 
     async def check_signal(self, trace_id: str, session: Optional[AsyncSession] = None) -> Optional[str]:
         """供内部服务调用（如调度器预检）"""
@@ -117,4 +118,4 @@ class SignalService:
     async def check_trace_signal(self, trace_id: str) -> bool:
         """检查跟踪是否被取消（兼容旧版接口）"""
         signal = await self.check_signal(trace_id)
-        return signal == "CANCEL"
+        return signal == SignalStatus.CANCELLED.value

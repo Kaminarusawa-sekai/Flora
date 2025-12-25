@@ -7,6 +7,7 @@ from .enums import ActorType, ScheduleType, EventInstanceStatus
 class EventInstance(BaseModel):
     id: str
     trace_id: str
+    request_id: Optional[str] = None  # 关联请求ID，用于支持 request_id -> trace_id 的一对多关系
     parent_id: Optional[str] = None
     job_id: str
     def_id: str  # 关联任务定义

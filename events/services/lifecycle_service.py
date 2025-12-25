@@ -3,14 +3,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..common.event_instance import EventInstance
-from ..common.event_log import EventLog
-from ..common.enums import EventInstanceStatus
+from common.event_instance import EventInstance
+from common.event_log import EventLog
+from common.enums import EventInstanceStatus
 
-from ..external.cache.base import CacheClient
-from ..external.db.session import dialect
-from ..external.db.impl import create_event_definition_repo, create_event_instance_repo, create_event_log_repo
-from ..external.events.bus import EventBus
+from external.cache.base import CacheClient
+from external.db.session import dialect
+from external.db.impl import create_event_definition_repo, create_event_instance_repo, create_event_log_repo
+from external.events.bus import EventBus
 
 ##TODO:这里有双写一致性问题，后期再解决
 class LifecycleService:
@@ -58,12 +58,14 @@ class LifecycleService:
         session: AsyncSession,
         root_def_id: str,
         input_params: dict,
-        trace_id: str, # 外部传入，作为唯一凭证
-        user_id: Optional[str] = None # 新增：记录是谁触发的
+        request_id: str,                # 【新增】必须传入 request_id 用于关联
+        trace_id: Optional[str] = None, # 【修改】变为可选，如果不传则内部生成
+        user_id: Optional[str] = None   # 记录是谁触发的
 
     ) -> str:
         """
-        启动链路，创建根节点 + 记录第一条流水
+        启动链路
+        维护 request_id (1) -> trace_id (N) 的关系
         """
         # 1. 校验定义是否存在
         def_repo = create_event_definition_repo(session, dialect)
@@ -71,11 +73,16 @@ class LifecycleService:
         if not definition:
              raise ValueError(f"Definition {root_def_id} not found")
 
-        # 2. 创建根节点
+        # 2. 【修改】生成 trace_id (如果外部没传)
+        if not trace_id:
+            trace_id = str(uuid.uuid4())
+
+        # 3. 创建根节点
         root_id = str(uuid.uuid4())
         root = EventInstance(
             id=root_id,
             trace_id=trace_id,
+            request_id=request_id,   # 【新增】关键：将 request_id 写入根节点
             parent_id=None,
             job_id=f"job-{trace_id[:8]}",
             def_id=root_def_id,
@@ -100,7 +107,11 @@ class LifecycleService:
             session,
             root,
             event_type="STARTED",
-            payload={"user_id": user_id, "params_preview": str(input_params)[:100]}
+            payload={
+                "user_id": user_id, 
+                "request_id": request_id, # Log 里也记一下
+                "params_preview": str(input_params)[:100]
+            }
         )
         
         # 【使用抽象】发送 TRACE_CREATED 事件
@@ -111,11 +122,34 @@ class LifecycleService:
             key=trace_id,
             payload={
                 "root_instance_id": root_id,
-                "def_id": root_def_id
+                "def_id": root_def_id,
+                "request_id": request_id, # 通知下游，这个 trace 属于哪个 request
+                "trace_id": trace_id      # 返回生成的 trace_id
             }
         )
 
         return trace_id
+
+    async def get_latest_trace_by_request(self, session: AsyncSession, request_id: str) -> Optional[str]:
+        """
+        根据 request_id 获取最新的 trace_id
+        """
+        from sqlalchemy import select, desc
+        from ..external.db.models import EventInstanceDB
+        
+        # 只需要查根节点 (parent_id 为空)
+        stmt = (
+            select(EventInstanceDB.trace_id)
+            .where(
+                EventInstanceDB.request_id == request_id,
+                EventInstanceDB.parent_id == None  # 根节点
+            )
+            .order_by(desc(EventInstanceDB.created_at)) # 最新的在前
+            .limit(1)
+        )
+        
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def expand_topology(
         self,

@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import sessionmaker
-from ...config.settings import settings
+from config.settings import settings
 from .models import Base
 
 # 从URL解析数据库类型

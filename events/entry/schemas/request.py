@@ -23,7 +23,8 @@ class ExecutionEventRequest(BaseModel):
 # --- 修改：增强启动请求 ---
 class StartTraceRequest(BaseModel):
     root_def_id: str = Field(..., description="根节点定义ID")
-    trace_id: str = Field(..., description="跟踪ID，由外部传入")
+    request_id: str = Field(..., description="请求ID，用于关联 request_id -> trace_id 的一对多关系")
+    trace_id: Optional[str] = Field(None, description="跟踪ID，可选，由外部传入或内部生成")
     input_params: Dict[str, Any] = Field(default_factory=dict, description="启动参数")
     
     # 新增：允许传入用户ID，用于审计
@@ -46,4 +47,11 @@ class SplitTaskRequest(BaseModel):
     reasoning_snapshot: Optional[Dict[str, Any]] = None
 
 class ControlNodeRequest(BaseModel):
-    signal: str = Field(..., pattern="^(CANCEL|PAUSE|RESUME)$", description="控制信号")
+    signal: str = Field(
+        ..., 
+        pattern="^(CANCEL|PAUSE|RESUME)$", 
+        description="""控制信号：
+        - CANCEL: 取消节点及其子孙节点执行
+        - PAUSE: 暂停节点及其子孙节点执行
+        - RESUME: 恢复节点及其子孙节点执行（对应枚举中的NORMAL状态）"""
+    )

@@ -8,6 +8,9 @@ import httpx
 import uuid
 from datetime import datetime
 
+# 导入信号状态枚举
+from tasks.common.signal.signal_status import SignalStatus
+
 
 class EventPublisher:
     """
@@ -217,6 +220,54 @@ class EventPublisher:
         except Exception as e:
             self.log.error(f"Error in publish_task_event: {str(e)}", exc_info=True)
     
+    async def get_signal_status(
+        self, 
+        trace_id: str
+    ) -> Dict[str, Any]:
+        """
+        获取跟踪链路的当前信号状态
+        
+        Args:
+            trace_id: 跟踪链路ID
+            
+        Returns:
+            Dict: 包含信号状态的响应数据，其中signal字段为SignalStatus枚举值
+            
+        Raises:
+            httpx.RequestError: 如果请求失败
+            httpx.HTTPStatusError: 如果返回非200状态码
+        """
+        url = f"{self.base_url}/v1/commands/{trace_id}/status"
+        try:
+            resp = await self.client.get(url)
+            resp.raise_for_status()  # 自动抛出HTTP状态错误
+            result = resp.json()
+            
+            # 将信号值解析为SignalStatus枚举
+            signal_value = result.get('signal')
+            if signal_value:
+                try:
+                    # 将字符串转换为枚举值
+                    result['signal'] = SignalStatus(signal_value)
+                except ValueError:
+                    # 如果是未知信号值，记录警告并使用默认值
+                    self.log.warning(f"Unknown signal value '{signal_value}' for trace_id {trace_id}, using default NORMAL")
+                    result['signal'] = SignalStatus.NORMAL
+            else:
+                # 如果没有信号值，使用默认值
+                result['signal'] = SignalStatus.NORMAL
+            
+            self.log.info(f"Get signal status successfully for trace_id {trace_id}: {result.get('signal')}")
+            return result
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                self.log.warning(f"Signal status not found for trace_id {trace_id}: {str(e)}")
+                raise ValueError(f"Signal status not found for trace_id {trace_id}") from e
+            self.log.error(f"Failed to get signal status: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            self.log.error(f"Failed to get signal status: {str(e)}")
+            raise
 
 
 # 创建事件总线单例实例，使用默认的 lifecycle_base_url

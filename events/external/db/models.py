@@ -47,6 +47,7 @@ class EventInstanceDB(Base):
 
     id = Column(String, primary_key=True)
     trace_id = Column(String, index=True)
+    request_id = Column(String, index=True, nullable=True)  # 关联请求ID，用于支持 request_id -> trace_id 的一对多关系
     parent_id = Column(String, index=True)
     job_id = Column(String)
     def_id = Column(String, nullable=False)  # 关联任务定义
@@ -92,7 +93,8 @@ class EventInstanceDB(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("idx_trace_status", "trace_id", "status", if_not_exists=True),
+        Index("idx_trace_status", "trace_id", "status"),
+        Index("idx_request_root", "request_id", "parent_id"),  # 支持高效查询某个请求下的根节点
     )
 
 
@@ -112,7 +114,7 @@ class EventLogDB(Base):
     created_at = Column(DateTime, default=func.now())
 
     __table_args__ = (
-        Index("idx_instance_id", "instance_id", if_not_exists=True),
-        Index("idx_trace_id", "trace_id", if_not_exists=True),
-        Index("idx_event_type", "event_type", if_not_exists=True),
+        Index("idx_instance_id", "instance_id"),
+        Index("idx_trace_id", "trace_id"),
+        Index("idx_event_type", "event_type"),
     )

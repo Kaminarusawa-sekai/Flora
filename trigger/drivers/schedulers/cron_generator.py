@@ -149,7 +149,7 @@ async def cron_scheduler(lifecycle_svc: LifecycleService, async_session_factory)
                             logger.info(f"Triggering CRON task {defn.id} at {now}, next_run was {next_run}")
                             
                             # 启动新 trace
-                            await lifecycle_svc._start_trace_core(
+                            await lifecycle_svc.start_new_trace(
                                 session=db_session,
                                 def_id=defn.id,
                                 input_params={},

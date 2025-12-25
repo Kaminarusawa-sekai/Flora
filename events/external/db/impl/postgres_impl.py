@@ -6,10 +6,10 @@ from datetime import datetime
 
 from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository
 from ..models import EventInstanceDB, EventDefinitionDB, EventLogDB
-from ....common.event_instance import EventInstance
-from ....common.event_definition import EventDefinition
-from ....common.event_log import EventLog
-from ....common.enums import EventInstanceStatus
+from common.event_instance import EventInstance
+from common.event_definition import EventDefinition
+from common.event_log import EventLog
+from common.enums import EventInstanceStatus
 
 
 class PostgreSQLEventInstanceRepository(EventInstanceRepository):
@@ -119,6 +119,7 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         return EventInstance(
             id=db.id,
             trace_id=db.trace_id,
+            request_id=db.request_id,
             parent_id=db.parent_id,
             job_id=db.job_id,
             def_id=db.def_id,
@@ -151,6 +152,7 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         db_instance = EventInstanceDB(
             id=instance.id,
             trace_id=instance.trace_id,
+            request_id=instance.request_id,
             parent_id=instance.parent_id,
             job_id=instance.job_id,
             def_id=instance.def_id,

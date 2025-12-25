@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from ...common.event_definition import EventDefinition
-from ...common.event_instance import EventInstance
-from ...common.event_log import EventLog
-from ...common.enums import EventInstanceStatus
+from common.event_definition import EventDefinition
+from common.event_instance import EventInstance
+from common.event_log import EventLog
+from common.enums import EventInstanceStatus
 
 
 class EventDefinitionRepository(ABC):

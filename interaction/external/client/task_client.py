@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+import uuid
 import requests
 from interaction.common.task_execution import TaskExecutionContextDTO
 from interaction.common.base import ExecutionStatus
@@ -6,27 +7,55 @@ from interaction.common.base import ExecutionStatus
 class TaskClient:
     """任务执行客户端，用于与外部任务执行系统交互"""
     
-    def __init__(self, base_url: str = "http://external-task-system/api/v1"):
+    def __init__(self, base_url: str = "http://external-task-system/api/v1", events_base_url: str = "http://events-system/api/v1"):
         self.base_url = base_url.rstrip('/')
-        # 实际项目中，这里应该包含认证信息、超时设置等
+        self.events_base_url = events_base_url.rstrip('/')
+         # 实际项目中，这里应该包含认证信息、超时设置等
+        # 实际项目中，这里建议初始化 requests.Session() 以复用 TCP 连接
+        self.session = requests.Session()
     
-    def _call_ad_hoc_api(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """统一的内部调用方法"""
-        url = f"{self.base_url}/ad-hoc-tasks"
+    def _request(self, method: str, endpoint: str, json: Optional[Dict] = None, params: Optional[Dict] = None, use_events_url: bool = False) -> Dict[str, Any]:
+        """通用的 HTTP 请求封装"""
+        base_url = self.events_base_url if use_events_url else self.base_url
+        url = f"{base_url}{endpoint}"
         try:
-            response = requests.post(url, json=payload)
+            response = self.session.request(method, url, json=json, params=params)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            # 这里可以根据需要处理异常
-            raise Exception(f"Failed to submit task: {str(e)}")
+            # 生产环境建议使用 logger 记录详细报错
+            raise Exception(f"API Request Failed [{method} {endpoint}]: {str(e)}")
+    
+    def _resolve_trace_id(self, trace_id: Optional[str], request_id: Optional[str]) -> str:
+        """
+        核心逻辑：ID 自动解析器
+        
+        1. 如果有 trace_id，直接使用（最高效）。
+        2. 如果只有 request_id，调用接口换取 trace_id。
+        3. 如果都没有，抛出异常。
+        """
+        if trace_id:
+            return trace_id
+        
+        if request_id:
+            # 调用 Server 端定义的 /request-id-to-trace/{request_id} 接口
+            endpoint = f"/request-id-to-trace/{request_id}"
+            resp = self._request("GET", endpoint)
+            
+            if resp.get("success") and resp.get("trace_id"):
+                return resp["trace_id"]
+            else:
+                raise ValueError(f"无法通过 request_id [{request_id}] 找到对应的 trace_id，任务可能尚未创建或已过期。")
+        
+        raise ValueError("必须提供 trace_id 或 request_id 其中之一")
     
     def submit_task(
         self,
         task_name: str,           # 新增：任务要有名字
         task_content: Dict[str, Any], # 新增：必须告诉后端执行什么逻辑
         parameters: Dict[str, Any],
-        user_id: str
+        user_id: str,
+        request_id: Optional[str] = None  # 新增：允许外部传入 request_id
     ) -> str:
         """
         提交一次性任务
@@ -37,10 +66,16 @@ class TaskClient:
             task_content: 任务内容，包含具体执行定义
             parameters: 执行参数
             user_id: 用户ID
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             后端生成的trace_id
         """
+        # 1. 如果外部没有传入 request_id，客户端自动生成一个 UUID
+        #    这样既保证了幂等性，也方便后续客户端直接用这个 ID 查询
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
         # 将 user_id 放入 input_params
         parameters["_user_id"] = user_id
 
@@ -49,170 +84,184 @@ class TaskClient:
             "task_content": task_content,
             "input_params": parameters,
             "loop_config": None,      # 关键：没有循环配置 = 单次运行
-            "is_temporary": True
+            "is_temporary": True,
+            "request_id": request_id  # 传递给 Server
         }
 
-        resp_data = self._call_ad_hoc_api(payload)
+        resp_data = self._request("POST", "/ad-hoc-tasks", json=payload)
         
         # 返回后端生成的 trace_id
         return resp_data["trace_id"]
     
-    def register_scheduled_task(self, task_name: str, task_content: Dict[str, Any], schedule: Dict[str, Any]):
+    def register_scheduled_task(
+        self,
+        task_name: str,
+        task_content: Dict[str, Any],
+        schedule: Dict[str, Any],
+        parameters: Dict[str, Any],
+        user_id: str,
+        request_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
-        警告：目前的后端 /ad-hoc-tasks 接口逻辑中，submit_ad_hoc_task
-        似乎只处理了 loop_config (Loop) 和 默认的 (Once)。
+        注册定时任务（支持 CRON 表达式）
         
-        如果后端逻辑中没有处理 'cron_config' 或类似的字段，
-        这个方法目前无法通过 submit_ad_hoc_task 实现 CRON 调度。
-        
-        你可能需要：
-        1. 修改后端 AdHocTaskRequest，增加 cron_expression 字段。
-        2. 或者，如果你是指"延迟执行一次"，可以用带间隔的 Loop 且 max_runs=1 实现（变通方法）。
+        Args:
+            task_name: 任务名称
+            task_content: 任务内容，包含具体执行定义
+            schedule: 调度配置，包含 cron_expression 等字段
+            parameters: 执行参数
+            user_id: 用户ID
+            request_id: 业务侧/幂等控制ID（可选）
+            
+        Returns:
+            操作结果，包含后端生成的trace_id
         """
-        raise NotImplementedError("后端 /ad-hoc-tasks 接口暂未支持纯 Cron 表达式参数，请扩展后端 Request 模型。")
+        # 如果外部没有传入 request_id，客户端自动生成一个 UUID
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
+        # 将 user_id 放入 input_params
+        parameters["_user_id"] = user_id
+
+        # 根据调度类型构造 payload
+        payload = {
+            "task_name": task_name,
+            "task_content": task_content,
+            "input_params": parameters,
+            "loop_config": None,
+            "is_temporary": True,
+            "schedule_type": "CRON",
+            "schedule_config": schedule,  # 包含 cron_expression 字段
+            "request_id": request_id
+        }
+
+        resp_data = self._request("POST", "/ad-hoc-tasks", json=payload)
+
+        return {
+            "success": True,
+            "message": resp_data["message"],
+            "trace_id": resp_data["trace_id"],
+            "request_id": request_id,
+            "schedule_type": "CRON",
+            "schedule_config": schedule
+        }
     
-    def unregister_scheduled_task(self, trace_id: str) -> Dict[str, Any]:
+    def unregister_scheduled_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """取消注册定时任务
         
         Args:
-            trace_id: 跟踪ID，由后端传入
+            trace_id: 跟踪ID，由后端传入（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部调度系统API取消任务
-        # 例如：requests.delete(f"{self.base_url}/schedules/{trace_id}")
+        # 自动解析 ID
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": f"定时任务 {trace_id} 已成功取消"
-        }
+        # 调用外部调度系统API取消任务
+        # 使用 /traces/{trace_id}/cancel 端点来取消任务
+        endpoint = f"/traces/{actual_trace_id}/cancel"
+        return self._request("POST", endpoint)
     
-    def update_scheduled_task(self, trace_id: str, new_schedule: Dict[str, Any]) -> Dict[str, Any]:
+    def update_scheduled_task(self, trace_id: Optional[str] = None, new_schedule: Dict[str, Any] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """更新定时任务
         
         Args:
-            trace_id: 跟踪ID，由后端传入
-            new_schedule: 新的调度信息
+            trace_id: 跟踪ID，由后端传入（可选）
+            new_schedule: 新的调度信息（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部调度系统API更新任务
-        # 例如：requests.put(f"{self.base_url}/schedules/{trace_id}", json=new_schedule)
+        # 自动解析 ID
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": f"定时任务 {trace_id} 已成功更新"
-        }
+        # 构建请求体
+        payload = {}
+        
+        # 添加调度配置（如果提供）
+        if new_schedule is not None:
+            payload["schedule_config"] = new_schedule
+        
+        # 调用外部调度系统API更新任务
+        # 使用 /traces/{trace_id}/modify 端点来更新任务
+        endpoint = f"/traces/{actual_trace_id}/modify"
+        return self._request("PATCH", endpoint, json=payload)
     
-    def cancel_task(self, trace_id: str) -> Dict[str, Any]:
+    def cancel_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """取消任务
         
         Args:
-            trace_id: 跟踪ID，由后端传入
+            trace_id: 跟踪ID，由后端传入（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部API取消任务
-        # 例如：requests.post(f"{self.base_url}/tasks/{trace_id}/cancel")
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": f"任务 {trace_id} 已成功取消"
-        }
+        # 对应 Server: @router.post("/traces/{trace_id}/cancel")
+        endpoint = f"/traces/{actual_trace_id}/cancel"
+        return self._request("POST", endpoint)
     
-    def stop_task(self, external_job_id: str) -> Dict[str, Any]:
-        """停止任务
-        
-        Args:
-            external_job_id: 外部任务ID
-            
-        Returns:
-            操作结果
-        """
-        # 实际项目中，这里应该调用外部API停止任务
-        # 例如：requests.post(f"{self.base_url}/jobs/{external_job_id}/stop")
-        
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": f"任务 {external_job_id} 已成功停止"
-        }
-    
-    def pause_task(self, trace_id: Optional[str] = None, external_job_id: Optional[str] = None) -> Dict[str, Any]:
+    def pause_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """暂停任务
         
         Args:
             trace_id: 跟踪ID，由后端传入（可选）
-            external_job_id: 外部任务ID（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该根据提供的ID类型调用不同的外部API
-        # 例如：
-        # if external_job_id:
-        #     requests.post(f"{self.base_url}/jobs/{external_job_id}/pause")
-        # else:
-        #     requests.post(f"{self.base_url}/tasks/{trace_id}/pause")
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        target_id = external_job_id if external_job_id else trace_id
-        return {
-            "success": True,
-            "message": f"任务 {target_id} 已成功暂停"
-        }
+        # 对应 Server: @router.post("/traces/{trace_id}/pause")
+        # 使用 /traces/{trace_id}/pause 端点来暂停指定trace下的所有任务实例
+        endpoint = f"/traces/{actual_trace_id}/pause"
+        return self._request("POST", endpoint)
     
-    def resume_task(self, trace_id: Optional[str] = None, external_job_id: Optional[str] = None) -> Dict[str, Any]:
+    def resume_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """恢复任务
         
         Args:
             trace_id: 跟踪ID，由后端传入（可选）
-            external_job_id: 外部任务ID（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该根据提供的ID类型调用不同的外部API
-        # 例如：
-        # if external_job_id:
-        #     requests.post(f"{self.base_url}/jobs/{external_job_id}/resume")
-        # else:
-        #     requests.post(f"{self.base_url}/tasks/{trace_id}/resume")
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        target_id = external_job_id if external_job_id else trace_id
-        return {
-            "success": True,
-            "message": f"任务 {target_id} 已成功恢复"
-        }
+        # 对应 Server: @router.post("/traces/{trace_id}/resume")
+        # 使用 /traces/{trace_id}/resume 端点来恢复指定trace下的所有任务实例
+        endpoint = f"/traces/{actual_trace_id}/resume"
+        return self._request("POST", endpoint)
     
-    
-   
-    def pause_all_tasks(self, user_id: str) -> Dict[str, Any]:
-        """暂停所有正在运行的任务
+    def modify_task(self, new_params: Dict[str, Any], trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
+        """修改任务参数
         
         Args:
-            user_id: 用户ID
+            new_params: 新的任务参数
+            trace_id: 跟踪ID，由后端传入（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部API暂停所有任务
-        # 例如：requests.post(f"{self.base_url}/tasks/pause-all", params={"user_id": user_id})
+        target_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": "已成功暂停所有正在运行的任务",
-            "success_count": 2,
-            "failed_count": 0
+        payload = {
+            "input_params": new_params,
+            "schedule_config": None
         }
+        # 对应 Server: @router.patch("/instances/{instance_id}/modify")
+        return self._request("PATCH", f"/instances/{target_id}/modify", json=payload)
+    
+    
+
     
     def register_recurring_task(
         self,
@@ -221,7 +270,8 @@ class TaskClient:
         parameters: Dict[str, Any],
         user_id: str,
         interval_seconds: int,
-        max_runs: Optional[int] = None
+        max_runs: Optional[int] = None,
+        request_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         注册周期任务 (Interval Loop)
@@ -233,10 +283,14 @@ class TaskClient:
             user_id: 用户ID
             interval_seconds: 执行间隔（秒）
             max_runs: 最大执行次数（可选，None表示无限次）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果，包含后端生成的trace_id
         """
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
         parameters["_user_id"] = user_id
 
         payload = {
@@ -248,66 +302,82 @@ class TaskClient:
                 "interval_sec": interval_seconds,
                 "max_rounds": max_runs if max_runs else 0 # 假设后端 0 代表无限
             },
-            "is_temporary": True
+            "is_temporary": True,
+            "schedule_type": "LOOP", # 显式指定
+            "request_id": request_id
         }
 
-        resp_data = self._call_ad_hoc_api(payload)
+        resp_data = self._request("POST", "/ad-hoc-tasks", json=payload)
 
         return {
             "success": True,
             "message": resp_data["message"],
             "trace_id": resp_data["trace_id"], # 返回后端生成的 ID
+            "request_id": request_id, # 返回给调用者方便后续控制
             "interval_seconds": interval_seconds,
             "max_runs": max_runs
         }
         
-    def cancel_recurring_task(self, trace_id: str) -> Dict[str, Any]:
+    def cancel_recurring_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """取消周期任务
         
         Args:
-            trace_id: 跟踪ID，由后端传入
+            trace_id: 跟踪ID，由后端传入（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部调度系统API取消周期任务
-        # 例如：requests.delete(f"{self.base_url}/recurring-tasks/{trace_id}")
+        # 自动解析 ID
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        return {
-            "success": True,
-            "message": f"周期任务 {trace_id} 已成功取消"
-        }
+        # 调用外部调度系统API取消周期任务
+        # 使用 /traces/{trace_id}/cancel 端点来取消任务
+        endpoint = f"/traces/{actual_trace_id}/cancel"
+        return self._request("POST", endpoint)
     
-    def update_recurring_task(self, trace_id: str, interval_seconds: Optional[int] = None, max_runs: Optional[int] = None, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def update_recurring_task(self, trace_id: Optional[str] = None, interval_seconds: Optional[int] = None, max_runs: Optional[int] = None, parameters: Optional[Dict[str, Any]] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """更新周期任务
         
         Args:
-            trace_id: 跟踪ID，由后端传入
+            trace_id: 跟踪ID，由后端传入（可选）
             interval_seconds: 新的执行间隔（秒，可选）
             max_runs: 新的最大执行次数（可选，None表示无限次）
             parameters: 新的执行参数（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             操作结果
         """
-        # 实际项目中，这里应该调用外部调度系统API更新周期任务
-        # 例如：requests.put(f"{self.base_url}/recurring-tasks/{trace_id}", json={k: v for k, v in {"interval_seconds": interval_seconds, "max_runs": max_runs, "parameters": parameters}.items() if v is not None})
+        # 自动解析 ID
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回操作结果
-        update_info = []
-        if interval_seconds is not None:
-            update_info.append(f"执行间隔为 {interval_seconds} 秒")
-        if max_runs is not None:
-            update_info.append(f"最大执行次数为 {max_runs}")
+        # 构建请求体
+        payload = {}
+        
+        # 添加执行参数（如果提供）
         if parameters is not None:
-            update_info.append("执行参数")
+            payload["input_params"] = parameters
         
-        update_desc = "，".join(update_info) if update_info else "无更新内容"
-        return {
-            "success": True,
-            "message": f"周期任务 {trace_id} 已成功更新，更新内容：{update_desc}"
-        }
+        # 构建调度配置（如果提供了相关参数）
+        schedule_config = {}
+        has_schedule_update = False
+        
+        if interval_seconds is not None:
+            schedule_config["interval_sec"] = interval_seconds
+            has_schedule_update = True
+        
+        if max_runs is not None:
+            schedule_config["max_rounds"] = max_runs
+            has_schedule_update = True
+        
+        if has_schedule_update:
+            payload["schedule_config"] = schedule_config
+        
+        # 调用外部调度系统API更新任务
+        # 使用 /traces/{trace_id}/modify 端点来更新任务
+        endpoint = f"/traces/{actual_trace_id}/modify"
+        return self._request("PATCH", endpoint, json=payload)
         
     
 
@@ -319,84 +389,31 @@ class TaskClient:
 
 
 
-    def get_task_status(self, trace_id: str, external_job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_task_status(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """获取任务状态
         
         Args:
-            trace_id: 跟踪ID，由后端传入
-            external_job_id: 外部任务ID（可选）
+            trace_id: 跟踪ID，由后端传入（可选）
+            request_id: 业务侧/幂等控制ID（可选）
             
         Returns:
             任务状态信息，如果任务不存在则返回None
         """
-        # 实际项目中，这里应该根据是否提供external_job_id调用不同的外部API
-        # 例如：
-        # if external_job_id:
-        #     requests.get(f"{self.base_url}/jobs/{external_job_id}/status")
-        # else:
-        #     requests.get(f"{self.base_url}/tasks/{trace_id}")
+        # 自动解析 ID
+        actual_trace_id = self._resolve_trace_id(trace_id, request_id)
         
-        # 模拟实现，返回任务状态
-        if external_job_id:
+        try:
+            # 使用事件系统的 API 端点 /traces/{trace_id}/trace-details
+            return self._request("GET", f"/traces/{actual_trace_id}/trace-details", use_events_url=True) 
+        except Exception:
+            # Fallback 模拟返回
             return {
-                "external_job_id": external_job_id,
-                "status": "RUNNING",
-                "progress": 0.5,
-                "last_update": "2025-12-13T14:30:00Z"
-            }
-        else:
-            return {
-                "trace_id": trace_id,
-                "execution_status": "RUNNING",
-                "control_status": "NORMAL",
-                "is_cancelable": True,
-                "is_resumable": True,
-                "task_type": "web_crawler",
-                "description": "爬取京东商品数据"
+                "trace_id": actual_trace_id,
+                "status": "UNKNOWN",
+                "note": "接口调用失败"
             }
 
 
 
-    def get_running_tasks(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """获取所有正在执行的任务
-        
-        Args:
-            user_id: 用户ID（可选），如果提供则只返回该用户的任务
-            
-        Returns:
-            正在执行的任务列表及元数据
-        """
-        # 实际项目中，这里应该调用外部API获取正在执行的任务
-        # 例如：requests.get(f"{self.base_url}/tasks/running", params={"user_id": user_id} if user_id else {})
-        
-        # 模拟实现，返回正在执行的任务列表
-        return {
-            "success": True,
-            "tasks": [
-                {
-                    "trace_id": "trace_123",
-                    "execution_status": "RUNNING",
-                    "control_status": "NORMAL",
-                    "is_cancelable": True,
-                    "is_resumable": True,
-                    "task_type": "web_crawler",
-                    "description": "爬取京东商品数据",
-                    "user_id": "user_001",
-                    "start_time": "2025-12-18T10:00:00Z"
-                },
-                {
-                    "trace_id": "trace_456",
-                    "execution_status": "RUNNING",
-                    "control_status": "NORMAL",
-                    "is_cancelable": True,
-                    "is_resumable": False,
-                    "task_type": "data_analysis",
-                    "description": "分析销售数据",
-                    "user_id": "user_001",
-                    "start_time": "2025-12-18T10:30:00Z"
-                }
-            ],
-            "total": 2
-        }
-    
+   
     

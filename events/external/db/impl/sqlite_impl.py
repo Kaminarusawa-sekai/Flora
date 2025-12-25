@@ -6,10 +6,10 @@ import logging
 
 from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository
 from ..models import EventInstanceDB, EventDefinitionDB, EventLogDB
-from ....common.event_instance import EventInstance
-from ....common.event_definition import EventDefinition
-from ....common.event_log import EventLog
-from ....common.enums import EventInstanceStatus
+from common.event_instance import EventInstance
+from common.event_definition import EventDefinition
+from common.event_log import EventLog
+from common.enums import EventInstanceStatus
 
 logger = logging.getLogger(__name__)
 class SQLiteEventInstanceRepository(EventInstanceRepository):

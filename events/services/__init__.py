@@ -1,9 +1,9 @@
 from .lifecycle_service import LifecycleService
 from .signal_service import SignalService
 from .observer_service import ObserverService
-from ..external.events.bus import EventBus
-from ..external.events.bus_impl_redis import RedisEventBus
-from ..external.events.bus_impl_memory import MemoryEventBus
+from external.events.bus import EventBus
+from external.events.bus_impl_redis import RedisEventBus
+from external.events.bus_impl_memory import MemoryEventBus
 from .dependencies import (
     get_redis_event_bus,
     get_memory_event_bus,

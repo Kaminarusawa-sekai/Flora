@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 import logging
 
 # 导入 API 路由
-from events.entry.api.v1.commands import router as commands_router
-from events.entry.api.v1.queries import router as queries_router
+from entry.api.v1.commands import router as commands_router
+from entry.api.v1.queries import router as queries_router
 
 # 导入配置
-from events.config.settings import settings
+from config.settings import settings
 
 # 配置日志记录
 logging.basicConfig(
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("应用启动中,lifespan上下文管理器...")
     # 导入依赖
-    from events.entry.api.deps import (
+    from entry.api.deps import (
         get_lifecycle_service,
         get_observer_service,
         get_broker,
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
         connection_manager_instance
     )
     # 从session.py导入会话相关功能和建表函数
-    from events.external.db.session import async_session, get_db_session, create_tables
+    from external.db.session import async_session, get_db_session, create_tables
     # 导入调度器
 
     
@@ -42,11 +42,11 @@ async def lifespan(app: FastAPI):
     await create_tables()
     
     # 2. 初始化默认任务定义（新增部分）
-    from events.common.enums import ActorType, NodeType
+    from common.enums import ActorType, NodeType
     from datetime import datetime, timezone
-    from events.external.db.impl import create_event_definition_repo
-    from events.common.event_definition import EventDefinition
-    from events.external.db.session import dialect
+    from external.db.impl import create_event_definition_repo
+    from common.event_definition import EventDefinition
+    from external.db.session import dialect
     
     DEFAULT_DEFINITIONS = [
         {
@@ -156,4 +156,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.host, port=settings.port, reload=True)
+    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=True)

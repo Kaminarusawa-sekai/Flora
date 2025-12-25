@@ -1,6 +1,7 @@
 # capability_actors/result_aggregator_actor.py
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import time
 from thespian.actors import Actor, ActorExitRequest,ChildActorExited
 from common.messages.task_messages import (
     TaskCompletedMessage, TaskSpec,AgentTaskMessage,
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 # 导入事件总线
 from events.event_bus import event_bus
 from common.event.event_type import EventType
+
+# 导入信号状态枚举
+from tasks.common.signal.signal_status import SignalStatus
 
 
 class ResultAggregatorActor(Actor):
@@ -55,6 +59,49 @@ class ResultAggregatorActor(Actor):
         self._trace_id: Optional[str] = None
         self._base_task_path: Optional[str] = None
         self.task_spec: Optional[TaskSpec] = None
+        
+    def _check_signal_status(self, trace_id: str) -> None:
+        """
+        检查跟踪链路的信号状态
+        
+        Args:
+            trace_id: 跟踪链路ID
+            
+        Raises:
+            ValueError: 如果信号状态为CANCELLED
+        """
+        import asyncio
+        
+        while True:
+            try:
+                # 使用asyncio.run()在同步上下文中运行异步方法
+                signal_status = asyncio.run(event_bus.get_signal_status(trace_id))
+                signal = signal_status.get("signal", SignalStatus.NORMAL)
+                
+                logger.info(f"Signal status check for trace_id {trace_id}: {signal}")
+                
+                if signal == SignalStatus.NORMAL:
+                    # 正常状态，继续执行
+                    return
+                elif signal == SignalStatus.CANCELLED:
+                    # 取消状态，抛出异常
+                    logger.warning(f"Task {self._root_task_id} cancelled due to signal: {signal}")
+                    raise ValueError(f"Task cancelled by signal: {signal}")
+                elif signal == SignalStatus.PAUSED:
+                    # 暂停状态，等待后重试
+                    logger.info(f"Task {self._root_task_id} paused due to signal: {signal}, waiting...")
+                    time.sleep(20)  # 每2秒检查一次
+                else:
+                    # 未知状态，记录警告并继续执行
+                    logger.warning(f"Unknown signal status {signal} for trace_id {trace_id}, continuing...")
+                    return
+            except ValueError as e:
+                # 捕获到取消信号，重新抛出
+                raise
+            except Exception as e:
+                # 其他异常，记录警告并继续执行
+                logger.warning(f"Error checking signal status: {e}, continuing execution...")
+                return
 
     def receiveMessage(self, message: Any, sender: Any) -> None:
 
@@ -112,6 +159,9 @@ class ResultAggregatorActor(Actor):
             global_ctx=msg.global_context,
             enriched_ctx=msg.enriched_context
         )
+
+        # ✅ 信号检查：在任务执行前检查信号状态
+        self._check_signal_status(self._trace_id)
 
         # 发布任务开始事件
         event_bus.publish_task_event(
@@ -282,6 +332,9 @@ class ResultAggregatorActor(Actor):
             if task_info:
                 agent_id = task_info.get("executor")
                 try:
+                    # ✅ 信号检查：在重试前检查信号状态
+                    self._check_signal_status(self._trace_id)
+                    
                     agent_ref = self._get_or_create_actor_ref(agent_id)
                     retry_msg = AgentTaskMessage(
                         agent_id=agent_id,

@@ -6,10 +6,12 @@ from pydantic import BaseModel
 
 # 导入依赖注入
 from ..deps import get_observer_service, get_db_session, get_connection_manager
-from ....services.observer_service import ObserverService
-from ....services.websocket_manager import ConnectionManager
-from ....common.event_instance import EventInstance
+from services.observer_service import ObserverService
+from services.websocket_manager import ConnectionManager
+from common.event_instance import EventInstance
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
 
 router = APIRouter(prefix="/traces")
 
@@ -123,29 +125,31 @@ async def get_trace_status(
     return summary
 
 
-@router.get("/tasks/{task_id}")
-async def get_task_detail(
-    task_id: str,
+@router.get("/{trace_id}/trace-details")
+async def get_trace_detail(
+    trace_id: str,
     expand_payload: bool = Query(False, description="是否自动拉取并展开 input_ref 指向的大字段数据"),
     observer_svc: ObserverService = Depends(get_observer_service),
     session: AsyncSession = Depends(get_db_session)
 ):
     """
-    获取任务详情。
+    获取指定trace_id下的所有任务详情。
     如果 expand_payload=True，会尝试从 Cache/Storage 拉取原始输入参数。
     """
     # 注意：这里调用的是 Service 中增强后的 get_task_detail
-    # 返回值可能是 Dict 而不是 EventInstance 对象，因为 input_params 可能被替换或增强
-    task_data = await observer_svc.get_task_detail(
+    # 返回值是 Dict 列表，包含了每个任务的详细信息和可能的扩展数据
+    task_data = await observer_svc.get_trace_detail(
         session,
-        task_id,
+        trace_id,
         fetch_payload=expand_payload
     )
     
     if not task_data:
-        raise HTTPException(status_code=404, detail="Task not found")
+        return []
         
     return task_data
+
+
 
 
 @router.get("/ready-tasks")

@@ -4,8 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入依赖注入
 from ..deps import get_lifecycle_service, get_signal_service, get_db_session 
-from ....services.lifecycle_service import LifecycleService
-from ....services.signal_service import SignalService
+from services.lifecycle_service import LifecycleService
+from services.signal_service import SignalService
+from events.common.signal import SignalStatus
 
 # 导入 Pydantic 模型
 from ...schemas.request import (
@@ -33,8 +34,9 @@ async def start_trace(
             session=session,
             root_def_id=request.root_def_id,
             input_params=request.input_params,
+            request_id=request.request_id,
             trace_id=request.trace_id,
-            user_id=request.user_id  # 新增：透传用户ID
+            user_id=request.user_id  # 透传用户ID
         )
         return {"trace_id": trace_id}
     except ValueError as e:
@@ -77,7 +79,7 @@ async def cancel_trace(
     取消整个跟踪链路
     """
     try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal="CANCEL")
+        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.CANCELLED)
         return {"status": "cancelled", "trace_id": trace_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -93,7 +95,7 @@ async def pause_trace(
     暂停整个跟踪链路
     """
     try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal="PAUSE")
+        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.PAUSED)
         return {"status": "paused", "trace_id": trace_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -109,7 +111,7 @@ async def resume_trace(
     恢复整个跟踪链路
     """
     try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal="RESUME")
+        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.NORMAL)
         return {"status": "resumed", "trace_id": trace_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -132,6 +134,35 @@ async def get_trace_signal(
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/latest-by-request/{request_id}")
+async def get_latest_trace_by_request(
+    request_id: str,
+    lifecycle_svc: LifecycleService = Depends(get_lifecycle_service),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    根据request_id获取最新的trace_id
+    支持 request_id (1) -> trace_id (N) 的关系查询
+    """
+    try:
+        trace_id = await lifecycle_svc.get_latest_trace_by_request(
+            session=session,
+            request_id=request_id
+        )
+        if trace_id:
+            return {
+                "request_id": request_id,
+                "latest_trace_id": trace_id
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No trace found for request_id: {request_id}"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{trace_id}/split")
@@ -180,12 +211,20 @@ async def control_node(
     级联控制：向指定节点及其子孙发送信号 (CANCEL/PAUSE)
     """
     try:
+        # 将请求中的字符串信号转换为枚举值
+        signal_map = {
+            "CANCEL": SignalStatus.CANCELLED,
+            "PAUSE": SignalStatus.PAUSED,
+            "RESUME": SignalStatus.NORMAL
+        }
+        signal = signal_map[request.signal]
+        
         # 同时传入 trace_id 和 instance_id 确保安全
         await signal_svc.send_signal(
             session,
             trace_id=trace_id,
             instance_id=instance_id,
-            signal=request.signal
+            signal=signal
         )
         return {
             "trace_id": trace_id,

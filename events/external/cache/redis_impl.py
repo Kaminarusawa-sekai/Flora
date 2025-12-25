@@ -1,7 +1,7 @@
 import redis.asyncio as redis
 from typing import Optional, Any
 from .base import CacheClient
-from ...config.settings import settings
+from config.settings import settings
 
 
 class RedisCacheClient(CacheClient):

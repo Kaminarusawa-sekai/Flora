@@ -1,6 +1,6 @@
-from ..external.cache.redis_impl import redis_client
-from ..external.events.bus_impl_redis import RedisEventBus
-from ..external.events.bus_impl_memory import MemoryEventBus
+from external.cache.redis_impl import redis_client
+from external.events.bus_impl_redis import RedisEventBus
+from external.events.bus_impl_memory import MemoryEventBus
 from .lifecycle_service import LifecycleService
 from .signal_service import SignalService
 
