@@ -7,7 +7,7 @@ from interaction.common.base import ExecutionStatus
 class TaskClient:
     """任务执行客户端，用于与外部任务执行系统交互"""
     
-    def __init__(self, base_url: str = "http://external-task-system/api/v1", events_base_url: str = "http://events-system/api/v1"):
+    def __init__(self, base_url: str = "http://localhost:8001/api/v1", events_base_url: str = "http://localhost:8004/api/v1"):
         self.base_url = base_url.rstrip('/')
         self.events_base_url = events_base_url.rstrip('/')
          # 实际项目中，这里应该包含认证信息、超时设置等
@@ -380,14 +380,6 @@ class TaskClient:
         return self._request("PATCH", endpoint, json=payload)
         
     
-
-
-
-
-
-
-
-
 
     def get_task_status(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """获取任务状态

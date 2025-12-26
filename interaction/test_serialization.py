@@ -22,6 +22,7 @@ def test_serialization():
         # 创建完整的 TaskDraftDTO 对象
         draft = TaskDraftDTO(
             draft_id="test_draft_789",
+            user_id="user_123",
             task_type="CRAWLER",
             status=TaskDraftStatus.FILLING,
             slots={
@@ -90,6 +91,7 @@ def test_serialization_options():
         # 创建测试对象
         draft = TaskDraftDTO(
             draft_id="test_draft_303",
+            user_id="user_456",
             task_type="CRAWLER",
             status=TaskDraftStatus.FILLING,
             slots={}
@@ -101,8 +103,7 @@ def test_serialization_options():
             active_task_draft=draft
         )
         
-        # 测试不同的序列化选项
-        from common.response_state import DialogStateDTO
+        # 测试不同的序列化选项（已在顶部导入DialogStateDTO）
         
         # 默认选项
         default_json = dialog_state.model_dump_json()

@@ -112,93 +112,165 @@
 
     <!-- Main Task Content -->
 
-    <GlassCard class="h-full relative">
+    <GlassCard class="h-full flex flex-col relative">
 
-      <template #header>
-        <div class="mb-6 relative">
-          <h2 class="text-xs font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">Mission Control</h2>
-          <div class="relative">
-            <InputHud
-              v-model="searchQuery"
-              placeholder="SEARCH TARGET..."
-            >
-              <template #prefix>
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </template>
-            </InputHud>
-          </div>
+      <div class="mb-6 relative">
+
+        <h2 class="text-xs font-mono text-gray-500 mb-2 uppercase tracking-[0.2em]">Mission Control</h2>
+
+        <div class="relative">
+
+          <InputHud
+
+            v-model="searchQuery"
+
+            placeholder="SEARCH TARGET..."
+
+          >
+
+            <template #prefix>
+
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+
+              </svg>
+
+            </template>
+
+          </InputHud>
+
         </div>
-      </template>
 
-      <div class="py-2 space-y-6">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3 flex items-center gap-2">
-          <span class="w-2 h-2 bg-sci-blue rounded-full"></span>
-          ACTIVE TASKS
-        </h3>
-       
-        <GlassCard
-          v-for="task in filteredTasks"
-          :key="task.id"
-          hoverable
-          noPadding
-          class="group cursor-pointer transition-all duration-300 mb-4"
-          :class="task.active ? 'border-sci-blue/50 bg-sci-blue/10 shadow-xl shadow-sci-blue/40 ring-1 ring-sci-blue/50' : ''"
-          @click="activateTask(task.id)"
-        >
-          <div class="p-5 flex items-center gap-4">
-            <StatusDot :status="task.status" />
-           
-            <div class="flex-grow">
-              <div class="flex justify-between items-center mb-1">
-                <span class="text-sm font-medium text-gray-200 group-hover:text-white transition-colors">{{ task.name }}</span>
-                <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
-              </div>
-              <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
-            </div>
-          </div>
-        </GlassCard>
-
-        <h3 class="text-xs font-semibold text-gray-500 uppercase mt-6 mb-3 flex items-center gap-2">
-          <span class="w-2 h-2 bg-sci-green rounded-full"></span>
-          COMPLETED
-        </h3>
-       
-        <GlassCard
-          v-for="task in filteredCompletedTasks"
-          :key="task.id"
-          hoverable
-          noPadding
-          class="group cursor-pointer transition-all duration-300 opacity-70 hover:opacity-100 mb-4"
-          :class="task.active ? 'border-sci-blue/50 bg-sci-blue/10 shadow-xl shadow-sci-blue/40 ring-1 ring-sci-blue/50' : ''"
-          @click="activateTask(task.id)"
-        >
-          <div class="p-5 flex items-center gap-4">
-            <StatusDot :status="task.status" />
-           
-            <div class="flex-grow">
-              <div class="flex justify-between items-center mb-1">
-                <span class="text-sm font-medium text-gray-400 group-hover:text-gray-300 transition-colors">{{ task.name }}</span>
-                <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
-              </div>
-              <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
-            </div>
-          </div>
-        </GlassCard>
       </div>
 
-      <template #footer>
-        <div class="pt-4 border-t border-white/5 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <StatusDot status="running" size="sm" />
-            <span class="text-xs font-mono text-sci-green">SYSTEM ONLINE</span>
+
+
+      <div class="flex-1 min-h-0 py-2 space-y-6 overflow-y-auto pr-1 custom-scrollbar">
+
+        <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3 flex items-center gap-2">
+
+          <span class="w-2 h-2 bg-sci-blue rounded-full"></span>
+
+          ACTIVE TASKS
+
+        </h3>
+
+       
+
+        <GlassCard
+
+          v-for="task in filteredTasks"
+
+          :key="task.id"
+
+          hoverable
+
+          noPadding
+
+          class="group cursor-pointer transition-all duration-300 mb-4"
+
+          :class="task.active ? 'border-sci-blue/50 bg-sci-blue/10 shadow-xl shadow-sci-blue/40 ring-1 ring-sci-blue/50' : ''"
+
+          @click="activateTask(task.id)"
+
+        >
+
+          <div class="p-5 flex items-center gap-4">
+
+            <StatusDot :status="task.status" />
+
+           
+
+            <div class="flex-grow">
+
+              <div class="flex justify-between items-center mb-1">
+
+                <span class="text-sm font-medium text-gray-200 group-hover:text-white transition-colors">{{ task.name }}</span>
+
+                <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
+
+              </div>
+
+              <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
+
+            </div>
+
           </div>
-          <button class="text-gray-500 hover:text-white transition-colors">
-            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          </button>
+
+        </GlassCard>
+
+
+
+        <h3 class="text-xs font-semibold text-gray-500 uppercase mt-6 mb-3 flex items-center gap-2">
+
+          <span class="w-2 h-2 bg-sci-green rounded-full"></span>
+
+          COMPLETED
+
+        </h3>
+
+       
+
+        <GlassCard
+
+          v-for="task in filteredCompletedTasks"
+
+          :key="task.id"
+
+          hoverable
+
+          noPadding
+
+          class="group cursor-pointer transition-all duration-300 opacity-70 hover:opacity-100 mb-4"
+
+        >
+
+          <div class="p-5 flex items-center gap-4">
+
+            <StatusDot :status="task.status" />
+
+           
+
+            <div class="flex-grow">
+
+              <div class="flex justify-between items-center mb-1">
+
+                <span class="text-sm font-medium text-gray-400 group-hover:text-gray-300 transition-colors">{{ task.name }}</span>
+
+                <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
+
+              </div>
+
+              <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
+
+            </div>
+
+          </div>
+
+        </GlassCard>
+
+      </div>
+
+
+
+      <div class="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+
+        <div class="flex items-center gap-2">
+
+          <StatusDot status="running" size="sm" />
+
+          <span class="text-xs font-mono text-sci-green">SYSTEM ONLINE</span>
+
         </div>
-      </template>
+
+        <button class="text-gray-500 hover:text-white transition-colors">
+
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+
+        </button>
+
+      </div>
 
     </GlassCard>
 
@@ -210,11 +282,7 @@
 
 <script setup lang="ts">
 
-import { ref, computed, onMounted } from 'vue';
-// @ts-ignore - JavaScript module with no type declarations
-import { getLatestTraceByRequest, getTaskDetail } from '@/api/order';
-// @ts-ignore - JavaScript module with no type declarations
-import ConversationAPI from '@/api/conversation';
+import { ref, computed } from 'vue';
 
 import GlassCard from '@/components/ui/GlassCard.vue';
 
@@ -246,89 +314,119 @@ interface Task {
 
 
 
-const tasks = ref<Task[]>([]);
-const completedTasks = ref<Task[]>([]);
+const tasks = ref<Task[]>([
 
-// 从API获取任务数据
-const fetchTasksFromApi = async () => {
-  try {
-    // 从localStorage获取userId
-    const userId = localStorage.getItem('userId');
-    if (!userId) {
-      console.warn('No userId found in localStorage');
-      return;
-    }
+  {
 
-    // 获取用户所有活跃会话
-    const sessions = await ConversationAPI.getUserSessions(userId);
-    if (!sessions || sessions.length === 0) {
-      console.warn('No active sessions found for user:', userId);
-      return;
-    }
+    id: 'TSK-01',
 
-    // 遍历每个会话，获取对应的任务数据
-    const activeTasks: Task[] = [];
-    const completedTasksList: Task[] = [];
+    name: 'Data Pipeline',
 
-    for (const sessionData of sessions) {
-      // 检查是否有request_id
-      if (!sessionData.request_id) {
-        console.warn('No request_id found in session data:', sessionData.session_id);
-        continue;
-      }
+    description: 'ETL process for customer data',
 
-      try {
-        // 使用request_id获取latest_trace_id
-        const traceResponse = await getLatestTraceByRequest(sessionData.request_id);
-        const traceId = traceResponse.latest_trace_id;
+    status: 'running',
 
-        if (!traceId) {
-          console.warn('No trace_id found for request_id:', sessionData.request_id);
-          continue;
-        }
+    active: true,
 
-        // 使用trace_id获取任务详情
-        const taskDetail = await getTaskDetail(traceId);
+  },
 
-        // 处理任务数据，转换为Task类型
-        const processedTask: Task = {
-          id: traceId,
-          name: sessionData.name || 'Unknown Task',
-          description: sessionData.description || 'No description available',
-          status: taskDetail.status || 'pending',
-          active: false
-        };
+  {
 
-        // 根据状态分类任务
-        if (processedTask.status === 'success') {
-          completedTasksList.push(processedTask);
-        } else {
-          activeTasks.push(processedTask);
-        }
-      } catch (error) {
-        console.error('Error processing session:', sessionData.session_id, error);
-        // 继续处理下一个会话
-      }
-    }
+    id: 'TSK-02',
 
-    // 设置第一个活跃任务为active
-    if (activeTasks.length > 0 && activeTasks[0]) {
-      activeTasks[0].active = true;
-    }
+    name: 'Data Backup',
 
-    // 更新任务列表
-    tasks.value = activeTasks;
-    completedTasks.value = completedTasksList;
-  } catch (error) {
-    console.error('Error fetching tasks:', error);
-    // 错误处理，保留空数组或添加错误状态任务
-  }
-};
+    description: 'Data backup task',
 
-// 组件挂载时获取数据
-onMounted(() => {
-  fetchTasksFromApi();
-});
+    status: 'pending',
+
+    active: false,
+
+  },
+
+  {
+
+    id: 'TSK-03',
+
+    name: 'ETL Process',
+
+    description: 'ETL process for customer data',
+
+    status: 'running',
+
+    active: false,
+
+  },
+
+  {
+
+    id: 'TSK-04',
+
+    name: 'Data Backup',
+
+    description: 'Data backup task',
+
+    status: 'pending',
+
+    active: false,
+
+  },
+
+]);
+
+
+
+const completedTasks = ref<Task[]>([
+
+  {
+
+    id: 'TSK-05',
+
+    name: 'Data Backup',
+
+    description: 'Backup customer data',
+
+    status: 'success',
+
+  },
+
+  {
+
+    id: 'TSK-06',
+
+    name: 'ETL Process',
+
+    description: 'ETL process for customer data',
+
+    status: 'success',
+
+  },
+
+  {
+
+    id: 'TSK-07',
+
+    name: 'Data Backup',
+
+    description: 'Backup customer data',
+
+    status: 'success',
+
+  },
+
+  {
+
+    id: 'TSK-08',
+
+    name: 'ETL Process',
+
+    description: 'ETL process for customer data',
+
+    status: 'success',
+
+  },
+
+]);
 
 
 
@@ -338,12 +436,6 @@ const emit = defineEmits(['task-select']);
 const activateTask = (taskId: string) => {
 
   tasks.value.forEach(task => {
-
-    task.active = task.id === taskId;
-
-  });
-
-  completedTasks.value.forEach(task => {
 
     task.active = task.id === taskId;
 
@@ -404,9 +496,7 @@ const filteredCompletedTasks = computed(() => {
 
   scrollbar-width: thin;
 
-  scrollbar-color: rgba(96, 165, 250, 0.5) transparent;
-
-  overflow-y: auto;
+  scrollbar-color: rgba(139, 92, 246, 0.3) transparent;
 
 }
 
@@ -414,7 +504,7 @@ const filteredCompletedTasks = computed(() => {
 
 .custom-scrollbar::-webkit-scrollbar {
 
-  width: 8px;
+  width: 6px;
 
 }
 
@@ -424,21 +514,15 @@ const filteredCompletedTasks = computed(() => {
 
   background: transparent;
 
-  border-radius: 4px;
-
 }
 
 
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
 
-  background-color: rgba(96, 165, 250, 0.5);
+  background-color: rgba(139, 92, 246, 0.3);
 
-  border-radius: 4px;
-
-  border: 1px solid transparent;
-
-  background-clip: padding-box;
+  border-radius: 3px;
 
 }
 
@@ -446,15 +530,7 @@ const filteredCompletedTasks = computed(() => {
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
 
-  background-color: rgba(96, 165, 250, 0.7);
-
-}
-
-
-
-.custom-scrollbar::-webkit-scrollbar-thumb:active {
-
-  background-color: rgba(96, 165, 250, 0.9);
+  background-color: rgba(139, 92, 246, 0.5);
 
 }
 

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 
 # 导入信号状态枚举
-from tasks.common.signal.signal_status import SignalStatus
+from common.signal.signal_status import SignalStatus
 
 
 class EventPublisher:
@@ -20,7 +20,7 @@ class EventPublisher:
     
     def __init__(
         self, 
-        lifecycle_base_url: str = "http://localhost:8000",
+        lifecycle_base_url: str = "http://localhost:8004",
         logger: Optional[logging.Logger] = None
     ):
         """初始化事件总线"""

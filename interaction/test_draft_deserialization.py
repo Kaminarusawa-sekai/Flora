@@ -24,6 +24,7 @@ def test_draft_with_enums():
         "current_intent": "create_task",
         "active_task_draft": {
             "draft_id": "test_draft_123",
+            "user_id": "user_123",
             "task_type": "CRAWLER",
             "status": "FILLING",
             "slots": {

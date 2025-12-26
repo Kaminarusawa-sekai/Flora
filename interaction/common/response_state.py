@@ -31,6 +31,9 @@ class DialogStateDTO(BaseModel):
     """💬 [5. DialogStateDTO] 全局会话状态"""
     session_id: str
     user_id: str  # 新增：关联到具体用户
+    name: str
+    description: str
+    current_request_id: Optional[str] = None  # 当前请求ID，用于追踪请求
     current_intent: Optional[str] = None
     
     # 指针

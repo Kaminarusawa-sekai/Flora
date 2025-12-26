@@ -112,7 +112,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Flora API Server')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
-    parser.add_argument('--port', type=int, default=8000, help='Port to bind to')
+    parser.add_argument('--port', type=int, default=8002, help='Port to bind to')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode in FastAPI (detailed errors, etc.)')
     parser.add_argument('--rabbitmq', action='store_true', help='Enable RabbitMQ task listener')
     parser.add_argument('--rabbitmq-url', default='localhost', help='RabbitMQ server URL')

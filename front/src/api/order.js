@@ -124,10 +124,29 @@ export async function getTaskDetail(taskId, expandPayload = false) {
 
 /**
  * 获取就绪待执行的任务
- * @returns {Promise<Object>} 就绪任务列表
+ * @returns {Promise<Object>} 就绪任务列表，包含count和tasks字段
  */
 export async function getReadyTasks() {
   return request('/traces/ready-tasks');
+}
+
+/**
+ * 获取指定trace_id下的所有任务详情
+ * @param {string} traceId - Trace ID
+ * @param {boolean} [expandPayload=false] - 是否展开payload
+ * @returns {Promise<Array<Object>>} 任务详情列表
+ */
+export async function getTraceDetail(traceId, expandPayload = false) {
+  return request(`/traces/${traceId}/trace-details?expand_payload=${expandPayload}`);
+}
+
+/**
+ * 根据request_id获取最新的trace_id
+ * @param {string} requestId - 请求ID
+ * @returns {Promise<Object>} 包含request_id和latest_trace_id的对象
+ */
+export async function getLatestTraceByRequest(requestId) {
+  return request(`/commands/latest-by-request/${requestId}`);
 }
 
 /**
@@ -143,7 +162,11 @@ export const apiClient = {
   getTraceTopology,
   getTraceStatus,
   getTaskDetail,
+  getTraceDetail,
   getReadyTasks,
+  
+  // Commands 相关
+  getLatestTraceByRequest,
 };
 
 export default apiClient;

@@ -11,6 +11,8 @@ from common import (
 )
 from external.database.task_draft_repo import TaskDraftRepository
 from ..llm.interface import ILLMCapability
+from ..registry import capability_registry
+from ..memory.interface import IMemoryCapability
 
 class CommonTaskDraft(ITaskDraftManagerCapability):
     """任务草稿管理器 - 维护未完成的任务草稿，管理多轮填槽过程"""
@@ -54,6 +56,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
             任务草稿DTO
         """
         draft = TaskDraftDTO(
+            user_id=user_id,
             task_type=task_type,
             status=TaskDraftStatus.FILLING,
             slots={},
@@ -480,6 +483,51 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         
         # 4. 根据评估结果更新Draft状态
         is_ready = evaluation_result["is_ready"]
+        
+        # 如果还需要补充信息，进入循环尝试从memory中获取
+        if not is_ready:
+            try:
+                # 获取memory能力
+                memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+                
+                # 循环获取memory信息，直到无法获取新信息或完全就绪
+                while not is_ready:
+                    # 记录当前缺失的槽位数量
+                    current_missing_slots = evaluation_result.get("missing_slot", "unknown")
+                    
+                    # 从evaluation_result中获取缺失的信息描述
+                    missing_info = evaluation_result["analysis"]
+                    
+                    # 查询memory
+                    # 注意：这里需要user_id，暂时从draft中获取，如果没有则使用默认值
+                    user_id = getattr(draft, "user_id", "default_user")
+                    memory_result = memory_cap.search_memories(user_id, missing_info, limit=3)
+                    
+                    # 如果memory中没有相关信息，跳出循环
+                    if not memory_result:
+                        break
+                    
+                    # 将memory结果添加到draft的原始 utterances 中，以便后续评估使用
+                    draft = self.add_utterance_to_draft(draft, f"[系统补充信息] {memory_result}")
+                    
+                    # 重新评估草稿完整性
+                    evaluation_result = self._evaluate_draft_completeness(draft, original_utterance)
+                    new_is_ready = evaluation_result["is_ready"]
+                    new_missing_slots = evaluation_result.get("missing_slot", "unknown")
+                    
+                    # 更新is_ready状态
+                    is_ready = new_is_ready
+                    
+                    # 如果已经完全就绪，跳出循环
+                    if is_ready:
+                        break
+                    
+                    # 如果没有新填好的空（缺失的槽位没有变化），跳出循环
+                    if current_missing_slots == new_missing_slots:
+                        break
+            except Exception as e:
+                self.logger.error(f"从memory获取信息失败: {e}")
+                # 如果获取memory失败，继续使用原来的评估结果
         
         if is_ready:
             # 如果LLM认为信息足够，设置为待确认状态

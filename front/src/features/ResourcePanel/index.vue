@@ -1,19 +1,21 @@
 <template>
-  <GlassCard class="h-full flex flex-col">
-    <div class="flex p-1 bg-black/20 rounded-xl mb-4 border border-white/5">
-      <button 
-        v-for="tab in tabs" 
-        :key="tab.id"
-        class="flex-1 py-1.5 text-xs font-medium rounded-lg transition"
-        :class="{
-          'bg-white/10 text-white shadow-sm': activeTab === tab.id,
-          'text-gray-500 hover:text-gray-300': activeTab !== tab.id
-        }"
-        @click="activeTab = tab.id"
-      >{{ tab.label }}</button>
-    </div>
+  <GlassCard class="h-full">
+    <template #header>
+      <div class="flex p-1 bg-black/20 rounded-xl mb-4 border border-white/5">
+        <button 
+          v-for="tab in tabs" 
+          :key="tab.id"
+          class="flex-1 py-1.5 text-xs font-medium rounded-lg transition"
+          :class="{
+            'bg-white/10 text-white shadow-sm': activeTab === tab.id,
+            'text-gray-500 hover:text-gray-300': activeTab !== tab.id
+          }"
+          @click="activeTab = tab.id"
+        >{{ tab.label }}</button>
+      </div>
+    </template>
 
-    <div class="flex-grow space-y-2 overflow-y-auto">
+    <div class="space-y-2">
       <div 
         v-for="file in files" 
         :key="file.id" 
@@ -30,23 +32,25 @@
       </div>
     </div>
 
-    <div class="pt-4 mt-auto border-t border-white/5 space-y-3">
-      <div class="flex justify-between text-xs text-gray-400 mb-2">
-        <span>Memory Usage</span>
-        <span class="text-sci-blue">{{ memoryUsage }}%</span>
-      </div>
-      <div class="h-1 w-full bg-gray-800 rounded-full overflow-hidden mb-4">
-        <div class="h-full bg-sci-blue w-[42%] shadow-[0_0_10px_#3b82f6] transition-all duration-500"></div>
-      </div>
+    <template #footer>
+      <div class="pt-4 border-t border-white/5 space-y-3">
+        <div class="flex justify-between text-xs text-gray-400 mb-2">
+          <span>Memory Usage</span>
+          <span class="text-sci-blue">{{ memoryUsage }}%</span>
+        </div>
+        <div class="h-1 w-full bg-gray-800 rounded-full overflow-hidden mb-4">
+          <div class="h-full bg-sci-blue w-[42%] shadow-[0_0_10px_#3b82f6] transition-all duration-500"></div>
+        </div>
 
-      <GlowButton variant="primary" class="w-full shadow-lg" @click="deployChanges">
-        Deploy Changes
-      </GlowButton>
-      
-      <GlowButton variant="ghost" size="sm" class="w-full" @click="exportLogs">
-        Export Logs
-      </GlowButton>
-    </div>
+        <GlowButton variant="primary" class="w-full shadow-lg" @click="deployChanges">
+          Deploy Changes
+        </GlowButton>
+        
+        <GlowButton variant="ghost" size="sm" class="w-full" @click="exportLogs">
+          Export Logs
+        </GlowButton>
+      </div>
+    </template>
   </GlassCard>
 </template>
 

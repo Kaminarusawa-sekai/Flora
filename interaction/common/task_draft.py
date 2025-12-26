@@ -31,6 +31,7 @@ class ScheduleDTO(BaseModel):
 class TaskDraftDTO(BaseModel):
     """📝 [3. TaskDraftDTO] 任务草稿"""
     draft_id: str = Field(default_factory=lambda: str(uuid4()))
+    user_id: str            # 所属用户ID
     task_type: str          # 如 "CRAWLER", "BOOKING"
     
     # 状态流转：FILLING -> PENDING_CONFIRM -> SUBMITTED -> CANCELLED

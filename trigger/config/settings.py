@@ -83,7 +83,7 @@ class Settings:
         self.message_broker_type = os.getenv("MESSAGE_BROKER_TYPE", self._config_data.get("message_broker_type", "redis"))
         
         # 外部系统配置
-        self.EXTERNAL_SYSTEM_URL = os.getenv("EXTERNAL_SYSTEM_URL", self._config_data.get("external_system_url", "http://localhost:8003"))
+        self.EXTERNAL_SYSTEM_URL = os.getenv("EXTERNAL_SYSTEM_URL", self._config_data.get("external_system_url", "http://localhost:8004"))
         self.EXTERNAL_SYSTEM_API_KEY = os.getenv("EXTERNAL_SYSTEM_API_KEY", self._config_data.get("external_system_api_key", "default_api_key"))
         # 外部事件开关
         self.SKIP_EXTERNAL_EVENTS = os.getenv("SKIP_EXTERNAL_EVENTS", "true").lower() == "true"

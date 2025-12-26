@@ -1,6 +1,7 @@
 from tkinter.filedialog import dialogstates
 import logging
 import traceback
+import uuid
 from typing import Dict, Any, Optional
 from common import (
     UserInputDTO,
@@ -380,7 +381,19 @@ class InteractionHandler:
         try:
             dialog_state_manager = self.registry.get_capability("dialog_state", IDialogStateManagerCapability)
             dialog_state = dialog_state_manager.get_or_create_dialog_state(input.session_id, input.user_id)
+        
+            # 检查会话名称和描述，如果为空则生成
+            if not dialog_state.name or not dialog_state.description:
+                session_info = dialog_state_manager.generate_session_name(input.session_id, input.utterance)
+                dialog_state = dialog_state_manager.update_dialog_state_fields(
+                    dialog_state, 
+                    name=session_info["name"], 
+                    description=session_info["description"]
+                )
+                yield "thought", {"message": "生成会话名称和描述", "name": dialog_state.name, "description": dialog_state.description}
+        
             yield "thought", {"message": "对话状态加载完成"}
+            
         except Exception as e:
             logger.error(f"Failed to manage dialog state: {e}")
             logger.debug(f"Error traceback: {traceback.format_exc()}")
@@ -733,6 +746,14 @@ class InteractionHandler:
         # === 6. 执行任务（如果 should_execute）===
         if result_data.get("should_execute", False):
             try:
+                # 生成并设置 request_id
+                request_id = str(uuid.uuid4())
+                dialog_state = dialog_state_manager.update_dialog_state_fields(
+                    dialog_state,
+                    current_request_id=request_id
+                )
+                dialog_state_manager.update_dialog_state(dialog_state)
+                
                 task_execution_manager = self.registry.get_capability("task_execution", ITaskExecutionManagerCapability)
                 exec_context = task_execution_manager.execute_task(
                     result_data["task_draft"].draft_id,

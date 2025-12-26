@@ -24,7 +24,7 @@ from events.event_bus import event_bus
 from common.event.event_type import EventType
 
 # 导入信号状态枚举
-from tasks.common.signal.signal_status import SignalStatus
+from common.signal.signal_status import SignalStatus
 
 
 class ResultAggregatorActor(Actor):

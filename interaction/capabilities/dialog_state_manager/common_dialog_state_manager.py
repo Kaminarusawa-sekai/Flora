@@ -60,6 +60,9 @@ class CommonDialogState(IDialogStateManagerCapability):
             state = DialogStateDTO(
                 session_id=session_id,
                 user_id=user_id,  # 关联到用户
+                name="",
+                description="",
+                current_request_id=None,
                 current_intent=None,
                 active_task_draft=None,
                 active_task_execution=None,
@@ -466,4 +469,65 @@ class CommonDialogState(IDialogStateManagerCapability):
             更新后的对话状态
         """
         dialog_state.active_task_draft = None
+        return dialog_state
+    
+    def generate_session_name(self, session_id: str, user_input: str) -> Dict[str, str]:
+        """生成会话名称和描述
+        
+        Args:
+            session_id: 会话ID
+            user_input: 用户输入
+            
+        Returns:
+            包含name和description的字典
+        """
+        prompt = f"""
+你是一个会话助手，请根据用户的输入为会话生成一个简短的名称和描述。
+
+用户输入: {user_input}
+
+请严格按照以下格式返回JSON结果，不要包含任何其他内容：
+{{
+    "name": "简短的会话名称（10字以内）",
+    "description": "详细的会话描述（50字以内）"
+}}
+"""
+        
+        try:
+            result = self.llm.generate(prompt).strip()
+            import json
+            return json.loads(result)
+        except Exception as e:
+            self.logger.error(f"生成会话名称失败: {e}")
+            # 失败时返回默认值
+            return {
+                "name": "会话",
+                "description": f"基于用户输入: {user_input[:20]}..."
+            }
+    
+    def update_dialog_state_fields(self, dialog_state: DialogStateDTO, **kwargs) -> DialogStateDTO:
+        """更新对话状态的多个字段
+        
+        Args:
+            dialog_state: 对话状态DTO
+            **kwargs: 要更新的字段名和值，只允许更新DialogStateDTO中存在的字段
+            
+        Returns:
+            更新后的对话状态DTO
+        """
+        # 获取DialogStateDTO的所有字段名
+        valid_fields = dialog_state.model_fields.keys()
+        
+        for field_name, value in kwargs.items():
+            if field_name in valid_fields:
+                # 检查字段类型是否匹配
+                field_type = dialog_state.model_fields[field_name].annotation
+                try:
+                    # 尝试赋值
+                    setattr(dialog_state, field_name, value)
+                except Exception as e:
+                    self.logger.error(f"更新对话状态字段 {field_name} 失败: {e}")
+            else:
+                self.logger.warning(f"忽略无效的对话状态字段: {field_name}")
+        self.update_dialog_state(dialog_state)
         return dialog_state

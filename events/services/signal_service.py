@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from external.cache.base import CacheClient
 from external.db.session import dialect
 from external.db.impl import create_event_instance_repo
-from events.common.signal import SignalStatus
+from common.signal import SignalStatus
 
 
 class SignalService:

@@ -17,6 +17,7 @@ class TaskDraftRepository:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS task_drafts (
                     draft_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
                     task_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     slots TEXT NOT NULL,
@@ -62,12 +63,13 @@ class TaskDraftRepository:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO task_drafts (
-                    draft_id, task_type, status, slots, missing_slots, invalid_slots, 
+                    draft_id, user_id, task_type, status, slots, missing_slots, invalid_slots, 
                     schedule, is_cancelable, is_resumable, original_utterances, 
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 draft.draft_id,
+                draft.user_id,
                 draft.task_type,
                 draft.status,
                 self._serialize_slots(draft.slots),
@@ -90,7 +92,7 @@ class TaskDraftRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT draft_id, task_type, status, slots, missing_slots, invalid_slots, 
+                SELECT draft_id, user_id, task_type, status, slots, missing_slots, invalid_slots, 
                        schedule, is_cancelable, is_resumable, original_utterances, 
                        created_at, updated_at
                 FROM task_drafts
@@ -100,6 +102,7 @@ class TaskDraftRepository:
             if row:
                 return TaskDraftDTO(
                     draft_id=row['draft_id'],
+                    user_id=row['user_id'],
                     task_type=row['task_type'],
                     status=row['status'],
                     slots=self._deserialize_slots(row['slots']),
@@ -134,7 +137,7 @@ class TaskDraftRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT draft_id, task_type, status, slots, missing_slots, invalid_slots, 
+                SELECT draft_id, user_id, task_type, status, slots, missing_slots, invalid_slots, 
                        schedule, is_cancelable, is_resumable, original_utterances, 
                        created_at, updated_at
                 FROM task_drafts
@@ -144,6 +147,7 @@ class TaskDraftRepository:
             return [
                 TaskDraftDTO(
                     draft_id=row['draft_id'],
+                    user_id=row['user_id'],
                     task_type=row['task_type'],
                     status=row['status'],
                     slots=self._deserialize_slots(row['slots']),
@@ -180,7 +184,7 @@ class TaskDraftRepository:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT draft_id, task_type, status, slots, missing_slots, invalid_slots, 
+                SELECT draft_id, user_id, task_type, status, slots, missing_slots, invalid_slots, 
                        schedule, is_cancelable, is_resumable, original_utterances, 
                        created_at, updated_at
                 FROM task_drafts
@@ -191,6 +195,7 @@ class TaskDraftRepository:
             return [
                 TaskDraftDTO(
                     draft_id=row['draft_id'],
+                    user_id=row['user_id'],
                     task_type=row['task_type'],
                     status=row['status'],
                     slots=self._deserialize_slots(row['slots']),

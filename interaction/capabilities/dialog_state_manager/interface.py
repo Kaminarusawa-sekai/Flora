@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from abc import abstractmethod
 from ..base import BaseManager, TaskStorage
 from common import (
@@ -196,5 +196,31 @@ class IDialogStateManagerCapability(BaseManager):
             
         Returns:
             更新后的对话状态
+        """
+        pass
+    
+    @abstractmethod
+    def generate_session_name(self, session_id: str, user_input: str) -> Dict[str, str]:
+        """生成会话名称和描述
+        
+        Args:
+            session_id: 会话ID
+            user_input: 用户输入
+            
+        Returns:
+            包含name和description的字典
+        """
+        pass
+    
+    @abstractmethod
+    def update_dialog_state_fields(self, dialog_state: DialogStateDTO, **kwargs) -> DialogStateDTO:
+        """更新对话状态的多个字段
+        
+        Args:
+            dialog_state: 对话状态DTO
+            **kwargs: 要更新的字段名和值，只允许更新DialogStateDTO中存在的字段
+            
+        Returns:
+            更新后的对话状态DTO
         """
         pass

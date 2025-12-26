@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..deps import get_lifecycle_service, get_signal_service, get_db_session 
 from services.lifecycle_service import LifecycleService
 from services.signal_service import SignalService
-from events.common.signal import SignalStatus
+from common.signal import SignalStatus
 
 # 导入 Pydantic 模型
 from ...schemas.request import (

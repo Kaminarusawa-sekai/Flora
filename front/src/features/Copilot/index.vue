@@ -204,6 +204,7 @@ import { sendUserMessage } from '../../api/order';
 import { useConversationSSE } from '../../composables/useApi';
 import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
+import ConversationAPI from '../../api/conversation';
 
 // 接收选中的任务ID
 const props = defineProps({
@@ -354,9 +355,49 @@ watch(sessionId, async (newSessionId) => {
   initializeSSE();
 });
 
+// 监听 selectedTaskId 变化，重新获取历史记录
+watch(() => props.selectedTaskId, async (newTaskId) => {
+  if (newTaskId) {
+    await fetchSessionHistory();
+  }
+});
+
+// 获取会话历史记录
+const fetchSessionHistory = async () => {
+  if (!props.selectedTaskId) return;
+  
+  try {
+    // 使用 selectedTaskId 作为 sessionId 查询历史记录
+    const history = await ConversationAPI.getSessionHistory(props.selectedTaskId);
+    
+    // 清空现有消息
+    messages.value = [];
+    
+    // 将历史记录转换为组件需要的消息格式
+    if (history && history.length > 0) {
+      const formattedMessages = history.map(msg => ({
+        id: msg.id || Date.now() + Math.random(),
+        role: msg.role === 'user' ? 'user' : 'ai',
+        content: msg.content || '',
+        timestamp: new Date(msg.timestamp || Date.now()),
+        status: 'completed'
+      }));
+      
+      messages.value = formattedMessages;
+      await nextTick();
+      scrollToBottom();
+    }
+  } catch (error) {
+    console.error('Failed to fetch session history:', error);
+  }
+};
+
 // !!! 关键修复 3：挂载时的防御性连接 !!!
-onMounted(() => {
+onMounted(async () => {
   scrollToBottom();
+  
+  // 获取历史记录
+  await fetchSessionHistory();
 
   // 先尝试断开可能存在的残留连接（防止热更新导致的重复）
   disconnect();

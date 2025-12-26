@@ -41,6 +41,10 @@ class DialogStateRepository:
         # 处理必填字段的默认值
         if 'user_id' not in data:
             data['user_id'] = ''  # 或根据业务逻辑设置合理默认值
+        if 'name' not in data:
+            data['name'] = ''
+        if 'description' not in data:
+            data['description'] = ''
         
         # 处理列表字段的默认值
         if 'pending_tasks' not in data:
@@ -58,7 +62,7 @@ class DialogStateRepository:
         # 处理 Optional 字段的默认值
         for optional_field in ['current_intent', 'active_task_execution', 
                                'last_mentioned_task_id', 'clarification_context', 'clarification_message',
-                               'confirmation_action', 'confirmation_payload']:
+                               'confirmation_action', 'confirmation_payload', 'current_request_id']:
             if optional_field not in data:
                 data[optional_field] = None
         
@@ -94,6 +98,8 @@ class DialogStateRepository:
                 draft_data['missing_slots'] = []
             if 'invalid_slots' not in draft_data:
                 draft_data['invalid_slots'] = []
+            if 'user_id' not in draft_data:
+                draft_data['user_id'] = ''
             
             # 将 draft_data 转换为 TaskDraftDTO 对象
             data['active_task_draft'] = TaskDraftDTO(**draft_data)

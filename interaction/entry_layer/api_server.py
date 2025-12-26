@@ -224,7 +224,10 @@ async def get_session_info(session_id: str):
             "created_at": state.last_updated.isoformat() if hasattr(state, 'last_updated') else None,
             "last_active": state.last_updated.isoformat() if hasattr(state, 'last_updated') else None,
             "current_intent": state.current_intent,
-            "waiting_for_confirmation": state.waiting_for_confirmation
+            "waiting_for_confirmation": state.waiting_for_confirmation,
+            "name": state.name,
+            "description": state.description,
+            "request_id": state.current_request_id if hasattr(state, 'current_request_id') else None
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get session info: {str(e)}")

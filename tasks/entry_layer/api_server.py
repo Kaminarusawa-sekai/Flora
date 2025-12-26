@@ -18,6 +18,7 @@ import uuid
 
 from common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
 from agents.agent_actor import AgentActor
+from agents.tree.tree_manager import treeManager
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,58 @@ def health_check():
         "status": "healthy",
         "service": "flora-api-server"
     }
+
+# --- 核心接口 3: 获取Agent子树 ---
+@app.get("/agents/tree/subtree/{root_id}")
+def get_agent_subtree(root_id: str):
+    """
+    获取以指定节点为根的Agent子树
+    
+    Args:
+        root_id: 根节点Agent ID
+        
+    Returns:
+        子树结构，格式如下：
+        {
+            "agent_id": str,              # 节点Agent ID
+            "meta": {                     # 节点元数据
+                "name": str,              # Agent名称
+                "type": str,              # Agent类型
+                "is_leaf": bool,          # 是否为叶子节点
+                "weight": float,          # 权重值
+                "description": str        # 描述信息
+                # 其他元数据字段...
+            },
+            "children": [                 # 子节点列表（递归结构）
+                {
+                    "agent_id": str,
+                    "meta": {},
+                    "children": [...]
+                }
+                # 更多子节点...
+            ]
+        }
+    """
+    try:
+        subtree = treeManager.get_subtree(root_id)
+        if not subtree:
+            raise HTTPException(status_code=404, detail=f"Agent {root_id} not found")
+        
+        return {
+            "success": True,
+            "data": subtree,
+            "error": None
+        }
+    except Exception as e:
+        logger.error(f"Error getting subtree for agent {root_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "data": None,
+                "error": str(e)
+            }
+        )
 
 
 # 工厂函数，用于创建API服务器实例
