@@ -3,40 +3,69 @@ import { ref } from 'vue';
 import MainLayout from '@/layouts/MainLayout.vue';
 import GlassCard from '@/components/ui/GlassCard.vue';
 import TaskSidebar from '@/features/TaskSidebar/index.vue';
+import NavigationPanel from '@/features/NavigationPanel/index.vue';
 import Copilot from '@/features/Copilot/index.vue';
 import DagEditor from '@/features/DagEditor/index.vue';
 import ResourcePanel from '@/features/ResourcePanel/index.vue';
+import MarkdownViewer from '@/features/MarkdownViewer/index.vue';
 
 // 当前选中的任务ID
 const selectedTaskId = ref('TSK-01');
+// 当前激活的视图
+const activeView = ref('tasks');
 
 // 处理任务切换
 const handleTaskSelect = (taskId: string) => {
   selectedTaskId.value = taskId;
+};
+
+// 处理导航切换
+const handleNavChange = (view: string) => {
+  activeView.value = view;
 };
 </script>
 
 <template>
 
   <MainLayout>
-    <template #sidebar>
-      <GlassCard class="h-full">
+    <template #nav>
+      <GlassCard class="h-full" noPadding>
+        <NavigationPanel @nav-change="handleNavChange" />
+      </GlassCard>
+    </template>
+
+    <template #sidebar v-if="activeView === 'tasks'">
+      <GlassCard class="h-full w-[380px]"> 
         <TaskSidebar @task-select="handleTaskSelect" />
       </GlassCard>
     </template>
 
     <template #chat>
-      <GlassCard class="h-full bg-white/2">
+      <!-- 仅在tasks视图显示Copilot组件 -->
+      <GlassCard v-if="activeView === 'tasks'" class="h-full  w-[400px] bg-white/2">
         <Copilot :selected-task-id="selectedTaskId" />
       </GlassCard>
     </template>
 
     <template #canvas>
-      <DagEditor />
+      <!-- 对于tasks和overview视图，显示DagEditor组件 -->
+      <DagEditor v-if="activeView === 'tasks' || activeView === 'overview'" />
+      <!-- search视图显示markdown文档 -->
+      <GlassCard v-if="activeView === 'search'" class="h-full bg-white/2">
+        <MarkdownViewer />
+      </GlassCard>
+      <!-- 其他视图下显示提示信息 -->
+      <div v-else class="h-full flex items-center justify-center text-gray-400">
+        <div class="text-center">
+          <h2 class="text-2xl font-bold mb-2">{{ activeView.charAt(0).toUpperCase() + activeView.slice(1) }}</h2>
+          <p>该视图正在开发中...</p>
+        </div>
+      </div>
     </template>
 
     <template #resources>
-      <GlassCard class="h-full">
+      <!-- 仅在tasks视图显示ResourcePanel组件 -->
+      <GlassCard v-if="activeView === 'tasks'" class="h-full">
         <ResourcePanel />
       </GlassCard>
     </template>
