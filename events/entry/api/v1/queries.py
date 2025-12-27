@@ -45,6 +45,20 @@ class TraceSummaryResponse(BaseModel):
     end_time: Optional[datetime] = None
 
 
+class TraceByUserResponse(BaseModel):
+    """单个trace的用户查询响应模型"""
+    trace_id: str
+    created_at: datetime
+    status: str
+
+
+class TraceListByUserResponse(BaseModel):
+    """用户trace列表响应模型"""
+    user_id: str
+    count: int
+    traces: List[TraceByUserResponse]
+
+
 @router.get("/{trace_id}/tasks", response_model=List[EventInstance])
 async def list_tasks_in_trace(
     trace_id: str,
@@ -164,6 +178,35 @@ async def get_ready_tasks(
     return {
         "count": len(ready_events),
         "tasks": [event.model_dump() for event in ready_events]
+    }
+
+
+@router.get("/by-user/{user_id}", response_model=TraceListByUserResponse)
+async def get_traces_by_user_id(
+    user_id: str,
+    start_time: Optional[datetime] = Query(None, description="开始时间"),
+    end_time: Optional[datetime] = Query(None, description="结束时间"),
+    limit: int = Query(100, le=1000, description="每页数量"),
+    offset: int = Query(0, description="偏移量"),
+    observer_svc: ObserverService = Depends(get_observer_service),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    根据user_id查询所有trace_id及其状态，支持时间范围过滤和分页
+    """
+    traces = await observer_svc.find_traces_by_user_id(
+        session=session,
+        user_id=user_id,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        offset=offset
+    )
+    
+    return {
+        "user_id": user_id,
+        "count": len(traces),
+        "traces": traces
     }
 
 

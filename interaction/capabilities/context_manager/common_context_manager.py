@@ -79,31 +79,35 @@ class CommonContextManager(IContextManagerCapability):
             raise ValueError("Context manager not initialized")
         return self.repo.get_turn_by_id(turn_id)
     
-    def get_recent_turns(self, limit: int = 10) -> List[DialogTurn]:
+    def get_recent_turns(self, limit: int = 10, session_id: Optional[str] = None) -> List[DialogTurn]:
         """
         获取最近的对话轮次
         
         Args:
             limit: 返回的最大轮次数
+            session_id: 会话ID，可选。如果提供，只获取指定会话的最近轮次
             
         Returns:
             对话轮次列表，按时间戳倒序排列
         """
         if not self.repo:
             raise ValueError("Context manager not initialized")
-        all_turns = self.repo.get_all_turns()
+        all_turns = self.repo.get_all_turns(session_id)
         return all_turns[-limit:][::-1]
     
-    def get_all_turns(self) -> List[DialogTurn]:
+    def get_all_turns(self, session_id: Optional[str] = None) -> List[DialogTurn]:
         """
         获取所有对话轮次
         
+        Args:
+            session_id: 会话ID，可选。如果提供，只获取指定会话的所有轮次
+            
         Returns:
             对话轮次列表，按时间戳正序排列
         """
         if not self.repo:
             raise ValueError("Context manager not initialized")
-        return self.repo.get_all_turns()
+        return self.repo.get_all_turns(session_id)
     
     def update_turn(self, turn_id: int, enhanced_utterance: str) -> bool:
         """
@@ -120,12 +124,13 @@ class CommonContextManager(IContextManagerCapability):
             raise ValueError("Context manager not initialized")
         return self.repo.update_turn(turn_id, enhanced_utterance)
     
-    def compress_context(self, n: int) -> bool:
+    def compress_context(self, n: int, session_id: Optional[str] = None) -> bool:
         """
         压缩上下文，将最近的n轮对话合并或精简
         
         Args:
             n: 要压缩的轮次数
+            session_id: 会话ID，可选。如果提供，只压缩指定会话的上下文
             
         Returns:
             压缩是否成功
@@ -134,7 +139,7 @@ class CommonContextManager(IContextManagerCapability):
             raise ValueError("Context manager not initialized")
         
         # 获取最早的n个轮次
-        old_turns = self.repo.get_oldest_turns(n)
+        old_turns = self.repo.get_oldest_turns(n, session_id)
         if not old_turns:
             return False
         
@@ -165,30 +170,34 @@ class CommonContextManager(IContextManagerCapability):
             return True
         return False
     
-    def clear_context(self, n: int = 10) -> bool:
+    def clear_context(self, n: int = 10, session_id: Optional[str] = None) -> bool:
         """
         清空n轮前的上下文，保留最近的n轮对话
         
         Args:
             n: 要保留的最近轮次数，默认10
+            session_id: 会话ID，可选。如果提供，只清空指定会话的上下文
             
         Returns:
             清空是否成功
         """
         if not self.repo:
             raise ValueError("Context manager not initialized")
-        return self.repo.delete_old_turns(n)
+        return self.repo.delete_old_turns(n, session_id)
     
-    def get_context_length(self) -> int:
+    def get_context_length(self, session_id: Optional[str] = None) -> int:
         """
         获取当前上下文的长度
         
+        Args:
+            session_id: 会话ID，可选。如果提供，只获取指定会话的上下文长度
+            
         Returns:
             对话轮次数量
         """
         if not self.repo:
             raise ValueError("Context manager not initialized")
-        all_turns = self.repo.get_all_turns()
+        all_turns = self.repo.get_all_turns(session_id)
         return len(all_turns)
     
     def get_turns_by_session(self, session_id: str, limit: int = 20, offset: int = 0) -> List[DialogTurn]:

@@ -285,25 +285,58 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             return "当前无活跃任务，处于空闲状态。"
             
         return "\n".join(parts)
-    ##TODO：变成llm判断
     def judge_special_intent(self, user_input: str, dialog_state: DialogStateDTO) -> str:
-        """判断特殊意图：确认、修改草稿或拒绝"""
-        lower_input = user_input.lower()
+        """判断特殊意图：确认、修改草稿或拒绝（使用LLM）"""
+        context_desc = self._format_context_for_llm(dialog_state)
         
-        # 检查确认意图
-        confirm_keywords = ["确认", "是的", "对的", "好的", "行", "没问题", "可以", "同意", "ok", "yes"]
-        if any(kw in lower_input for kw in confirm_keywords):
-            return "CONFIRM"
+        prompt = (
+            f"你是一个意图识别助手。请判断用户输入的特殊意图类型。\n\n"
+            f"【当前上下文状态】\n{context_desc}\n\n"
+            f"【用户输入】\n{user_input}\n\n"
+            f"【可能的意图类型】\n"
+            f"1. CONFIRM：用户确认当前操作或任务信息\n"
+            f"2. CANCEL：用户拒绝当前操作或取消任务\n"
+            f"3. MODIFY：用户想要修改当前任务的信息\n"
+            f"4. 无特殊意图：返回空字符串\n\n"
+            f"【判断规则】\n"
+            f"1. 考虑当前上下文状态，理解用户输入的真实意图\n"
+            f"2. 只有明确的确认、拒绝或修改意图才返回对应类型\n"
+            f"3. 否则返回空字符串\n\n"
+            f"请严格按照以下JSON格式返回，不要包含任何其他内容：\n"
+            f"{{\"intent_type\": \"CONFIRM\" 或 \"CANCEL\" 或 \"MODIFY\" 或 \"\"}}"
+        )
         
-        # 检查拒绝意图
-        cancel_keywords = ["取消", "拒绝", "不", "不行", "不要", "不对", "no", "取消操作", "停止"]
-        if any(kw in lower_input for kw in cancel_keywords):
-            return "CANCEL"
-        
-        # 检查修改草稿意图
-        modify_keywords = ["修改", "编辑", "更新", "改一下", "调整", "换", "重新", "变更"]
-        if any(kw in lower_input for kw in modify_keywords):
-            return "MODIFY"
-        
-        # 默认返回空字符串，表示不是特殊意图
-        return ""
+        try:
+            response: dict = self.llm.generate(prompt, parse_json=True)
+            self.logger.info(f"Special intent LLM Response: {str(response)}")
+            intent_type = response.get("intent_type", "")
+            
+            # 验证返回值是否合法
+            if intent_type in ["CONFIRM", "CANCEL", "MODIFY", ""]:
+                return intent_type
+            else:
+                self.logger.warning(f"Invalid special intent type: {intent_type}, returning empty string")
+                return ""
+                
+        except Exception as e:
+            self.logger.warning("Special intent LLM failed: %s", e)
+            # 降级为关键字匹配
+            lower_input = user_input.lower()
+            
+            # 检查确认意图
+            confirm_keywords = ["确认", "是的", "对的", "好的", "行", "没问题", "可以", "同意", "ok", "yes"]
+            if any(kw in lower_input for kw in confirm_keywords):
+                return "CONFIRM"
+            
+            # 检查拒绝意图
+            cancel_keywords = ["取消", "拒绝", "不", "不行", "不要", "不对", "no", "取消操作", "停止"]
+            if any(kw in lower_input for kw in cancel_keywords):
+                return "CANCEL"
+            
+            # 检查修改草稿意图
+            modify_keywords = ["修改", "编辑", "更新", "改一下", "调整", "换", "重新", "变更"]
+            if any(kw in lower_input for kw in modify_keywords):
+                return "MODIFY"
+            
+            # 默认返回空字符串，表示不是特殊意图
+            return ""

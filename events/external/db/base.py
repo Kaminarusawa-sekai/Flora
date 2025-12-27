@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import List, Optional
 from common.event_definition import EventDefinition
 from common.event_instance import EventInstance
@@ -46,6 +47,8 @@ class EventInstanceRepository(ABC):
     async def bulk_update_signal_by_path(self, trace_id: str, path_pattern: str, signal: str) -> None: ...
     @abstractmethod
     async def update_signal_by_trace(self, trace_id: str, signal: str) -> None: ...
+    @abstractmethod
+    async def find_traces_by_user_id(self, user_id: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, limit: int = 100, offset: int = 0) -> List[dict]: ...
 
 
 class EventLogRepository(ABC):

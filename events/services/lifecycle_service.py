@@ -61,6 +61,7 @@ class LifecycleService:
             "parent_id": instance.parent_id,
             "job_id": instance.job_id,
             "def_id": instance.def_id,
+            "user_id": instance.user_id,
             "status": instance.status,
             "control_signal": instance.control_signal,
             "node_path": instance.node_path,
@@ -195,6 +196,7 @@ class LifecycleService:
             parent_id=None,
             job_id=f"job-{trace_id[:8]}",
             def_id=root_def_id,
+            user_id=user_id,
             node_path="/",  # 根路径
             depth=0,
             actor_type=definition.actor_type,
@@ -329,6 +331,7 @@ class LifecycleService:
                 parent_id=parent_id,
                 job_id=parent_data['job_id'],
                 def_id=meta["def_id"], # 必须关联到具体的 Definition
+                user_id=parent_data.get('user_id'),
                 
                 # 【关键】构建物化路径
                 node_path=f"{parent_data['node_path']}{parent_id}/",

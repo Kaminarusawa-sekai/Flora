@@ -43,7 +43,7 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
         """返回能力类型"""
         return "task_execution"
     
-    def execute_task(self, draft_id: str, parameters: Dict[str, Any], task_type: str, user_id: str) -> TaskExecutionContextDTO:
+    def execute_task(self, request_id: str, draft_id: str, parameters: Dict[str, Any], task_type: str, user_id: str) -> TaskExecutionContextDTO:
         """执行任务
         
         Args:
@@ -57,6 +57,7 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
         """
         # 创建任务执行上下文
         task_context = TaskExecutionContextDTO(
+            request_id=request_id,
             draft_id=draft_id,
             task_type=task_type,
             parameters=parameters,
@@ -74,81 +75,95 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
             logs=[],
             result_data=None,
             error_detail=None,
-            external_job_id=None  # 新增：外部任务ID
+            external_job_id=None
         )
-        
-
-        
         
         # 调用外部执行系统
         try:
-            external_job_id = self.external_executor.submit(
-                task_id=task_context.task_id,
-                task_type=task_type,
+            # [适配修改] 构造 task_content
+            # 新的 Client 需要 task_content 字典来定义具体执行逻辑
+            # 如果 parameters 中包含 task_content 则直接使用，否则构造一个默认的
+            task_content = parameters.get("task_content", {
+                "type": task_type,
+                "description": parameters.get("description", "")
+            })
+
+            # [适配修改] 使用新的 submit_task 方法
+            # 注意：trace_id 是返回值，request_id 是传入参数
+            trace_id = self.external_executor.submit_task(
+                task_name=task_type,      # 使用 task_type 作为任务名，或者从 parameters 获取 name
+                task_content=task_content,
                 parameters=parameters,
-                user_id=user_id
+                user_id=user_id,
+                request_id=request_id     # 传入 request_id 以便 client 传递给后端
             )
-            # 记录外部任务ID
-            task_context.external_job_id = external_job_id
+            
+            # 记录外部任务ID (即 trace_id)
+            task_context.external_job_id = trace_id
 
         except Exception as e:
             # 如果提交失败，标记任务为失败
             error_msg = str(e)
-            self.fail_task(task_context.task_id, {"message": error_msg})
+            self.logger.error(f"提交任务失败: {error_msg}")
+            task_context.execution_status = ExecutionStatus.FAILED
+            task_context.error_detail = {"message": error_msg}
         
         return task_context
     
-    def stop_task(self, task_id: str):
+    def stop_task(self, request_id: str):
         """停止任务执行
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
         """
-        # 获取任务上下文
-
-        
-        # 调用外部执行系统停止任务
-        self.external_executor.stop(task_id)
+        # [适配修改] 方法名变为 cancel_task，使用 request_id 参数
+        try:
+            self.external_executor.cancel_task(request_id=request_id)
+        except Exception as e:
+            self.logger.error(f"停止任务失败 [request_id={request_id}]: {e}")
     
-    def pause_task(self, task_id: str):
+    def pause_task(self, request_id: str):
         """暂停任务执行
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
         """
-        # 获取任务上下文
-        
-        # 调用外部执行系统暂停任务
-        self.external_executor.pause(task_id)
+        # [适配修改] 方法名变为 pause_task，使用 request_id 参数
+        try:
+            self.external_executor.pause_task(request_id=request_id)
+        except Exception as e:
+            self.logger.error(f"暂停任务失败 [request_id={request_id}]: {e}")
     
-    def resume_task(self, task_id: str):
+    def resume_task(self, request_id: str):
         """恢复任务执行
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
         """
-
-        # 调用外部执行系统恢复任务
-        self.external_executor.resume(task_id)
+        # [适配修改] 方法名变为 resume_task，使用 request_id 参数
+        try:
+            self.external_executor.resume_task(request_id=request_id)
+        except Exception as e:
+            self.logger.error(f"恢复任务失败 [request_id={request_id}]: {e}")
     
    
 
-    def handle_task_interruption(self, task_id: str, field_name: str, message: str):
+    def handle_task_interruption(self, request_id: str, field_name: str, message: str):
         """处理任务中断，等待用户输入
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID  
             field_name: 等待输入的字段名
             message: 中断消息
         """
         # 获取任务上下文
         pass
     
-    def resume_interrupted_task(self, task_id: str, input_value: Any):
+    def resume_interrupted_task(self, request_id: str, input_value: Any):
         """恢复被中断的任务
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
             input_value: 用户输入的值
         """
         # 获取任务上下文
@@ -156,11 +171,11 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
             
             # 外部系统负责实际执行，这里无需重新启动
     
-    def complete_task(self, task_id: str, result: Dict[str, Any]):
+    def complete_task(self, request_id: str, result: Dict[str, Any]):
         """完成任务
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
             result: 任务执行结果
         """
         pass
@@ -203,27 +218,26 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
         # 根据任务类型生成标签
         return [task_type.lower()]
     
-    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_task_status(self, request_id: str) -> Optional[Dict[str, Any]]:
         """获取任务状态
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
             
         Returns:
             任务状态信息
         """
-
+        external_status = None
         # 如果有外部任务ID，可以调用外部API获取最新状态
-        if task_id:
+        if request_id:
             try:
-                external_status = self.external_executor.get_task_status(task_id)
-
-                    # 同步外部状态到本地（如果需要）
-                    # self._sync_external_status(task_id, external_status)
-                    # 更新状态信息
+                # [适配修改] 使用 request_id 参数调用 get_task_status
+                # Client 会自动处理 request_id -> trace_id 的解析
+                external_status = self.external_executor.get_task_status(request_id=request_id)
 
             except Exception as e:
                 # 如果外部状态获取失败，忽略并继续使用本地状态
+                self.logger.warning(f"获取外部任务状态失败 [request_id={request_id}]: {e}")
                 pass
         
         return external_status
@@ -249,20 +263,20 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
         
         return status_progress_map.get(task_context.execution_status, 0.0)
     
-    def _on_external_task_completed(self, task_id: str, result: Dict[str, Any]):
+    def _on_external_task_completed(self, request_id: str, result: Dict[str, Any]):
         """外部任务完成回调
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
             result: 任务执行结果
         """
-        self.complete_task(task_id, result)
+        self.complete_task(request_id, result)
     
-    def _on_external_task_failed(self, task_id: str, error: Dict[str, Any]):
+    def _on_external_task_failed(self, request_id: str, error: Dict[str, Any]):
         """外部任务失败回调
         
         Args:
-            task_id: 任务ID
+            request_id: 请求ID
             error: 错误信息
         """
-        self.fail_task(task_id, error)
+        self.fail_task(request_id, error)

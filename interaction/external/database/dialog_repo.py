@@ -76,15 +76,57 @@ class DialogRepository:
         finally:
             self.pool.return_connection(conn)
     
-    def get_all_turns(self) -> List[DialogTurn]:
+    def get_all_turns_by_session(self, session_id: str) -> List[DialogTurn]:
+        """
+        根据会话ID获取所有对话轮次
+        
+        Args:
+            session_id: 会话ID
+            
+        Returns:
+            对话轮次列表，按时间戳正序排列
+        """
         conn = self.pool.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
                 FROM dialog_turns
+                WHERE session_id = ?
                 ORDER BY timestamp
-            ''')
+            ''', (session_id,))
+            rows = cursor.fetchall()
+            return [
+                DialogTurn(
+                    session_id=row['session_id'],
+                    user_id=row['user_id'],
+                    role=row['role'],
+                    utterance=row['utterance'],
+                    timestamp=row['timestamp'],
+                    enhanced_utterance=row['enhanced_utterance']
+                )
+                for row in rows
+            ]
+        finally:
+            self.pool.return_connection(conn)
+    
+    def get_all_turns(self, session_id: Optional[str] = None) -> List[DialogTurn]:
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            if session_id:
+                cursor.execute('''
+                    SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                    FROM dialog_turns
+                    WHERE session_id = ?
+                    ORDER BY timestamp
+                ''', (session_id,))
+            else:
+                cursor.execute('''
+                    SELECT session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                    FROM dialog_turns
+                    ORDER BY timestamp
+                ''')
             rows = cursor.fetchall()
             return [
                 DialogTurn(
@@ -137,12 +179,13 @@ class DialogRepository:
         finally:
             self.pool.return_connection(conn)
     
-    def delete_old_turns(self, keep: int) -> bool:
+    def delete_old_turns(self, keep: int, session_id: Optional[str] = None) -> bool:
         """
         删除旧的对话轮次，保留最近的keep个轮次
         
         Args:
             keep: 要保留的最近轮次数
+            session_id: 会话ID，可选。如果提供，只删除指定会话的旧轮次
             
         Returns:
             删除是否成功
@@ -151,30 +194,44 @@ class DialogRepository:
         try:
             cursor = conn.cursor()
             # 先获取要保留的最小ID
-            cursor.execute('''
-                SELECT MIN(id) FROM (
-                    SELECT id FROM dialog_turns
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ) AS recent_turns
-            ''', (keep,))
+            if session_id:
+                cursor.execute('''
+                    SELECT MIN(id) FROM (
+                        SELECT id FROM dialog_turns
+                        WHERE session_id = ?
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                    ) AS recent_turns
+                ''', (session_id, keep))
+            else:
+                cursor.execute('''
+                    SELECT MIN(id) FROM (
+                        SELECT id FROM dialog_turns
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                    ) AS recent_turns
+                ''', (keep,))
             min_id = cursor.fetchone()[0]
             
             if min_id:
                 # 删除小于该ID的所有轮次
-                cursor.execute('DELETE FROM dialog_turns WHERE id < ?', (min_id,))
+                if session_id:
+                    cursor.execute('DELETE FROM dialog_turns WHERE id < ? AND session_id = ?', (min_id, session_id))
+                else:
+                    cursor.execute('DELETE FROM dialog_turns WHERE id < ?', (min_id,))
                 conn.commit()
                 return cursor.rowcount > 0
             return False
         finally:
             self.pool.return_connection(conn)
     
-    def get_oldest_turns(self, n: int) -> List[Dict[str, Any]]:
+    def get_oldest_turns(self, n: int, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         获取最早的n个对话轮次
         
         Args:
             n: 要获取的轮次数
+            session_id: 会话ID，可选。如果提供，只获取指定会话的最早轮次
             
         Returns:
             对话轮次列表
@@ -182,12 +239,21 @@ class DialogRepository:
         conn = self.pool.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, session_id, user_id, role, utterance, timestamp, enhanced_utterance
-                FROM dialog_turns
-                ORDER BY timestamp ASC
-                LIMIT ?
-            ''', (n,))
+            if session_id:
+                cursor.execute('''
+                    SELECT id, session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                    FROM dialog_turns
+                    WHERE session_id = ?
+                    ORDER BY timestamp ASC
+                    LIMIT ?
+                ''', (session_id, n))
+            else:
+                cursor.execute('''
+                    SELECT id, session_id, user_id, role, utterance, timestamp, enhanced_utterance
+                    FROM dialog_turns
+                    ORDER BY timestamp ASC
+                    LIMIT ?
+                ''', (n,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
         finally:

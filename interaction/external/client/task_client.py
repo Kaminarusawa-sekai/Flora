@@ -1,8 +1,8 @@
 from typing import Dict, Any, Optional
 import uuid
 import requests
-from interaction.common.task_execution import TaskExecutionContextDTO
-from interaction.common.base import ExecutionStatus
+from common.task_execution import TaskExecutionContextDTO
+from common.base import ExecutionStatus
 
 class TaskClient:
     """任务执行客户端，用于与外部任务执行系统交互"""
@@ -258,7 +258,7 @@ class TaskClient:
             "schedule_config": None
         }
         # 对应 Server: @router.patch("/instances/{instance_id}/modify")
-        return self._request("PATCH", f"/instances/{target_id}/modify", json=payload)
+        return self._request("PATCH", f"/traces/{target_id}/modify", json=payload)
     
     
 
@@ -404,8 +404,41 @@ class TaskClient:
                 "status": "UNKNOWN",
                 "note": "接口调用失败"
             }
-
-
+    
+    def get_tasks_status_by_user(
+        self,
+        user_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """根据用户ID查询所有任务状态，支持时间范围过滤和分页
+        
+        Args:
+            user_id: 用户ID
+            start_time: 开始时间（可选，格式：YYYY-MM-DD HH:MM:SS）
+            end_time: 结束时间（可选，格式：YYYY-MM-DD HH:MM:SS）
+            limit: 每页数量，默认100，最大1000
+            offset: 偏移量，默认0
+            
+        Returns:
+            任务状态列表，包含用户ID、任务总数和任务详情
+        """
+        # 构造查询参数
+        params = {
+            "limit": limit,
+            "offset": offset
+        }
+        
+        # 添加可选的时间范围参数
+        if start_time:
+            params["start_time"] = start_time
+        if end_time:
+            params["end_time"] = end_time
+        
+        # 调用事件系统的 API 端点 /by-user/{user_id}
+        return self._request("GET", f"/by-user/{user_id}", params=params, use_events_url=True)
 
    
     

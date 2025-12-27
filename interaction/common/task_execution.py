@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from uuid import uuid4
 from .base import ExecutionStatus, ExecutionLogEntry
@@ -7,7 +7,8 @@ from .task_draft import ScheduleDTO
 
 class TaskExecutionContextDTO(BaseModel):
     """⚙️ [4. TaskExecutionContextDTO] 任务执行上下文"""
-    task_id: str = Field(default_factory=lambda: str(uuid4())) # 正式ID
+
+    request_id: str=Field(default_factory=lambda: str(uuid4()))
     draft_id: str          # 关联的草稿ID
     task_type: str
     
@@ -29,7 +30,7 @@ class TaskExecutionContextDTO(BaseModel):
     control_status: str  # 'NORMAL' | 'PAUSED' | 'CANCELLED_BY_USER' | 'TERMINATED'
 
     # 关联的父任务（用于循环任务：每次执行是一个子实例）
-    parent_task_id: Optional[str] = None
+    parent_request_id: Optional[str] = None
     run_index: Optional[int] = None          # 第几次运行（循环任务）
 
     # 查询优化字段
@@ -50,28 +51,28 @@ class TaskControlResponseDTO(BaseModel):
     """任务控制操作的统一响应对象"""
     success: bool
     message: str
-    task_id: Optional[str] = None
+    request_id: Optional[str] = None
     operation: Optional[str] = None  # 例如: "PAUSE", "CANCEL", "RETRY"
     data: Dict[str, Any] = Field(default_factory=dict)  # 承载外部客户端返回的原始数据
 
     @classmethod
-    def success_result(cls, message: str, task_id: str, operation: str, data: Dict[str, Any] = None) -> 'TaskControlResponseDTO':
+    def success_result(cls, message: str, request_id: str, operation: str, data: Dict[str, Any] = None) -> 'TaskControlResponseDTO':
         """快速构建成功响应"""
         return cls(
             success=True,
             message=message,
-            task_id=task_id,
+            request_id=request_id,
             operation=operation,
             data=data or {}
         )
 
     @classmethod
-    def error_result(cls, message: str, task_id: Optional[str] = None, operation: Optional[str] = None) -> 'TaskControlResponseDTO':
+    def error_result(cls, message: str, request_id: Optional[str] = None, operation: Optional[str] = None) -> 'TaskControlResponseDTO':
         """快速构建失败响应"""
         return cls(
             success=False,
             message=message,
-            task_id=task_id,
+            request_id=request_id,
             operation=operation
         )
         
@@ -80,7 +81,7 @@ class TaskControlResponseDTO(BaseModel):
         return {
             "success": self.success,
             "message": self.message,
-            "task_id": self.task_id,
+            "request_id": self.request_id,
             "operation": self.operation,
             "data": self.data
         }

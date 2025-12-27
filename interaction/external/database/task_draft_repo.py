@@ -14,6 +14,7 @@ class TaskDraftRepository:
         conn = self.pool.get_connection()
         try:
             cursor = conn.cursor()
+            # 先创建表（如果不存在）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS task_drafts (
                     draft_id TEXT PRIMARY KEY,
@@ -31,6 +32,41 @@ class TaskDraftRepository:
                     updated_at REAL NOT NULL
                 )
             ''')
+
+            # 获取当前表的所有列名
+            cursor.execute("PRAGMA table_info(task_drafts)")
+            columns = {col[1] for col in cursor.fetchall()}  # col[1] 是列名
+
+            # 定义期望的列及其类型（用于 ALTER）
+            expected_columns = {
+                "user_id": "TEXT NOT NULL",
+                "draft_id": "TEXT PRIMARY KEY",
+                "task_type": "TEXT NOT NULL",
+                "status": "TEXT NOT NULL",
+                "slots": "TEXT NOT NULL",
+                "missing_slots": "TEXT NOT NULL",
+                "invalid_slots": "TEXT NOT NULL",
+                "schedule": "TEXT",
+                "is_cancelable": "INTEGER NOT NULL",
+                "is_resumable": "INTEGER NOT NULL",
+                "original_utterances": "TEXT NOT NULL",
+                "created_at": "REAL NOT NULL",
+                "updated_at": "REAL NOT NULL"
+            }
+
+            # 对每个期望的列，如果不存在就添加（注意：不能添加 PRIMARY KEY 或 NOT NULL 到已有行为空的表）
+            for col_name, col_def in expected_columns.items():
+                if col_name not in columns:
+                    # SQLite 不支持在 ALTER 中指定 NOT NULL（除非有默认值），所以先加为可空
+                    # 如果是 user_id 这种关键字段，你可能需要设默认值或确保数据一致
+                    if col_name == "user_id":
+                        # 假设你可以接受临时默认值，或后续填充
+                        cursor.execute(f"ALTER TABLE task_drafts ADD COLUMN {col_name} TEXT")
+                    else:
+                        # 其他字段也类似处理
+                        # 注意：SQLite 的 ALTER ADD COLUMN 不支持约束（如 NOT NULL, DEFAULT 除外）
+                        cursor.execute(f"ALTER TABLE task_drafts ADD COLUMN {col_name} TEXT")
+
             conn.commit()
         finally:
             self.pool.return_connection(conn)

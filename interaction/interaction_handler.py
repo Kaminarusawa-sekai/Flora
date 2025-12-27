@@ -3,6 +3,8 @@ import logging
 import traceback
 import uuid
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+
 from common import (
     UserInputDTO,
     SystemResponseDTO,
@@ -354,6 +356,7 @@ class InteractionHandler:
             Tuple[str, Any]: (event_type, data) 事件类型和数据
         """
         # === 1. 用户输入管理 ===
+        original_input = input.copy()
         try:
             user_input_manager = self.registry.get_capability("user_input", IUserInputManagerCapability)
             session_state = user_input_manager.process_input(input)
@@ -413,7 +416,7 @@ class InteractionHandler:
 
             if dialog_state.waiting_for_confirmation:
                 # 【特殊状态】只先判断是否为特殊意图（CONFIRM/CANCEL/MODIFY）
-                special_intent = intent_recognition_manager.judge_special_intent(input.utterance, dialog_state)
+                special_intent = intent_recognition_manager.judge_special_intent(original_input.utterance, dialog_state)
                 
                 yield "thought", {
                     "message": "处于等待确认状态，仅检查特殊意图",
@@ -433,12 +436,12 @@ class InteractionHandler:
                     # 是特殊意图，不调用 recognize_intent，intent_result 保持 None
                     # 后续路由会因 bypass_routing 而跳过，所以安全
                     intent_result = IntentRecognitionResultDTO(
-                        primary_intent=IntentType.UNKNOWN,  # 或 IDLE_CHAT，但实际不会用到
+                        primary_intent=IntentType.IDLE_CHAT,  # 或 IDLE_CHAT，但实际不会用到
                         confidence=0.0,
                         entities=[],
                         raw_nlu_output={}
                     )
-                    dialog_state.current_intent = IntentType.UNKNOWN  # 可选，或保留原值
+                    dialog_state.current_intent = IntentType.IDLE_CHAT  # 可选，或保留原值
 
             else:
                 # 【正常状态】直接完整意图识别
@@ -700,7 +703,7 @@ class InteractionHandler:
                         try:
                             context_manager = self.registry.get_capability("context_manager", IContextManagerCapability)
                             # 获取最近 5-10 轮对话 (根据 Token 限制调整)
-                            recent_turns = context_manager.get_recent_turns(limit=5)
+                            recent_turns = context_manager.get_recent_turns(limit=5, session_id=dialog_state.session_id)
                             
                             # 因为实现是倒序返回 ([最近, 次近...])，为了给 LLM 阅读，我们需要反转回正序
                             recent_turns.reverse() 
@@ -756,6 +759,7 @@ class InteractionHandler:
                 
                 task_execution_manager = self.registry.get_capability("task_execution", ITaskExecutionManagerCapability)
                 exec_context = task_execution_manager.execute_task(
+                    request_id,
                     result_data["task_draft"].draft_id,
                      {
                         name: slot.resolved
@@ -764,9 +768,9 @@ class InteractionHandler:
                     result_data["task_draft"].task_type,
                     input.user_id
                 )
-                dialog_state.active_task_execution = exec_context.task_id
+                dialog_state.active_task_execution = exec_context.request_id
                 result_data["execution_context"] = exec_context
-                yield "thought", {"message": "任务执行完成", "task_id": exec_context.task_id}
+                yield "thought", {"message": "任务提交执行", "request_id": exec_context.request_id}
             except ValueError as e:
                 # 任务执行能力未启用，跳过并返回兜底响应
                 logger.error(f"Task execution capability is disabled: {e}")
@@ -805,14 +809,14 @@ class InteractionHandler:
             from capabilities.context_manager.interface import IContextManagerCapability
             try:
                 context_manager = self.registry.get_capability("context_manager", IContextManagerCapability)
-                # 保存用户输入
-                user_turn = DialogTurn(
-                    session_id=input.session_id,
-                    user_id=input.user_id,
-                    role="user",
-                    utterance=input.utterance
-                )
-                context_manager.add_turn(user_turn)
+                # # 保存用户输入
+                # user_turn = DialogTurn(
+                #     session_id=input.session_id,
+                #     user_id=input.user_id,
+                #     role="user",
+                #     utterance=input.utterance
+                # )
+                # context_manager.add_turn(user_turn)
                 # 保存系统响应
                 system_turn = DialogTurn(
                     session_id=input.session_id,

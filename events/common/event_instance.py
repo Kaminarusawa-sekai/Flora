@@ -11,6 +11,7 @@ class EventInstance(BaseModel):
     parent_id: Optional[str] = None
     job_id: str
     def_id: str  # 关联任务定义
+    user_id: str
 
     # 【关键优化】物化路径，格式如 "/root_id/parent_id/"
     # 作用：一个 SQL 就能查出整棵子树，不用递归查询

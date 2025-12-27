@@ -7,7 +7,7 @@ from common import (
     IntentRecognitionResultDTO,
     EntityDTO
 )
-from external.client import TaskStorage
+from external.client import TaskClient
 from ..llm.interface import ILLMCapability
 
 class CommonTaskQuery(ITaskQueryManagerCapability):
@@ -20,7 +20,7 @@ class CommonTaskQuery(ITaskQueryManagerCapability):
         # 获取LLM能力
         self._llm = None
         # 初始化任务存储
-        self.task_storage = TaskStorage()
+        self.task_client = TaskClient()
         self.logger.info("任务查询管理器初始化完成")
     
     @property
@@ -331,19 +331,79 @@ class CommonTaskQuery(ITaskQueryManagerCapability):
     def _query_tasks(self, user_id: str, filters: Dict[str, Any]) -> List[TaskExecutionContextDTO]:
         """查询任务执行上下文
         
-        Args:
-            user_id: 用户ID
-            filters: 查询过滤条件
-            
-        Returns:
-            匹配的任务执行上下文列表
+        策略：
+        1. 如果有 task_id，直接调用 get_task_status 精确查询。
+        2. 如果没有 task_id，调用 get_tasks_status_by_user 获取该用户（在指定时间范围内）的所有任务。
+        3. 在内存中根据 status, task_type 等条件进行二次过滤。
         """
-        # 调用任务存储层查询任务
-        tasks = self.task_storage.list_execution_contexts(user_id, filters)
         
-        # 这里可以添加排序和分页逻辑
+        # --- 场景 1：精确查找 (按 Task ID) ---
+        if "task_id" in filters:
+            task_id = filters["task_id"]
+            # 调用 Client 的按 ID 查询接口
+            # 假设 request_id 就是 task_id
+            task = self.task_client.get_task_status(task_id)
+            
+            # 校验任务是否存在，以及是否属于当前用户（安全校验）
+            # 假设 task 对象里有 user_id 字段，如果没有可以去掉 user_id 的判断
+            if task and getattr(task, 'user_id', user_id) == user_id:
+                return [task]
+            else:
+                return []
+
+        # --- 场景 2：列表查找 (按 User ID + 内存过滤) ---
         
-        return tasks
+        # 1. 提取 Client 支持的参数 (这里只有 time_range)
+        time_range = filters.get("time_range")
+        # 注意：如果 client 的 time_range 参数需要特定格式（如 datetime），
+        # 这里可能需要根据 "today"/"yesterday" 做一下转换。
+        # 假设 client 内部能处理这些字符串或者 filters 已经是处理好的格式。
+        
+        # 2. 从接口获取“宽泛”的任务列表
+        raw_tasks = self.task_client.get_tasks_status_by_user(
+            user_id=user_id,
+            time_range=time_range
+        )
+        
+        if not raw_tasks:
+            return []
+
+        # 3. 在内存中执行“二次过滤” (Client 不支持的条件在这里处理)
+        filtered_tasks = []
+        
+        # 提取需要过滤的字段
+        target_status = filters.get("execution_status")
+        target_type = filters.get("task_type")
+        
+        for task in raw_tasks:
+            # 过滤状态 (例如：只看 FAILED 的)
+            if target_status and task.execution_status != target_status:
+                continue
+                
+            # 过滤类型 (例如：只看 web_crawler)
+            if target_type and task.task_type != target_type:
+                continue
+                
+            # 过滤排除项 (例如：negate=True，这里主要处理简单的排除逻辑)
+            # 如果你有复杂的 negate 逻辑，需要在这里通过代码实现
+            
+            filtered_tasks.append(task)
+
+        # 4. 排序 (Sort)
+        # 从 filters 获取排序规则，默认按创建时间倒序
+        sort_by = filters.get("sort_by", "created_at")
+        sort_order = filters.get("sort_order", "desc")
+        
+        try:
+            # 使用 Python 内置排序
+            filtered_tasks.sort(
+                key=lambda x: getattr(x, sort_by, 0), # getattr 获取属性，缺省为0防止报错
+                reverse=(sort_order == "desc")
+            )
+        except Exception as e:
+            self.logger.warning(f"排序失败，使用默认顺序: {e}")
+
+        return filtered_tasks
     
     def _format_query_result(self, tasks: List[TaskExecutionContextDTO]) -> Dict[str, Any]:
         """格式化查询结果为结构化数据

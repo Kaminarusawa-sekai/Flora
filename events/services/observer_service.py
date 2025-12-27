@@ -212,6 +212,7 @@ class ObserverService:
                 "status": inst.status.value,
                 "depth": inst.depth,
                 "type": inst.actor_type,
+                "user_id": inst.user_id,
                 # 如果被取消，前端可以显示特殊样式
                 "signal": inst.control_signal if hasattr(inst, 'control_signal') else None
             })
@@ -252,6 +253,7 @@ class ObserverService:
                 "id": task.id,
                 "trace_id": task.trace_id,
                 "def_id": task.def_id,
+                "user_id": task.user_id,
                 "name": task.name,
                 "actor_type": task.actor_type,
                 "status": task.status.value,
@@ -333,6 +335,31 @@ class ObserverService:
                 for status, count in status_counts.items() if count > 0
             )
         }
+    
+    async def find_traces_by_user_id(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        根据user_id查询所有trace_id及其状态，支持时间范围过滤
+        
+        Args:
+            user_id: 用户ID
+            start_time: 开始时间，可选
+            end_time: 结束时间，可选
+            limit: 每页数量，默认100
+            offset: 偏移量，默认0
+            
+        Returns:
+            List[Dict[str, Any]]: trace列表，包含trace_id、创建时间和最新状态
+        """
+        inst_repo = create_event_instance_repo(session, dialect)
+        return await inst_repo.find_traces_by_user_id(user_id, start_time, end_time, limit, offset)
     
     async def start_listening(self) -> None:
         """

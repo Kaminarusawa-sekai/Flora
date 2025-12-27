@@ -127,5 +127,5 @@ class CommonUserInput(IUserInputManagerCapability):
             "timestamp": user_input.timestamp,
             "metadata": user_input.metadata
         }
-        self.history_store.add_turn(DialogTurn(role="user", utterance=user_input.utterance, enhanced_utterance=parsed_result["enhanced_utterance"], timestamp=user_input.timestamp, session_id=user_input.session_id, user_id=user_input.user_id))
+        self.history_store.add_turn(DialogTurn(role="user", utterance=user_input.utterance, enhanced_utterance=parsed_result["enhanced_utterance"], session_id=user_input.session_id, user_id=user_input.user_id))
         return enriched_input

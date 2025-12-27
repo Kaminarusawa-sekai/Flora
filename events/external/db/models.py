@@ -1,5 +1,6 @@
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON, text
 from sqlalchemy.ext.declarative import declarative_base
+
 from sqlalchemy.sql import func
 
 Base = declarative_base()
@@ -10,6 +11,7 @@ class EventDefinitionDB(Base):
 
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
+    user_id = Column(String, nullable=False,server_default=text("''"))
     
     # 核心字段：决定了前端怎么渲染，以及后端怎么处理超时/重试
     node_type = Column(String, nullable=False)
@@ -51,6 +53,7 @@ class EventInstanceDB(Base):
     parent_id = Column(String, index=True)
     job_id = Column(String)
     def_id = Column(String, nullable=False)  # 关联任务定义
+    user_id = Column(String, nullable=False,server_default=text("''"))
 
     # 【关键优化】物化路径，格式如 "/root_id/parent_id/"
     # 添加索引以支持高效的子树查询

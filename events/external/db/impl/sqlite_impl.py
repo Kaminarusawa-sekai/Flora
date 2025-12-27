@@ -127,6 +127,7 @@ class SQLiteEventInstanceRepository(EventInstanceRepository):
             parent_id=db.parent_id,
             job_id=db.job_id,
             def_id=db.def_id,
+            user_id=db.user_id,
             node_path=db.node_path,
             depth=db.depth,
             actor_type=ActorType(db.actor_type),
@@ -159,6 +160,7 @@ class SQLiteEventInstanceRepository(EventInstanceRepository):
             parent_id=instance.parent_id,
             job_id=instance.job_id,
             def_id=instance.def_id,
+            user_id=instance.user_id,
             actor_type=instance.actor_type,
             role=instance.role,
             layer=instance.layer,
@@ -257,6 +259,59 @@ class SQLiteEventInstanceRepository(EventInstanceRepository):
         )
         await self.session.execute(stmt)
         await self.session.commit()
+    
+    async def find_traces_by_user_id(self, user_id: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, limit: int = 100, offset: int = 0) -> List[dict]:
+        """
+        根据user_id查询所有trace_id及其状态
+        
+        Args:
+            user_id: 用户ID
+            start_time: 开始时间
+            end_time: 结束时间
+            limit: 每页数量
+            offset: 偏移量
+            
+        Returns:
+            List[dict]: trace_id列表及其状态信息
+        """
+        # 使用SQLite兼容的查询方式
+        # 1. 首先获取所有唯一的trace_id
+        stmt = select(EventInstanceDB.trace_id).distinct().where(EventInstanceDB.user_id == user_id)
+        
+        # 添加时间范围过滤
+        if start_time:
+            stmt = stmt.where(EventInstanceDB.created_at >= start_time)
+        if end_time:
+            stmt = stmt.where(EventInstanceDB.created_at <= end_time)
+        
+        # 排序并分页
+        stmt = stmt.order_by(EventInstanceDB.created_at.desc()).limit(limit).offset(offset)
+        
+        result = await self.session.execute(stmt)
+        trace_ids = [row.trace_id for row in result.all()]
+        
+        traces = []
+        for trace_id in trace_ids:
+            # 2. 对于每个trace_id，获取最新状态
+            # 查询该trace下的所有实例
+            trace_stmt = select(EventInstanceDB).where(
+                EventInstanceDB.trace_id == trace_id,
+                EventInstanceDB.user_id == user_id
+            ).order_by(EventInstanceDB.updated_at.desc())
+            
+            trace_result = await self.session.execute(trace_stmt)
+            instances = trace_result.scalars().all()
+            
+            if instances:
+                # 获取最新状态
+                latest_instance = instances[0]
+                traces.append({
+                    "trace_id": trace_id,
+                    "created_at": latest_instance.created_at,
+                    "status": latest_instance.status
+                })
+        
+        return traces
 
 
 class SQLiteEventDefinitionRepository(EventDefinitionRepository):
@@ -270,6 +325,7 @@ class SQLiteEventDefinitionRepository(EventDefinitionRepository):
         return EventDefinition(
             id=db.id,
             name=db.name,
+            user_id=db.user_id,
             node_type=NodeType(db.node_type),
             actor_type=ActorType(db.actor_type),
             role=db.role,
@@ -323,6 +379,7 @@ class SQLiteEventDefinitionRepository(EventDefinitionRepository):
         db_definition = EventDefinitionDB(
             id=definition.id,
             name=definition.name,
+            user_id=definition.user_id,
             node_type=definition.node_type.value,
             actor_type=definition.actor_type.value,
             role=definition.role,

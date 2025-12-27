@@ -76,7 +76,7 @@ class Settings:
         self.worker_url = os.getenv("WORKER_URL", self._config_data.get("worker_url", "http://localhost:8001"))
         
         # Events Service URL
-        self.EVENTS_SERVICE_BASE_URL = os.getenv("EVENTS_SERVICE_BASE_URL", self._config_data.get("events_service_base_url", "http://localhost:8002"))
+        self.EVENTS_SERVICE_BASE_URL = os.getenv("EVENTS_SERVICE_BASE_URL", self._config_data.get("events_service_base_url", "http://localhost:8004"))
         
         # 消息队列配置
         # 支持的值: "redis", "rabbitmq"
@@ -86,7 +86,7 @@ class Settings:
         self.EXTERNAL_SYSTEM_URL = os.getenv("EXTERNAL_SYSTEM_URL", self._config_data.get("external_system_url", "http://localhost:8004"))
         self.EXTERNAL_SYSTEM_API_KEY = os.getenv("EXTERNAL_SYSTEM_API_KEY", self._config_data.get("external_system_api_key", "default_api_key"))
         # 外部事件开关
-        self.SKIP_EXTERNAL_EVENTS = os.getenv("SKIP_EXTERNAL_EVENTS", "true").lower() == "true"
+        self.SKIP_EXTERNAL_EVENTS = os.getenv("SKIP_EXTERNAL_EVENTS", "False").lower() == "true"
     
     def _start_watcher(self):
         """启动配置文件监控"""
