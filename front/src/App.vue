@@ -6,6 +6,7 @@ import TaskSidebar from '@/features/TaskSidebar/index.vue';
 import NavigationPanel from '@/features/NavigationPanel/index.vue';
 import Copilot from '@/features/Copilot/index.vue';
 import DagEditor from '@/features/DagEditor/index.vue';
+import TreeEditor from '@/features/TreeEditor/index.vue';
 import ResourcePanel from '@/features/ResourcePanel/index.vue';
 import MarkdownViewer from '@/features/MarkdownViewer/index.vue';
 
@@ -48,10 +49,12 @@ const handleNavChange = (view: string) => {
     </template>
 
     <template #canvas>
-      <!-- 对于tasks和overview视图，显示DagEditor组件 -->
-      <DagEditor v-if="activeView === 'tasks' || activeView === 'overview'" />
+      <!-- tasks视图显示DagEditor组件 -->
+      <DagEditor v-if="activeView === 'tasks'" />
+      <!-- overview视图显示TreeEditor组件 -->
+      <TreeEditor v-else-if="activeView === 'overview'" />
       <!-- search视图显示markdown文档 -->
-      <GlassCard v-if="activeView === 'search'" class="h-full bg-white/2">
+      <GlassCard v-else-if="activeView === 'search'" class="h-full bg-white/2">
         <MarkdownViewer />
       </GlassCard>
       <!-- 其他视图下显示提示信息 -->
