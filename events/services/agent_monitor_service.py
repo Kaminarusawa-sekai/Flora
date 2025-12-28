@@ -4,6 +4,8 @@ from typing import Dict, List, Any, Optional
 from external.cache.base import CacheClient
 from external.client.agent_client import AgentClient
 
+
+##TODO:后面考虑变成事件总线，通过事件总线交互
 class AgentMonitorService:
     def __init__(self, cache: CacheClient, agent_client: Optional[AgentClient] = None):
         self.cache = cache

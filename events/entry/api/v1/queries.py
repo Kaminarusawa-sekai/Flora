@@ -5,8 +5,9 @@ from datetime import datetime
 from pydantic import BaseModel
 
 # 导入依赖注入
-from ..deps import get_observer_service, get_db_session, get_connection_manager
+from ..deps import get_observer_service, get_db_session, get_connection_manager, get_agent_monitor_service
 from services.observer_service import ObserverService
+from services.agent_monitor_service import AgentMonitorService
 from services.websocket_manager import ConnectionManager
 from common.event_instance import EventInstance
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -233,3 +234,37 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         # 连接断开，清理资源
         connection_manager.disconnect(websocket, trace_id)
+
+
+@router.websocket("/ws/agent/{agent_id}")
+async def agent_tree_websocket(
+    websocket: WebSocket,
+    agent_id: str,
+    agent_monitor_service: AgentMonitorService = Depends(get_agent_monitor_service),
+    connection_manager: ConnectionManager = Depends(get_connection_manager)
+):
+    """
+    WebSocket端点，用于实时获取Agent动态树数据
+    前端可以通过此连接获取：
+    1. Agent树的静态结构
+    2. Agent的运行时状态
+    3. Agent状态的实时更新
+    """
+    # 建立WebSocket连接
+    await connection_manager.connect(websocket, f"agent:{agent_id}")
+    try:
+        # 初始发送Agent动态树数据
+        dynamic_tree = await agent_monitor_service.get_dynamic_agent_tree(agent_id)
+        await websocket.send_json(dynamic_tree)
+        
+        # 保持连接，处理心跳或前端指令
+        while True:
+            # 接收前端消息，支持刷新树数据等指令
+            message = await websocket.receive_text()
+            if message == "refresh":
+                # 刷新Agent动态树数据
+                dynamic_tree = await agent_monitor_service.get_dynamic_agent_tree(agent_id)
+                await websocket.send_json(dynamic_tree)
+    except WebSocketDisconnect:
+        # 连接断开，清理资源
+        connection_manager.disconnect(websocket, f"agent:{agent_id}")

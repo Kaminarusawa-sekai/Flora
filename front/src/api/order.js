@@ -4,6 +4,11 @@
 const API_BASE_URL = 'http://localhost:8000/v1';
 
 /**
+ * 引入 DAG 转换工具函数
+ */
+import { transformTraceToDag } from '../utils/dagUtils';
+
+/**
  * 通用请求函数
  * @param {string} url - 请求 URL
  * @param {Object} options - 请求选项
@@ -97,10 +102,11 @@ export async function listTasksInTrace(traceId, filters = {}) {
 /**
  * 获取 trace 拓扑图
  * @param {string} traceId - Trace ID
- * @returns {Promise<Object>} 拓扑图数据
+ * @returns {Promise<Object>} 转换后的拓扑图数据
  */
 export async function getTraceTopology(traceId) {
-  return request(`/traces/${traceId}/graph`);
+  const traceData = await request(`/traces/${traceId}/graph`);
+  return transformTraceToDag(traceData);
 }
 
 /**

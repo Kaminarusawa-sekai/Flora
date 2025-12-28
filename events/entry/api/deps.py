@@ -13,6 +13,7 @@ from external.db.session import get_db_session, dialect
 from services.lifecycle_service import LifecycleService
 from services.signal_service import SignalService
 from services.observer_service import ObserverService
+from services.agent_monitor_service import AgentMonitorService
 from services.websocket_manager import ConnectionManager
 
 
@@ -99,5 +100,13 @@ def get_observer_service(
         connection_manager=connection_manager,
         cache=cache,
         # webhook_registry 可在此处注入，如果需要
+    )
+
+
+def get_agent_monitor_service(
+    cache: RedisCacheClient = Depends(get_cache),
+) -> AgentMonitorService:
+    return AgentMonitorService(
+        cache=cache,
     )
 
