@@ -1,5 +1,8 @@
 // API 基础 URL
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://localhost:8004';
+
+// 导入数据转换工具
+import { processAgentTree } from '../utils/agentDataUtils';
 
 /**
  * Agent API 服务，用于处理与Agent相关的WebSocket连接
@@ -19,7 +22,7 @@ class AgentAPI {
     const { onOpen, onMessage, onError, onClose } = callbacks;
     
     // 构建WebSocket URL
-    const wsUrl = API_BASE_URL.replace('http', 'ws') + `/ws/agent/${agentId}`;
+    const wsUrl = API_BASE_URL.replace('http', 'ws') + `/api/v1/traces/ws/agent/${agentId}`;
     
     // 创建WebSocket连接
     const ws = new WebSocket(wsUrl);
@@ -32,10 +35,15 @@ class AgentAPI {
     
     ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        if (onMessage) onMessage(data);
+        const rawData = JSON.parse(event.data);
+        
+        // 将后端数据转换为前端所需格式
+        const processedData = processAgentTree(rawData);
+        
+        // 调用回调函数并传递转换后的数据
+        if (onMessage) onMessage(processedData);
       } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
+        console.error('Error parsing or processing WebSocket message:', error);
         if (onError) onError(error);
       }
     };

@@ -4,7 +4,7 @@ import time
 from uuid import uuid4
 
 # API 基础 URL
-base_url = "http://localhost:8000/api/v1"
+base_url = "http://localhost:8001/api/v1"
 
 # 生成唯一的测试名称
 test_prefix = f"test_{uuid4().hex[:8]}"
@@ -62,7 +62,9 @@ def test_submit_adhoc_task(schedule_type, schedule_config=None):
         "input_params": {"test": "value"},
         "loop_config": {"max_rounds": 2, "interval_sec": 5},
         "is_temporary": True,
-        "schedule_type": schedule_type
+        "schedule_type": schedule_type,
+        "request_id": str(uuid4()),  # 新增 request_id
+        "user_id": "test_user"  # 新增 user_id
     }
     
     if schedule_config:
@@ -121,6 +123,14 @@ def run_all_tests():
     }
     
     try:
+
+         # 4.1 即时任务
+        immediate_result = test_submit_adhoc_task("IMMEDIATE")
+        assert "trace_id" in immediate_result, "提交即时任务失败：返回结果中缺少 trace_id 字段"
+        assert immediate_result["status"] == "success", "提交即时任务失败：返回状态不是 success"
+        test_results["submit_adhoc_immediate"] = True
+        
+
         # 1. 测试创建任务定义
         task_def = test_create_task_definition()
         assert "id" in task_def, "创建任务定义失败：返回结果中缺少 id 字段"

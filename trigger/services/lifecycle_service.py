@@ -32,7 +32,8 @@ class LifecycleService:
         schedule_config: Optional[Dict[str, Any]] = None,
         loop_config: Optional[Dict[str, Any]] = None,
         is_temporary: bool = True,
-        request_id: Optional[str] = None  # [新增] 参数
+        request_id: Optional[str] = None,  # [新增] 参数
+        user_id: Optional[str] = None  # [新增] 参数
     ):
         # 1. 差异化逻辑：创建定义
         def_repo = create_task_definition_repo(session, dialect)
@@ -52,7 +53,8 @@ class LifecycleService:
             schedule_type=schedule_type,
             schedule_config=schedule_config,
             loop_config=loop_config,
-            request_id=request_id  # [新增] 透传
+            request_id=request_id,  # [新增] 透传 request_id
+            user_id=user_id  # [新增] 透传 user_id
         )
 
 
@@ -68,7 +70,8 @@ class LifecycleService:
         schedule_type: str,
         schedule_config: Optional[Dict[str, Any]] = None,
         loop_config: Optional[Dict[str, Any]] = None,
-        request_id: Optional[str] = None # [新增] 参数
+        request_id: Optional[str] = None,  # [新增] 参数
+        user_id: Optional[str] = None  # [新增] 参数
     ) -> str:
         """
         统一的调度 + 追踪入口
@@ -103,13 +106,15 @@ class LifecycleService:
                 session=session, definition_id=def_id, input_params=input_params,
                 delay_seconds=schedule_config.get("delay_seconds", 0), trace_id=trace_id
             )
-
+        print(request_id,type(request_id))
         # 2. 统一发送 Trace 开始事件 (之前 Ad-hoc 任务可能漏了这个)
         await event_publisher.publish_start_trace(
             root_def_id=def_id,
             trace_id=trace_id,
             input_params=input_params,
-            request_id=final_request_id  # [新增] 这里使用了 request_id
+            user_id=user_id,  # [新增] 透传 user_id
+            request_id=final_request_id  # [新增] 这里使用了 request_id 作为唯一标识
+
         )
 
         return trace_id

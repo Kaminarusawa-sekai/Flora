@@ -22,7 +22,7 @@ class ExecutionEventRequest(BaseModel):
 
 # --- 修改：增强启动请求 ---
 class StartTraceRequest(BaseModel):
-    root_def_id: str = Field(..., description="根节点定义ID")
+    root_def_id: Optional[str] = Field(None, description="根节点定义ID，可选，不提供则内部生成")
     request_id: str = Field(..., description="请求ID，用于关联 request_id -> trace_id 的一对多关系")
     trace_id: Optional[str] = Field(None, description="跟踪ID，可选，由外部传入或内部生成")
     input_params: Dict[str, Any] = Field(default_factory=dict, description="启动参数")

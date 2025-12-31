@@ -4,7 +4,7 @@ from sqlalchemy.dialects.postgresql import array
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository
+from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository,AgentTaskHistoryRepository,AgentDailyMetricRepository
 from ..models import EventInstanceDB, EventDefinitionDB, EventLogDB
 from common.event_instance import EventInstance
 from common.event_definition import EventDefinition
@@ -491,3 +491,190 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
             })
         
         return traces
+
+
+class PostgreSQLAgentTaskHistoryRepository(AgentTaskHistoryRepository):
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, history_data: dict) -> None:
+        """
+        将完成的任务写入数据库
+        """
+        from ..models import AgentTaskHistory
+        
+        # 转换时间格式
+        start_time = history_data.get('start_time')
+        end_time = history_data.get('end_time')
+        
+        if isinstance(start_time, str):
+            start_time = datetime.fromisoformat(start_time)
+        if isinstance(end_time, str):
+            end_time = datetime.fromisoformat(end_time)
+        
+        # 计算持续时间
+        duration_ms = history_data.get('duration_ms')
+        if duration_ms is None and start_time and end_time:
+            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        
+        record = AgentTaskHistory(
+            agent_id=history_data['agent_id'],
+            trace_id=history_data.get('trace_id', ''),
+            task_id=history_data['task_id'],
+            task_name=history_data.get('task_name'),
+            status=history_data['status'],
+            start_time=start_time,
+            end_time=end_time,
+            duration_ms=duration_ms,
+            input_params=history_data.get('input_params'),
+            output_result=history_data.get('output_result'),
+            error_msg=history_data.get('error_msg')
+        )
+        
+        self.session.add(record)
+        await self.session.commit()
+
+    async def get_recent_tasks(self, agent_id: str, limit: int = 20) -> List[dict]:
+        """
+        从数据库查询最近的历史记录
+        """
+        from ..models import AgentTaskHistory
+        
+        stmt = (
+            select(AgentTaskHistory)
+            .where(AgentTaskHistory.agent_id == agent_id)
+            .order_by(AgentTaskHistory.created_at.desc())
+            .limit(limit)
+        )
+        
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        
+        # 转换为字典格式
+        return [
+            {
+                'id': row.id,
+                'agent_id': row.agent_id,
+                'trace_id': row.trace_id,
+                'task_id': row.task_id,
+                'task_name': row.task_name,
+                'status': row.status,
+                'start_time': row.start_time.isoformat() if row.start_time else None,
+                'end_time': row.end_time.isoformat() if row.end_time else None,
+                'duration_ms': row.duration_ms,
+                'input_params': row.input_params,
+                'output_result': row.output_result,
+                'error_msg': row.error_msg,
+                'created_at': row.created_at.isoformat()
+            }
+            for row in rows
+        ]
+
+    async def get_task_statistics(self, agent_id: str, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> dict:
+        """
+        获取任务统计数据
+        """
+        from ..models import AgentTaskHistory
+        
+        stmt = select(
+            func.count(AgentTaskHistory.id).label('total_tasks'),
+            func.count(AgentTaskHistory.id).filter(AgentTaskHistory.status == 'COMPLETED').label('success_tasks'),
+            func.count(AgentTaskHistory.id).filter(AgentTaskHistory.status == 'FAILED').label('failed_tasks'),
+            func.avg(AgentTaskHistory.duration_ms).label('avg_duration_ms')
+        ).where(AgentTaskHistory.agent_id == agent_id)
+        
+        if start_date:
+            stmt = stmt.where(AgentTaskHistory.created_at >= start_date)
+        if end_date:
+            stmt = stmt.where(AgentTaskHistory.created_at <= end_date)
+        
+        result = await self.session.execute(stmt)
+        row = result.first()
+        
+        return {
+            'total_tasks': row.total_tasks or 0,
+            'success_tasks': row.success_tasks or 0,
+            'failed_tasks': row.failed_tasks or 0,
+            'avg_duration_ms': float(row.avg_duration_ms) if row.avg_duration_ms else 0.0
+        }
+
+
+class PostgreSQLAgentDailyMetricRepository(AgentDailyMetricRepository):
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def update_daily_metric(self, agent_id: str, date_str: str, status: str, duration_ms: int) -> None:
+        """
+        更新每日统计指标
+        """
+        from ..models import AgentDailyMetric
+        
+        # 先尝试获取现有记录
+        stmt = (
+            select(AgentDailyMetric)
+            .where(
+                AgentDailyMetric.agent_id == agent_id,
+                AgentDailyMetric.date_str == date_str
+            )
+        )
+        
+        result = await self.session.execute(stmt)
+        metric = result.scalar_one_or_none()
+        
+        if metric:
+            # 更新现有记录
+            metric.total_tasks += 1
+            if status == 'COMPLETED':
+                metric.success_tasks += 1
+            elif status == 'FAILED':
+                metric.failed_tasks += 1
+            metric.total_duration_ms += duration_ms
+        else:
+            # 创建新记录
+            metric = AgentDailyMetric(
+                agent_id=agent_id,
+                date_str=date_str,
+                total_tasks=1,
+                success_tasks=1 if status == 'COMPLETED' else 0,
+                failed_tasks=1 if status == 'FAILED' else 0,
+                total_duration_ms=duration_ms
+            )
+            self.session.add(metric)
+        
+        await self.session.commit()
+
+    async def get_recent_metrics(self, agent_id: str, days: int = 7) -> List[dict]:
+        """
+        获取最近几天的统计指标
+        """
+        from ..models import AgentDailyMetric
+        
+        # 计算起始日期
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=days-1)
+        
+        stmt = (
+            select(AgentDailyMetric)
+            .where(
+                AgentDailyMetric.agent_id == agent_id,
+                AgentDailyMetric.date_str >= start_date.isoformat(),
+                AgentDailyMetric.date_str <= end_date.isoformat()
+            )
+            .order_by(AgentDailyMetric.date_str)
+        )
+        
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        
+        # 转换为字典格式
+        return [
+            {
+                'date_str': row.date_str,
+                'total_tasks': row.total_tasks,
+                'success_tasks': row.success_tasks,
+                'failed_tasks': row.failed_tasks,
+                'total_duration_ms': row.total_duration_ms,
+                'avg_duration_ms': row.total_duration_ms / row.total_tasks if row.total_tasks > 0 else 0
+            }
+            for row in rows
+        ]

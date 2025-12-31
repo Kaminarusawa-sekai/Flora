@@ -85,7 +85,8 @@ class TaskClient:
             "input_params": parameters,
             "loop_config": None,      # 关键：没有循环配置 = 单次运行
             "is_temporary": True,
-            "request_id": request_id  # 传递给 Server
+            "request_id": request_id,  # 传递给 Server
+            "user_id": user_id  # 传递给 Server
         }
 
         resp_data = self._request("POST", "/ad-hoc-tasks", json=payload)

@@ -249,6 +249,54 @@ async def agent_tree_websocket(
     1. Agent树的静态结构
     2. Agent的运行时状态
     3. Agent状态的实时更新
+
+    ### WebSocket 消息格式
+    #### 服务器发送给客户端的消息（JSON）
+    ```json
+    {
+        "agent_id": "string",              // 节点唯一标识
+        "meta": {                           // 节点元数据
+            "name": "string",              // Agent名称
+            "type": "string",              // Agent类型（如 "LLM-Worker", "Search-Tool"）
+            "is_leaf": boolean,             // 是否为叶子节点
+            "weight": number,               // 权重值
+            "description": "string"         // 描述信息
+            // 其他元数据字段...
+        },
+        "runtime_state": {                  // 运行时状态（红绿灯状态）
+            "is_alive": boolean,            // 是否存活
+            "status_label": "string",      // 状态标签：IDLE（空闲）、BUSY（忙碌）、OFFLINE（离线）
+            "last_seen_seconds_ago": number, // 最后活跃时间（秒）
+            "current_task": {               // 当前正在执行的任务（如果有）
+                "task_id": "string",       // 任务唯一标识
+                "trace_id": "string",      // 全局链路ID
+                "step": "string",          // 当前执行步骤
+                "reported_at": number       // 任务上报时间戳
+                // 其他任务相关字段...
+            },
+            "last_completed_task": {        // 最后完成的任务（可选）
+                "task_id": "string",
+                "status": "COMPLETED" | "FAILED",
+                "end_time": "datetime",
+                "duration": number
+                // 其他任务结果字段...
+            }
+        },
+        "children": [                       // 子节点列表（递归结构，格式与父节点相同）
+            {
+                "agent_id": "string",
+                "meta": {},
+                "runtime_state": {},
+                "children": [...]
+            }
+            // 更多子节点...
+        ]
+    }
+    ```
+
+    #### 客户端发送给服务器的消息（文本）
+    - "refresh": 刷新Agent动态树数据
+    - 其他自定义指令...
     """
     # 建立WebSocket连接
     await connection_manager.connect(websocket, f"agent:{agent_id}")

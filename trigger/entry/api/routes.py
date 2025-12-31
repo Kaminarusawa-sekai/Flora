@@ -68,6 +68,7 @@ class AdHocTaskRequest(BaseModel):
     # - DELAYED: 需包含 {"delay_seconds": 60} (延迟秒数)
     # - LOOP: 使用loop_config字段配置，schedule_config可不传
     request_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 # 定义即席任务响应模型
 class AdHocTaskResponse(BaseModel):
@@ -193,7 +194,8 @@ async def submit_ad_hoc_task(
             is_temporary=task_in.is_temporary,
             schedule_type=task_in.schedule_type,
             schedule_config=task_in.schedule_config,
-            request_id=request_id  # [新增] 传入 request_id
+            request_id=request_id,  # [新增] 传入 request_id
+            user_id=task_in.user_id  # [新增] 传入 user_id
         )
         
         if not trace_id:

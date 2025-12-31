@@ -16,6 +16,20 @@
             </template>
           </InputHud>
         </div>
+        
+        <!-- 新增对话按钮 -->
+        <div class="mt-4">
+          <GlowButton
+            variant="primary"
+            size="md"
+            @click="createNewConversation"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            NEW CONVERSATION
+          </GlowButton>
+        </div>
       </div>
     </template>
 
@@ -40,7 +54,7 @@
           <div class="flex-grow">
             <div class="flex justify-between items-center mb-1">
               <span class="text-sm font-medium text-gray-200 group-hover:text-white transition-colors">{{ task.name }}</span>
-              <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
+              <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id.substring(0, 5) }}..</span>
             </div>
             <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
           </div>
@@ -67,7 +81,7 @@
           <div class="flex-grow">
             <div class="flex justify-between items-center mb-1">
               <span class="text-sm font-medium text-gray-400 group-hover:text-gray-300 transition-colors">{{ task.name }}</span>
-              <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id }}</span>
+              <span class="text-[10px] font-mono text-gray-600 group-hover:text-sci-blue">{{ task.id.substring(0, 5) }}..</span>
             </div>
             <p class="text-xs text-gray-500 line-clamp-1">{{ task.description }}</p>
           </div>
@@ -105,6 +119,8 @@ import StatusDot from '@/components/ui/StatusDot.vue';
 
 import InputHud from '@/components/ui/InputHud.vue';
 
+import GlowButton from '@/components/ui/GlowButton.vue';
+
 
 
 const searchQuery = ref('');
@@ -135,12 +151,8 @@ const completedTasks = ref<Task[]>([]);
 // 从API获取任务数据
 const fetchTasksFromApi = async () => {
   try {
-    // 从localStorage获取userId
-    const userId = localStorage.getItem('userId');
-    if (!userId) {
-      console.warn('No userId found in localStorage');
-      return;
-    }
+    // 从localStorage获取userId，不存在则使用默认值1
+    const userId = localStorage.getItem('userId') || '1';
 
     // 获取用户所有活跃会话
     const sessions = await ConversationAPI.getUserSessions(userId);
@@ -154,43 +166,50 @@ const fetchTasksFromApi = async () => {
     const completedTasksList: Task[] = [];
 
     for (const sessionData of sessions) {
-      // 检查是否有request_id
-      if (!sessionData.request_id) {
-        console.warn('No request_id found in session data:', sessionData.session_id);
-        continue;
-      }
+      // 先创建一个基本的任务对象
+      let processedTask: Task = {
+        id: sessionData.session_id || 'unknown',
+        name: sessionData.name || '未命名对话',
+        description: sessionData.description || 'No description available',
+        status: 'pending',
+        active: false
+      };
 
+      // 尝试获取更详细的任务信息
       try {
-        // 使用request_id获取latest_trace_id
-        const traceResponse = await getLatestTraceByRequest(sessionData.request_id);
-        const traceId = traceResponse.latest_trace_id;
+        // 检查是否有request_id
+        if (sessionData.request_id) {
+          // 使用request_id获取latest_trace_id
+          const traceResponse = await getLatestTraceByRequest(sessionData.request_id);
+          const traceId = traceResponse.latest_trace_id;
 
-        if (!traceId) {
-          console.warn('No trace_id found for request_id:', sessionData.request_id);
-          continue;
-        }
-
-        // 使用trace_id获取任务详情
-        const taskDetail = await getTaskDetail(traceId);
-
-        // 处理任务数据，转换为Task类型
-        const processedTask: Task = {
-          id: traceId,
-          name: sessionData.name || 'Unknown Task',
-          description: sessionData.description || 'No description available',
-          status: taskDetail.status || 'pending',
-          active: false
-        };
-
-        // 根据状态分类任务
-        if (processedTask.status === 'success') {
-          completedTasksList.push(processedTask);
-        } else {
-          activeTasks.push(processedTask);
+          if (traceId) {
+            // 更新任务id为trace_id
+            processedTask.id = traceId;
+            
+            try {
+              // 使用trace_id获取任务详情
+              const taskDetail = await getTaskDetail(traceId);
+              if (taskDetail) {
+                // 更新任务状态
+                processedTask.status = taskDetail.status || 'pending';
+              }
+            } catch (error) {
+              console.error('Error getting task detail for trace_id:', traceId, error);
+              // 继续执行，使用默认状态
+            }
+          }
         }
       } catch (error) {
         console.error('Error processing session:', sessionData.session_id, error);
-        // 继续处理下一个会话
+        // 继续执行，使用默认任务对象
+      }
+
+      // 根据状态分类任务，默认放入activeTasks
+      if (processedTask.status === 'success') {
+        completedTasksList.push(processedTask);
+      } else {
+        activeTasks.push(processedTask);
       }
     }
 
@@ -276,6 +295,32 @@ const filteredCompletedTasks = computed(() => {
   );
 
 });
+
+/**
+ * 创建新对话
+ */
+const createNewConversation = async () => {
+  try {
+    // 从localStorage获取userId，不存在则使用默认值1
+    const userId = localStorage.getItem('userId') || '1';
+    
+    // 调用API创建新对话
+    const newConversation = await ConversationAPI.createConversation(userId);
+    
+    if (newConversation) {
+      console.log('New conversation created:', newConversation);
+      
+      // 刷新任务列表，显示新创建的对话
+      await fetchTasksFromApi();
+      
+      // 触发任务选择事件，选择新创建的对话
+      emit('task-select', newConversation.session_id);
+    }
+  } catch (error) {
+    console.error('Error creating new conversation:', error);
+    // 可以添加错误提示
+  }
+};
 
 </script>
 

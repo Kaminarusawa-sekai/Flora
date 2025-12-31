@@ -367,6 +367,9 @@ const fetchSessionHistory = async () => {
   if (!props.selectedTaskId) return;
   
   try {
+    // 同步 sessionId 为当前选中的任务 ID
+    sessionId.value = props.selectedTaskId;
+    
     // 使用 selectedTaskId 作为 sessionId 查询历史记录
     const history = await ConversationAPI.getSessionHistory(props.selectedTaskId);
     
@@ -379,11 +382,13 @@ const fetchSessionHistory = async () => {
         id: msg.id || Date.now() + Math.random(),
         role: msg.role === 'user' ? 'user' : 'ai',
         content: msg.content || '',
-        timestamp: new Date(msg.timestamp || Date.now()),
+        // 处理秒级时间戳，转换为毫秒级（乘以1000）
+        timestamp: new Date((msg.timestamp ? parseFloat(msg.timestamp) * 1000 : Date.now())),
         status: 'completed'
       }));
       
-      messages.value = formattedMessages;
+      // 将历史记录反转，确保按时间正序显示（最早的消息在前面）
+      messages.value = formattedMessages.reverse();
       await nextTick();
       scrollToBottom();
     }

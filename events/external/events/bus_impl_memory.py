@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncIterator
 from .bus import EventBus
 
 class MemoryEventBus(EventBus):
@@ -8,6 +8,7 @@ class MemoryEventBus(EventBus):
     
     def __init__(self):
         self.events = []
+        self.subscribers = []
     
     async def publish(self, topic: str, event_type: str, key: str, payload: Dict[str, Any]) -> bool:
         """
@@ -27,6 +28,35 @@ class MemoryEventBus(EventBus):
         self.events.append(event)
         print(f"[MockBus] Published to {topic}: {event_type} - {payload}")
         return True
+    
+    async def subscribe(self, topic: str) -> AsyncIterator[Dict[str, Any]]:
+        """
+        订阅内存事件
+        :param topic: 主题
+        :return: 事件迭代器
+        """
+        # 简单实现，返回所有事件
+        for event in self.events:
+            if event["topic"] == topic:
+                yield {
+                    "key": event["key"],
+                    "event_type": event["event_type"],
+                    "payload": event["payload"]
+                }
+        
+        # 无限循环，模拟阻塞等待
+        while True:
+            # 检查是否有新事件
+            for event in self.events:
+                if event["topic"] == topic:
+                    yield {
+                        "key": event["key"],
+                        "event_type": event["event_type"],
+                        "payload": event["payload"]
+                    }
+            # 短暂睡眠，避免占用过多CPU
+            import asyncio
+            await asyncio.sleep(0.1)
     
     def get_events(self, clear: bool = True) -> list:
         """

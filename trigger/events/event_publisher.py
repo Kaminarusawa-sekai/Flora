@@ -1,3 +1,4 @@
+from datetime import timezone
 import httpx 
 import logging 
 from typing import Dict, Any, Optional, List 
@@ -71,13 +72,24 @@ class EventPublisher:
             
             if request_id:
                 payload["request_id"] = request_id
-            
+            # print(payload)
             response = await self.http_client.post(url, json=payload)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # 详细的HTTP错误信息
+                logger.error(f"HTTP error when starting trace: Status code {e.response.status_code}, URL: {url}, Payload: {payload}")
+                logger.error(f"Response content: {e.response.text}")
+                raise
             
             return response.json()
+        except httpx.RequestError as e:
+            # 网络请求错误
+            logger.error(f"Network error when starting trace: {e}, URL: {url}")
+            return None
         except Exception as e: 
-            logger.error(f"Failed to start trace: {e}")
+            # 其他未知错误
+            logger.error(f"Failed to start trace: {type(e).__name__}: {e}, URL: {url}, Payload: {payload}")
             return None
 
     async def push_task_status(self, 
@@ -109,24 +121,32 @@ class EventPublisher:
         url = f"{settings.EVENTS_SERVICE_BASE_URL.rstrip('/')}/api/v1/traces/events"
         
         # 构造符合 Server ExecutionEventRequest 的结构
+         # 将 status 映射为 event_type（需确认映射关系）
+        # 假设 status 是 "PENDING", "RUNNING", "COMPLETED" 等
+        event_type = status.upper()  # 或做更精细的映射
+
         payload = {
             "trace_id": trace_id,
             "task_id": task_id,
-            "node_id": node_id, # 如果是具体节点执行
-            "event_type": "STATUS_CHANGE",
-            "status": status,
-            "timestamp": datetime.utcnow().isoformat(),
-            "details": metadata or {}  # 包含执行前状态、预计等待时间等
+            "event_type": event_type,  # 必须是 STARTED/RUNNING/COMPLETED/FAILED/PROGRESS
+            "timestamp": datetime.now(timezone.utc).timestamp(),  # Unix timestamp as float
+            "data": metadata or {},    # 把原 metadata 放进 data
+            "source": "agent_monitor", # 可选，标识来源
+            "agent_id": node_id,       # 如果 node_id 就是 agent_id
+            # "error": ...  # 如果 status == "FAILED"，可从 metadata 提取 error
         }
-        
         try: 
             response = await self.http_client.post(url, json=payload)
             if response.status_code == 200: 
                 return True
-            logger.error(f"Failed to push status: {response.status_code} - {response.text}")
+            logger.error(f"Failed to push status: Status code {response.status_code}, URL: {url}, Payload: {payload}")
+            logger.error(f"Response content: {response.text}")
+            return False
+        except httpx.RequestError as e: 
+            logger.error(f"Network error when pushing status: {e}, URL: {url}")
             return False
         except Exception as e: 
-            logger.error(f"Error pushing status: {e}")
+            logger.error(f"Failed to push status: {type(e).__name__}: {e}, URL: {url}, Payload: {payload}")
             return False
 
     
@@ -164,9 +184,16 @@ class EventPublisher:
         
         try: 
             response = await self.http_client.post(url)
-            return response.status_code == 200
+            if response.status_code == 200:
+                return True
+            logger.error(f"Failed to send control {action}: Status code {response.status_code}, URL: {url}")
+            logger.error(f"Response content: {response.text}")
+            return False
+        except httpx.RequestError as e: 
+            logger.error(f"Network error when sending control {action}: {e}, URL: {url}")
+            return False
         except Exception as e: 
-            logger.error(f"Failed to send control {action}: {e}")
+            logger.error(f"Failed to send control {action}: {type(e).__name__}: {e}, URL: {url}")
             return False
     
     async def control_node(self, trace_id: str, instance_id: str, signal: str, metadata: Optional[Dict[str, Any]] = None) -> bool: 
@@ -205,9 +232,16 @@ class EventPublisher:
         
         try: 
             response = await self.http_client.post(url, json=payload)
-            return response.status_code == 200
+            if response.status_code == 200:
+                return True
+            logger.error(f"Failed to send node control {signal}: Status code {response.status_code}, URL: {url}, Payload: {payload}")
+            logger.error(f"Response content: {response.text}")
+            return False
+        except httpx.RequestError as e: 
+            logger.error(f"Network error when sending node control {signal}: {e}, URL: {url}")
+            return False
         except Exception as e: 
-            logger.error(f"Failed to send node control {signal}: {e}")
+            logger.error(f"Failed to send node control {signal}: {type(e).__name__}: {e}, URL: {url}, Payload: {payload}")
             return False
     
     async def control_external_task(self, trace_id: str, action: str, instance_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool: 
@@ -254,11 +288,22 @@ class EventPublisher:
         
         try:
             response = await self.http_client.get(url)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # 详细的HTTP错误信息
+                logger.error(f"HTTP error when getting latest trace: Status code {e.response.status_code}, URL: {url}")
+                logger.error(f"Response content: {e.response.text}")
+                raise
             result = response.json()
             return result.get("latest_trace_id")
+        except httpx.RequestError as e:
+            # 网络请求错误
+            logger.error(f"Network error when getting latest trace: {e}, URL: {url}")
+            return None
         except Exception as e:
-            logger.error(f"Failed to get latest trace by request: {e}")
+            # 其他未知错误
+            logger.error(f"Failed to get latest trace by request: {type(e).__name__}: {e}, URL: {url}")
             return None
 
    

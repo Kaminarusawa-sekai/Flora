@@ -239,10 +239,21 @@ async def get_user_sessions(user_id: str):
     try:
         from external.database.dialog_state_repo import DialogStateRepository
         dialog_repo = DialogStateRepository()
-        # 这里需要实现获取用户所有会话的逻辑
-        # 由于当前 dialog_state_repo 没有直接的方法，我们需要扩展它
-        # 暂时返回空列表
-        return []
+        sessions = dialog_repo.get_sessions_by_user_id(user_id)
+        
+        # 构造返回结果，只返回必要的会话信息
+        result = []
+        for session in sessions:
+            result.append({
+                "session_id": session.session_id,
+                "last_updated": session.last_updated,
+                "user_id": session.user_id,
+                "name": session.name,
+                "description": session.description,
+                "is_in_idle_mode": session.is_in_idle_mode
+            })
+        
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get user sessions: {str(e)}")
 
@@ -303,6 +314,37 @@ async def get_user_history(user_id: str, limit: int = 20, offset: int = 0):
         return [turn.model_dump() for turn in turns]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get user history: {str(e)}")
+
+
+@app.post("/conversations", tags=["会话管理"])
+async def create_conversation(x_user_id: str = Depends(get_current_user)):
+    """创建新对话
+    
+    创建一个新的对话会话，并返回会话ID和初始状态
+    """
+    try:
+        import uuid
+        # 生成唯一的会话ID
+        session_id = str(uuid.uuid4())
+        
+        # 获取对话状态管理器
+        from capabilities.registry import capability_registry
+        from capabilities.dialog_state_manager.interface import IDialogStateManagerCapability
+        dialog_state_manager = capability_registry.get_capability("dialog_state", IDialogStateManagerCapability)
+        
+        # 创建对话状态
+        dialog_state = dialog_state_manager.get_or_create_dialog_state(session_id, x_user_id)
+        
+        return {
+            "session_id": dialog_state.session_id,
+            "user_id": dialog_state.user_id,
+            "created_at": dialog_state.last_updated.isoformat(),
+            "name": dialog_state.name,
+            "description": dialog_state.description,
+            "status": "created"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
 
 
 # 初始化对话编排器

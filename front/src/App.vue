@@ -50,7 +50,7 @@ const handleNavChange = (view: string) => {
 
     <template #canvas>
       <!-- tasks视图显示DagEditor组件 -->
-      <DagEditor v-if="activeView === 'tasks'" />
+      <DagEditor v-if="activeView === 'tasks'" :selected-task-id="selectedTaskId" />
       <!-- overview视图显示TreeEditor组件 -->
       <TreeEditor v-else-if="activeView === 'overview'" />
       <!-- search视图显示markdown文档 -->

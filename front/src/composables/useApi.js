@@ -15,7 +15,7 @@ export function useApi() {
 
 /**
  * 对话 SSE 组合函数
- * @param {string} sessionId - 会话 ID
+ * @param {string|Ref} sessionId - 会话 ID 或会话 ID 的 Ref
  * @param {Object} options - 配置选项
  * @returns {Object} SSE 相关的方法和状态
  */
@@ -25,9 +25,11 @@ export function useConversationSSE(sessionId, options = {}) {
   const events = ref([]);
 
   const initializeSSE = async () => {
-    if (!sessionId) return;
+    // 如果 sessionId 是 Ref，则使用其 value，否则直接使用
+    const currentSessionId = sessionId?.value || sessionId;
+    if (!currentSessionId) return;
 
-    const url = getConversationStreamUrl(sessionId);
+    const url = getConversationStreamUrl(currentSessionId);
     sseClient.value = createSSEClient(url, {
       events: ['done', 'error', ...(options.events || [])],
       maxReconnectAttempts: options.maxReconnectAttempts || 5,

@@ -1,9 +1,21 @@
 from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository
-from .sqlite_impl import SQLiteEventInstanceRepository, SQLiteEventDefinitionRepository, SQLiteEventLogRepository
-from .postgres_impl import PostgreSQLEventInstanceRepository, PostgreSQLEventDefinitionRepository, PostgreSQLEventLogRepository
+from ..base import EventInstanceRepository, EventDefinitionRepository, EventLogRepository, AgentTaskHistoryRepository, AgentDailyMetricRepository
+from .sqlite_impl import (
+    SQLiteEventInstanceRepository, 
+    SQLiteEventDefinitionRepository, 
+    SQLiteEventLogRepository,
+    SQLiteAgentTaskHistoryRepository,
+    SQLiteAgentDailyMetricRepository
+)
+from .postgres_impl import (
+    PostgreSQLEventInstanceRepository, 
+    PostgreSQLEventDefinitionRepository, 
+    PostgreSQLEventLogRepository,
+    PostgreSQLAgentTaskHistoryRepository,
+    PostgreSQLAgentDailyMetricRepository
+)
 
 def create_event_instance_repo(
     session: AsyncSession,
@@ -35,5 +47,27 @@ def create_event_log_repo(
         return SQLiteEventLogRepository(session)
     elif dialect == "postgresql":
         return PostgreSQLEventLogRepository(session)
+    else:
+        raise ValueError(f"Unsupported dialect: {dialect}")
+
+def create_agent_task_history_repo(
+    session: AsyncSession,
+    dialect: Literal["sqlite", "postgresql"]
+) -> AgentTaskHistoryRepository:
+    if dialect == "sqlite":
+        return SQLiteAgentTaskHistoryRepository(session)
+    elif dialect == "postgresql":
+        return PostgreSQLAgentTaskHistoryRepository(session)
+    else:
+        raise ValueError(f"Unsupported dialect: {dialect}")
+
+def create_agent_daily_metric_repo(
+    session: AsyncSession,
+    dialect: Literal["sqlite", "postgresql"]
+) -> AgentDailyMetricRepository:
+    if dialect == "sqlite":
+        return SQLiteAgentDailyMetricRepository(session)
+    elif dialect == "postgresql":
+        return PostgreSQLAgentDailyMetricRepository(session)
     else:
         raise ValueError(f"Unsupported dialect: {dialect}")

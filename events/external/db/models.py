@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON, text
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON, text,desc
 from sqlalchemy.ext.declarative import declarative_base
 
 from sqlalchemy.sql import func
@@ -120,4 +120,65 @@ class EventLogDB(Base):
         Index("idx_instance_id", "instance_id"),
         Index("idx_trace_id", "trace_id"),
         Index("idx_event_type", "event_type"),
+    )
+
+
+class AgentTaskHistory(Base):
+    """
+    任务履历表：记录每一次任务的详细执行情况
+    对应看板功能：【历史任务明细】、【审计日志】
+    """
+    __tablename__ = 'agent_task_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # --- 索引字段 (查询高频) ---
+    agent_id = Column(String(64), nullable=False, index=True)  # 员工ID
+    trace_id = Column(String(64), nullable=False, index=True)  # 全局链路ID
+    task_id = Column(String(64), nullable=False)               # 具体任务ID
+    
+    # --- 任务详情 ---
+    task_name = Column(String(128))       # 任务名称/类型 (如 "数据清洗")
+    status = Column(String(32))           # 最终状态: COMPLETED, FAILED, CANCELLED
+    
+    # --- 时间维度 (用于画甘特图或计算效率) ---
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, default=0) # 执行耗时(毫秒)，直接存数值方便排序
+    
+    # --- 结果与上下文 ---
+    # 使用 JSON 类型存储非结构化数据，适应不同 Agent 的输出
+    input_params = Column(JSON, nullable=True)    # 只要是不大的参数都建议存，方便排错
+    output_result = Column(JSON, nullable=True)   # 任务产出摘要
+    error_msg = Column(Text, nullable=True)       # 如果 Failed，具体的报错堆栈
+    
+    # --- 元数据 ---
+    created_at = Column(DateTime, default=func.now())
+
+    # 联合索引建议：查询某员工最近的任务
+    __table_args__ = (
+        Index('idx_agent_created', 'agent_id', desc(created_at)),
+    )
+
+
+class AgentDailyMetric(Base):
+    """
+    (可选) 员工日报表：用于快速渲染看板的折线图
+    """
+    __tablename__ = 'agent_daily_metric'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(String(64), index=True)
+    date_str = Column(String(10), index=True) # yyyy-MM-dd
+    
+    total_tasks = Column(Integer, default=0)
+    success_tasks = Column(Integer, default=0)
+    failed_tasks = Column(Integer, default=0)
+    total_duration_ms = Column(Integer, default=0) # 用于计算平均耗时
+    
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index('idx_agent_date', 'agent_id', 'date_str', unique=True),
     )

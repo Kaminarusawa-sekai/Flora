@@ -19,7 +19,7 @@ class AgentClient:
     Agent客户端类，用于与Flora API服务器交互
     """
 
-    def __init__(self, base_url: str = "http://localhost:8003"):
+    def __init__(self, base_url: str = "http://localhost:8002"):
         """
         初始化Agent客户端
 

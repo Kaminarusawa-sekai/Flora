@@ -62,15 +62,90 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { VueFlow, addEdge } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import '@vue-flow/core/dist/style.css';
 import GlassCard from '@/components/ui/GlassCard.vue';
 import GlassNode from './nodes/GlassNode.vue';
 import { useDagStore } from '@/stores/useDagStore';
+import { getLatestTraceByRequest } from '@/api/order';
+import ConversationAPI from '@/api/conversation';
+
+// 接收 selectedTaskId 属性（这里实际上是 sessionId）
+const props = defineProps<{
+  selectedTaskId: string;
+}>();
 
 const dagStore = useDagStore();
+
+// 从 session info 获取 request_id，然后获取 trace_id，最后加载 DAG 数据
+const loadDagForSession = async (sessionId: string) => {
+  try {
+    if (!sessionId) {
+      console.error('Session ID is empty, using default DAG structure');
+      // Session ID 为空，使用默认 DAG 结构
+      const defaultDag = dagStore.getDefaultDag();
+      dagStore.nodes = defaultDag.nodes;
+      dagStore.edges = defaultDag.edges;
+      dagStore.selectedNodeId = null;
+      return;
+    }
+    
+    console.log('Loading DAG for session:', sessionId);
+    
+    // 1. 从 session info 中获取 request_id
+    const sessionInfo = await ConversationAPI.getSessionInfo(sessionId);
+    const requestId = sessionInfo.request_id;
+    
+    if (!requestId) {
+      console.error('Request ID not found in session info, using initial DAG structure');
+      // Request ID 不存在，使用初始 DAG 结构
+      const initialDag = dagStore.getInitialDag();
+      dagStore.nodes = initialDag.nodes;
+      dagStore.edges = initialDag.edges;
+      dagStore.selectedNodeId = null;
+      return;
+    }
+    
+    console.log('Got request_id:', requestId);
+    
+    // 2. 通过 request_id 获取 trace_id
+    const traceInfo = await getLatestTraceByRequest(requestId);
+    const traceId = traceInfo.latest_trace_id;
+    
+    if (!traceId) {
+      console.error('Trace ID not found for request:', requestId, 'using initial DAG structure');
+      // Trace ID 不存在，使用初始 DAG 结构
+      const initialDag = dagStore.getInitialDag();
+      dagStore.nodes = initialDag.nodes;
+      dagStore.edges = initialDag.edges;
+      dagStore.selectedNodeId = null;
+      return;
+    }
+    
+    console.log('Got trace_id:', traceId);
+    
+    // 3. 使用 trace_id 加载 DAG 数据
+    await dagStore.loadDagByTraceId(traceId);
+  } catch (error) {
+    console.error('Failed to load DAG for session:', error, 'using default DAG structure');
+    // 发生错误，使用默认 DAG 结构
+    const defaultDag = dagStore.getDefaultDag();
+    dagStore.nodes = defaultDag.nodes;
+    dagStore.edges = defaultDag.edges;
+    dagStore.selectedNodeId = null;
+  }
+};
+
+// 监听 selectedTaskId 变化（这里实际上是 sessionId），更新 DAG 数据
+watch(
+  () => props.selectedTaskId,
+  (newSessionId) => {
+    loadDagForSession(newSessionId);
+  },
+  { immediate: true } // 立即执行一次
+);
 
 // 自定义节点类型
 const nodeTypes = {

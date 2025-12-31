@@ -94,17 +94,49 @@ async def lifespan(app: FastAPI):
         await session.commit()
     except Exception as e:
         await session.rollback()
+        import traceback
         print(f"⚠️ 初始化默认事件定义失败: {e}")
+        traceback.print_exc()
     finally:
         await session.close()
     
-    # 3. 初始化服务实例
+    # 初始化服务实例
     cache = get_cache()
     broker = get_broker()
     connection_manager = connection_manager_instance
     
     lifecycle_svc = get_lifecycle_service(broker, cache)
     observer_svc = get_observer_service(broker, connection_manager, cache)
+    
+    # 直接获取AgentMonitorService实例
+    from entry.api.deps import get_agent_monitor_service
+    from services.agent_monitor_service import AgentMonitorService
+    from fastapi import Depends
+    
+    # 创建会话
+    session_gen = get_db_session()
+    session = await anext(session_gen)
+    try:
+        # 手动创建仓库实例
+        from external.db.impl import create_agent_task_history_repo, create_agent_daily_metric_repo
+        from external.db.session import dialect
+        
+        task_history_repo = create_agent_task_history_repo(session, dialect)
+        daily_metric_repo = create_agent_daily_metric_repo(session, dialect)
+        
+        # 创建AgentMonitorService实例
+        agent_monitor_svc = AgentMonitorService(
+            cache=cache,
+            event_bus=broker,
+            task_history_repo=task_history_repo,
+            daily_metric_repo=daily_metric_repo
+        )
+    except Exception as e:
+        await session.rollback()
+        print(f"⚠️ 初始化AgentMonitorService失败: {e}")
+        raise
+    finally:
+        await session.close()
     
     # 启动后台任务
     tasks = []
@@ -114,6 +146,12 @@ async def lifespan(app: FastAPI):
         observer_svc.start_listening()
     )
     tasks.append(observer_task)
+    
+    # 启动AgentMonitorService的事件监听任务
+    agent_monitor_task = asyncio.create_task(
+        agent_monitor_svc.start_listening()
+    )
+    tasks.append(agent_monitor_task)
     
     yield
     
@@ -156,4 +194,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=True)
+    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=False)

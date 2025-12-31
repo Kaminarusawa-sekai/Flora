@@ -55,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { VueFlow, addEdge } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import '@vue-flow/core/dist/style.css';
@@ -108,6 +108,20 @@ const expandAll = () => {
 const collapseAll = () => {
   treeStore.collapseAll();
 };
+
+// 默认agent_id
+const defaultAgentId = 'private_domain';
+
+// 组件挂载时连接WebSocket
+onMounted(() => {
+  // 连接到WebSocket获取树结构
+  treeStore.connectToAgentTreeWebSocket(defaultAgentId);
+});
+
+// 组件卸载时关闭WebSocket连接
+onUnmounted(() => {
+  treeStore.closeAgentTreeWebSocket(defaultAgentId);
+});
 </script>
 
 <style scoped>

@@ -1,7 +1,7 @@
 import { createSSEClient, getConversationStreamUrl } from '../utils/sse';
 
 // API 基础 URL
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://localhost:8000/v1';
 
 /**
  * 会话 API 服务
@@ -40,7 +40,13 @@ class ConversationAPI {
       if (!response.ok) {
         throw new Error(`Failed to get session history: ${response.statusText}`);
       }
-      return await response.json();
+      const history = await response.json();
+      
+      // 转换后端数据格式为前端期望格式
+      return history.map(msg => ({
+        ...msg,
+        content: msg.utterance || msg.enhanced_utterance || ''
+      }));
     } catch (error) {
       console.error('Error fetching session history:', error);
       throw error;
@@ -62,7 +68,13 @@ class ConversationAPI {
       if (!response.ok) {
         throw new Error(`Failed to get user history: ${response.statusText}`);
       }
-      return await response.json();
+      const history = await response.json();
+      
+      // 转换后端数据格式为前端期望格式
+      return history.map(msg => ({
+        ...msg,
+        content: msg.enhanced_utterance || msg.utterance || ''
+      }));
     } catch (error) {
       console.error('Error fetching user history:', error);
       throw error;
@@ -147,6 +159,29 @@ class ConversationAPI {
       return await response.json();
     } catch (error) {
       console.error('Error binding user to session:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 创建新对话
+   * @param {string} userId - 用户 ID
+   * @returns {Promise<Object>} 新创建的会话信息
+   */
+  static async createConversation(userId) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/conversations`, {
+        method: 'POST',
+        headers: {
+          'X-User-ID': userId
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to create conversation: ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error creating conversation:', error);
       throw error;
     }
   }

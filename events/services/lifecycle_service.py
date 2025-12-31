@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# 假设这些类依然存在
+# 导入正确的模块
 from common.event_instance import EventInstance
 from common.event_log import EventLog
 from common.enums import EventInstanceStatus
@@ -13,10 +13,9 @@ from external.cache.base import CacheClient
 from external.db.session import dialect
 from external.db.impl import create_event_definition_repo, create_event_instance_repo, create_event_log_repo
 from external.events.bus import EventBus
-from external.client.agent_client import AgentClient
-from .agent_monitor_service import AgentMonitorService
 
 ##TODO:这里有双写一致性问题，后期再解决
+##TODO：这里的定义可能不需要，后期考虑移除
 class LifecycleService:
     def __init__(
         self,
@@ -25,9 +24,6 @@ class LifecycleService:
     ):
         self.event_bus = event_bus
         self.cache = cache
-        # 初始化 AgentClient 和 AgentMonitorService
-        agent_client = AgentClient()
-        self.agent_monitor = AgentMonitorService(cache=cache, agent_client=agent_client)
         self.topic_name = "job_event_stream"
         # 定义 Redis Key 前缀
         self.CACHE_PREFIX = "ev:inst:"
@@ -50,36 +46,17 @@ class LifecycleService:
         return f"{self.CACHE_PREFIX}{instance_id}"
 
     def _serialize(self, instance: EventInstance) -> dict:
+
+
         """
-        简单序列化：将 SQLAlchemy 对象转为可缓存的 Dict
-        注意：日期需要转字符串
+        使用 Pydantic 的 model_dump 进行序列化，自动处理 datetime 等类型。
         """
-        # 这里仅作示例，实际可使用 Pydantic 或 SQLAlchemy 的 as_dict 方法
-        return {
-            "id": instance.id,
-            "trace_id": instance.trace_id,
-            "parent_id": instance.parent_id,
-            "job_id": instance.job_id,
-            "def_id": instance.def_id,
-            "user_id": instance.user_id,
-            "status": instance.status,
-            "control_signal": instance.control_signal,
-            "node_path": instance.node_path,
-            "depth": instance.depth,
-            # 将 datetime 转 isoformat 字符串
-            "created_at": instance.created_at.isoformat() if instance.created_at else None,
-            "request_id": instance.request_id,
-            "actor_type": instance.actor_type,
-            "role": instance.role,
-            "name": instance.name,
-            "progress": instance.progress,
-            "started_at": instance.started_at.isoformat() if instance.started_at else None,
-            "finished_at": instance.finished_at.isoformat() if instance.finished_at else None,
-            "error_detail": instance.error_detail,
-            "output_ref": instance.output_ref,
-            "runtime_state_snapshot": instance.runtime_state_snapshot
-            # 其他需要高频读取的字段...
-        }
+        return instance.model_dump(
+            mode="json",  # 自动将 datetime、UUID 等转为 JSON 兼容格式（如 ISO 字符串）
+            exclude_unset=False,
+            exclude_defaults=False,
+            # 如果某些字段不需要序列化（比如 updated_at 不用于缓存），可加 exclude={"updated_at"}
+        )
 
     async def _get_instance_with_cache(self, session: AsyncSession, instance_id: str) -> Optional[dict]:
         """
@@ -166,9 +143,9 @@ class LifecycleService:
     async def start_trace(
         self,
         session: AsyncSession,
-        root_def_id: str,
         input_params: dict,
         request_id: str,                # 【新增】必须传入 request_id 用于关联
+        root_def_id: Optional[str] = None, # 【修改】变为可选，如果不传则内部生成
         trace_id: Optional[str] = None, # 【修改】变为可选，如果不传则内部生成
         user_id: Optional[str] = None   # 记录是谁触发的
 
@@ -177,11 +154,31 @@ class LifecycleService:
         启动链路
         维护 request_id (1) -> trace_id (N) 的关系
         """
-        # 1. 校验定义是否存在
+        # 1. 处理root_def_id为None的情况，生成默认ID
+        if root_def_id is None:
+            root_def_id = f"default-{str(uuid.uuid4())[:8]}"
+        
+        # 2. 校验定义是否存在，不存在则创建默认定义
         def_repo = create_event_definition_repo(session, dialect)
         definition = await def_repo.get(root_def_id)
         if not definition:
-             raise ValueError(f"Definition {root_def_id} not found")
+            # 创建默认定义
+            from common.event_definition import EventDefinition
+            from common.enums import ActorType, NodeType, ScheduleType
+            
+            definition = EventDefinition(
+                id=root_def_id,
+                name=f"Default Definition for {root_def_id}",
+                user_id=user_id or "system",
+                node_type=NodeType.AGENT_ACTOR,
+                actor_type=ActorType.AGENT,
+                code_ref="default/default:latest",
+                entrypoint="main.run",
+                schedule_type=ScheduleType.ONCE,
+                resource_profile="default",
+                default_params={}
+            )
+            await def_repo.create(definition)
 
         # 2. 【修改】生成 trace_id (如果外部没传)
         if not trace_id:
@@ -320,10 +317,26 @@ class LifecycleService:
             child_id = meta["id"]
             new_ids.append(child_id)
             
-            # 获取子任务定义
+            # 获取子任务定义，不存在则创建默认定义
             child_def = await def_repo.get(meta["def_id"])
             if not child_def:
-                raise ValueError(f"Definition {meta['def_id']} not found")
+                # 创建默认定义
+                from common.event_definition import EventDefinition
+                from common.enums import ActorType, NodeType, ScheduleType
+                
+                child_def = EventDefinition(
+                    id=meta["def_id"],
+                    name=f"Default Definition for {meta['def_id']}",
+                    user_id=parent_data.get('user_id') or "system",
+                    node_type=NodeType.TASK,
+                    actor_type=ActorType.GENERAL,
+                    code_ref="default/default:latest",
+                    entrypoint="main.run",
+                    schedule_type=ScheduleType.ONCE,
+                    resource_profile="default",
+                    default_params={}
+                )
+                await def_repo.create(child_def)
             
             child = EventInstance(
                 id=child_id,
@@ -461,7 +474,7 @@ class LifecycleService:
             error=error_msg
         )
 
-        # 6. 【新增逻辑】提取 Agent 身份并上报心跳
+        # 6. 【新增逻辑】提取 Agent 身份并通过事件总线上报心跳
         agent_id = execution_args.get("agent_id")
         
         if agent_id:
@@ -478,7 +491,15 @@ class LifecycleService:
             
             # 这里的 "Report Heartbeat" 意味着 Agent 刚刚还在说话，它是活的
             # 如果 event_type 是 FAILED 或 COMPLETED，task_info 可能是 None，表示它刚干完活，现在闲下来了(IDLE)
-            await self.agent_monitor.report_heartbeat(agent_id, task_info)
+            await self.event_bus.publish(
+                topic=self.topic_name,
+                event_type="AGENT_HEARTBEAT",
+                key=agent_id,
+                payload={
+                    "agent_id": agent_id,
+                    "task_info": task_info
+                }
+            )
 
         # 7. 发送通知
         await self.event_bus.publish(
