@@ -1,7 +1,8 @@
 /**
  * API 基础配置
  */
-const API_BASE_URL = 'http://localhost:8000/v1';
+const INTERACTION_API_BASE_URL = 'http://localhost:8000/v1';
+const EVENTS_API_BASE_URL = 'http://localhost:8004/api/v1';
 
 /**
  * 引入 DAG 转换工具函数
@@ -14,7 +15,7 @@ import { transformTraceToDag } from '../utils/dagUtils';
  * @param {Object} options - 请求选项
  * @returns {Promise<any>} 请求结果
  */
-async function request(url, options = {}) {
+async function request(url, options = {}, baseUrl = INTERACTION_API_BASE_URL) {
   const headers = {
     'Content-Type': 'application/json',
     ...options.headers,
@@ -31,7 +32,7 @@ async function request(url, options = {}) {
     headers,
   };
 
-  const response = await fetch(`${API_BASE_URL}${url}`, config);
+  const response = await fetch(`${baseUrl}${url}`, config);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({
@@ -56,7 +57,7 @@ export async function sendUserMessage(sessionId, messageData) {
   return request(`/conversations/${sessionId}/messages`, {
     method: 'POST',
     body: JSON.stringify(messageData),
-  });
+  }, INTERACTION_API_BASE_URL);
 }
 
 /**
@@ -71,7 +72,7 @@ export async function resumeTask(taskId, resumeData) {
   return request(`/tasks/${taskId}/resume-with-input`, {
     method: 'POST',
     body: JSON.stringify(resumeData),
-  });
+  }, INTERACTION_API_BASE_URL);
 }
 
 /**
@@ -96,7 +97,7 @@ export async function listTasksInTrace(traceId, filters = {}) {
     }
   });
 
-  return request(`/traces/${traceId}/tasks?${queryParams.toString()}`);
+  return request(`/traces/${traceId}/tasks?${queryParams.toString()}`, {}, EVENTS_API_BASE_URL);
 }
 
 /**
@@ -105,7 +106,7 @@ export async function listTasksInTrace(traceId, filters = {}) {
  * @returns {Promise<Object>} 转换后的拓扑图数据
  */
 export async function getTraceTopology(traceId) {
-  const traceData = await request(`/traces/${traceId}/graph`);
+  const traceData = await request(`/traces/${traceId}/graph`, {}, EVENTS_API_BASE_URL);
   return transformTraceToDag(traceData);
 }
 
@@ -115,7 +116,7 @@ export async function getTraceTopology(traceId) {
  * @returns {Promise<Object>} 状态摘要
  */
 export async function getTraceStatus(traceId) {
-  return request(`/traces/${traceId}/status`);
+  return request(`/traces/${traceId}/status`, {}, EVENTS_API_BASE_URL);
 }
 
 /**
@@ -125,7 +126,7 @@ export async function getTraceStatus(traceId) {
  * @returns {Promise<Object>} 任务详情
  */
 export async function getTaskDetail(taskId, expandPayload = false) {
-  return request(`/traces/tasks/${taskId}?expand_payload=${expandPayload}`);
+  return request(`/traces/tasks/${taskId}?expand_payload=${expandPayload}`, {}, EVENTS_API_BASE_URL);
 }
 
 /**
@@ -133,7 +134,7 @@ export async function getTaskDetail(taskId, expandPayload = false) {
  * @returns {Promise<Object>} 就绪任务列表，包含count和tasks字段
  */
 export async function getReadyTasks() {
-  return request('/traces/ready-tasks');
+  return request('/traces/ready-tasks', {}, EVENTS_API_BASE_URL);
 }
 
 /**
@@ -143,7 +144,7 @@ export async function getReadyTasks() {
  * @returns {Promise<Array<Object>>} 任务详情列表
  */
 export async function getTraceDetail(traceId, expandPayload = false) {
-  return request(`/traces/${traceId}/trace-details?expand_payload=${expandPayload}`);
+  return request(`/traces/${traceId}/trace-details?expand_payload=${expandPayload}`, {}, EVENTS_API_BASE_URL);
 }
 
 /**
@@ -152,7 +153,7 @@ export async function getTraceDetail(traceId, expandPayload = false) {
  * @returns {Promise<Object>} 包含request_id和latest_trace_id的对象
  */
 export async function getLatestTraceByRequest(requestId) {
-  return request(`/commands/latest-by-request/${requestId}`);
+  return request(`/traces/latest-by-request/${requestId}`, {}, EVENTS_API_BASE_URL);
 }
 
 /**

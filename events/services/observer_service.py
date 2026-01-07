@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Set
 
@@ -7,32 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # 导入本地模块
 from common.event_instance import EventInstance
 from common.enums import EventInstanceStatus
-from common.events import (
-    TaskStatusEvent,
-    TaskStartedEvent,
-    TaskCompletedEvent,
-    TaskFailedEvent,
-    TraceCancelledEvent,
-    LoopRoundStartedEvent
-)
 
 # 导入外部依赖
-
-from external.cache.base import CacheClient  # 需要 Cache 来读取大字段
+from external.cache.base import CacheClient
 from external.db.session import dialect
 from external.db.impl import create_event_instance_repo
 from external.events.bus import EventBus
-
 # 导入WebSocket管理器
 from .websocket_manager import ConnectionManager
 
+logger = logging.getLogger(__name__)
 
 class ObserverService:
     def __init__(
         self,
         event_bus: EventBus,
         connection_manager: ConnectionManager,
-        cache: Optional[CacheClient] = None,  # 用于读取 payload
+        cache: Optional[CacheClient] = None,
         webhook_registry: Optional[Any] = None
     ):
         self.event_bus = event_bus
@@ -41,188 +33,61 @@ class ObserverService:
         self.webhook_registry = webhook_registry
         self.topic_name = "job_event_stream"
 
-    async def on_task_status_changed(self, task: EventInstance) -> None:
-        """
-        处理任务状态变更事件（通常由 Worker 调用）
-        """
-        # 1. 构造基础状态事件
-        event = TaskStatusEvent(
-            task_id=task.id,
-            trace_id=task.trace_id,
-            status=task.status.value,
-            output_ref=task.output_ref,
-            error_msg=task.error_msg,
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        # 2. 发布通用状态变更事件
-        await self.event_publisher.publish("task.status.changed", event.model_dump())
-        
-        # 3. 发布细分事件（用于不同类型的订阅者）
-        if task.status == EventInstanceStatus.RUNNING:
-            await self._publish_task_started(task)
-        elif task.status == EventInstanceStatus.SUCCESS:
-            await self._publish_task_completed(task)
-        elif task.status == EventInstanceStatus.FAILED:
-            await self._publish_task_failed(task)
-        
-        # 4. 触发 Webhook
-        if self.webhook_registry:
-            await self._send_webhook_if_configured(task.trace_id, event)
-
-    async def _publish_task_started(self, task: EventInstance) -> None:
-        event = TaskStartedEvent(
-            task_id=task.id,
-            trace_id=task.trace_id,
-            worker_id=task.job_id,
-            timestamp=datetime.now(timezone.utc)
-        )
-        await self.event_publisher.publish("task.started", event.model_dump())
-
-    async def _publish_task_completed(self, task: EventInstance) -> None:
-        event = TaskCompletedEvent(
-            task_id=task.id,
-            trace_id=task.trace_id,
-            output_ref=task.output_ref or "",
-            timestamp=datetime.now(timezone.utc)
-        )
-        await self.event_publisher.publish("task.completed", event.model_dump())
-
-    async def _publish_task_failed(self, task: EventInstance) -> None:
-        event = TaskFailedEvent(
-            task_id=task.id,
-            trace_id=task.trace_id,
-            error_msg=task.error_msg or "Unknown error",
-            timestamp=datetime.now(timezone.utc)
-        )
-        await self.event_publisher.publish("task.failed", event.model_dump())
-
-    async def on_trace_cancelled(self, trace_id: str, reason: Optional[str] = None) -> None:
-        event = TraceCancelledEvent(
-            trace_id=trace_id,
-            reason=reason,
-            timestamp=datetime.now(timezone.utc)
-        )
-        await self.event_publisher.publish("trace.cancelled", event.model_dump())
-
-    async def on_loop_round_started(self, task: EventInstance) -> None:
-        event = LoopRoundStartedEvent(
-            task_id=task.id,
-            trace_id=task.trace_id,
-            round_index=task.round_index or 0,
-            timestamp=datetime.now(timezone.utc)
-        )
-        await self.event_publisher.publish("loop.round_started", event.model_dump())
-
-    async def _send_webhook_if_configured(self, trace_id: str, event: Any) -> None:
-        if not self.webhook_registry:
-            return
-        try:
-            hooks = await self.webhook_registry.get_hooks(trace_id)
-            for hook in hooks:
-                # 实际发送逻辑
-                pass
-        except Exception:
-            pass
-
-    async def _send_webhook(self, url: str, event_data: Dict[str, Any]) -> None:
-        """实际发送 Webhook 请求"""
-        try:
-            # 示例：实际场景应使用 aiohttp/httpx
-            # async with httpx.AsyncClient() as client:
-            #     await client.post(url, json=event_data)
-            print(f"Sending webhook to {url}")
-        except Exception as e:
-            print(f"Webhook delivery failed: {e}")
-
     # ==========================================
-    # 2. 对外查询服务 (Query API)
-    # 针对 Lifecycle 和 Signal 进行了增强
+    # 1. 核心：对外查询服务 (Query API)
     # ==========================================
 
-    async def get_trace_summary(self, session: AsyncSession, trace_id: str) -> Dict[str, Any]:
+    async def get_trace_graph(self, session: AsyncSession, trace_id: str) -> Dict[str, Any]:
         """
-        获取 Trace 的聚合状态 (Dashboard 视图)
-        增强：支持动态深度的统计
+        【核心】获取 Trace 的 DAG 结构树 (供前端 ReactFlow/X6 渲染)
+        
+        关键逻辑：
+        数据库中 parent_id 存储的是父节点的【内部 UUID】，
+        但前端展示通常需要【业务 task_id】作为节点的 ID。
+        这里需要做一次映射。
         """
         inst_repo = create_event_instance_repo(session, dialect)
         instances = await inst_repo.find_by_trace_id(trace_id)
         
         if not instances:
-            return None
+            return {"trace_id": trace_id, "nodes": [], "edges": []}
 
-        # 基础统计
-        summary = {
-            "trace_id": trace_id,
-            "total_tasks": len(instances),
-            "status_counts": {},
-            "max_depth": 0,
-            "is_cancelled": False,
-            "start_time": None,
-            "end_time": None
-        }
-
-        # 遍历计算
-        timestamps = []
-        for inst in instances:
-            # 统计状态
-            s = inst.status.value
-            summary["status_counts"][s] = summary["status_counts"].get(s, 0) + 1
-            
-            # 统计深度 (适配 expand_topology)
-            if inst.depth > summary["max_depth"]:
-                summary["max_depth"] = inst.depth
-            
-            # 检测是否被标记取消 (适配 SignalService)
-            if hasattr(inst, 'control_signal') and inst.control_signal == "CANCEL":
-                summary["is_cancelled"] = True
-
-            # 计算时间跨度
-            if inst.created_at:
-                timestamps.append(inst.created_at)
-            if inst.updated_at:
-                timestamps.append(inst.updated_at)
-
-        if timestamps:
-            summary["start_time"] = min(timestamps)
-            summary["end_time"] = max(timestamps) if summary["status_counts"].get("RUNNING", 0) == 0 else None
-
-        return summary
-
-    async def get_trace_graph(self, session: AsyncSession, trace_id: str) -> Dict[str, Any]:
-        """
-        【新功能】获取 Trace 的 DAG 结构树
-        供前端绘制拓扑图使用，适配 LifecycleService 的动态裂变
-        """
-        inst_repo = create_event_instance_repo(session, dialect)
-        instances = await inst_repo.find_by_trace_id(trace_id)
+        # 1. 建立 内部UUID -> 外部TaskID 的映射表
+        uuid_to_task_id = {inst.id: inst.task_id for inst in instances} # 假设 inst.id 是PK
         
-        # 1. 转换为字典映射
-        node_map = {inst.id: inst for inst in instances}
-        
-        # 2. 构建树形结构 / 边列表
         nodes = []
         edges = []
         
         for inst in instances:
-            # 节点信息 (精简版)
-            nodes.append({
-                "id": inst.id,
-                "label": inst.name or inst.def_id,
+            # --- 节点信息 ---
+            node_data = {
+                "id": inst.task_id,      # 前端通过 task_id 索引
+                "type": "customNode",    # 前端组件类型
+                
+                "label": inst.name or inst.task_id,
                 "status": inst.status.value,
+                "actor_type": inst.actor_type,
+                "worker_id": inst.worker_id,
                 "depth": inst.depth,
-                "type": inst.actor_type,
-                "user_id": inst.user_id,
-                # 如果被取消，前端可以显示特殊样式
-                "signal": inst.control_signal if hasattr(inst, 'control_signal') else None
-            })
+                # 将控制信号透传给前端，前端可显示"暂停"图标
+                "signal": inst.control_signal if hasattr(inst, 'control_signal') else None,
+                "created_at": inst.created_at.isoformat() if inst.created_at else None
+                
+            }
+            nodes.append(node_data)
             
-            # 边信息 (通过 parent_id 构建)
-            if inst.parent_id and inst.parent_id in node_map:
-                edges.append({
-                    "source": inst.parent_id,
-                    "target": inst.id
-                })
+            # --- 边信息 (构建树状关系) ---
+            if inst.parent_id:
+                # 只有当父节点也在本次查询结果中时，才画边
+                if inst.parent_id in uuid_to_task_id.values():
+                    # parent_task_id = uuid_to_task_id[inst.parent_id]
+                    parent_task_id = inst.parent_id
+                    edges.append({
+                        "id": f"e-{parent_task_id}-{inst.task_id}",
+                        "source": parent_task_id,  # 必须是 task_id
+                        "target": inst.task_id,    # 必须是 task_id
+                        "animated": inst.status == EventInstanceStatus.RUNNING
+                    })
         
         return {
             "trace_id": trace_id,
@@ -230,112 +95,96 @@ class ObserverService:
             "edges": edges
         }
 
-    async def get_trace_detail(
-        self,
-        session: AsyncSession,
-        trace_id: str,
-        fetch_payload: bool = False
-    ) -> List[Dict[str, Any]]:
+    async def get_trace_summary(self, session: AsyncSession, trace_id: str) -> Dict[str, Any]:
         """
-        获取单个trace_id下的所有任务详情
-        增强：支持从 input_ref / output_ref 还原真实大字段数据
+        获取 Trace 的仪表盘统计数据
+        """
+        inst_repo = create_event_instance_repo(session, dialect)
+        instances = await inst_repo.find_by_trace_id(trace_id)
+        
+        if not instances:
+            return None
+
+        # 初始化统计容器
+        summary = {
+            "trace_id": trace_id,
+            "total_tasks": len(instances),
+            "status_distribution": {
+                "PENDING": 0, "RUNNING": 0, "SUCCESS": 0, "FAILED": 0, "CANCELLED": 0
+            },
+            "topology": {
+                "max_depth": 0,
+                "width_at_depth": {}
+            },
+            "control_state": "NORMAL", # NORMAL, PAUSED, CANCELLED
+            "duration": 0
+        }
+
+        timestamps = []
+        
+        for inst in instances:
+            # 1. 状态计数
+            s = inst.status.value
+            if s in summary["status_distribution"]:
+                summary["status_distribution"][s] += 1
+            
+            # 2. 拓扑统计
+            summary["topology"]["max_depth"] = max(summary["topology"]["max_depth"], inst.depth)
+            
+            # 3. 检查控制信号 (只要有一个节点被取消，往往意味着子树被取消)
+            # 这里取根节点或当前节点的信号作为 trace 信号的参考
+            if inst.depth == 0 and hasattr(inst, 'control_signal') and inst.control_signal:
+                summary["control_state"] = inst.control_signal
+
+            # 4. 时间范围
+            if inst.created_at: timestamps.append(inst.created_at)
+            if hasattr(inst, 'finished_at') and inst.finished_at: 
+                timestamps.append(inst.finished_at)
+
+        # 计算耗时
+        if timestamps:
+            start_t = min(timestamps)
+            end_t = max(timestamps)
+            # 只有当所有任务都不处于 RUNNING 时，end_t 才有最终意义，否则就是 "至今"
+            if summary["status_distribution"]["RUNNING"] > 0:
+                end_t = datetime.now(timezone.utc)
+            
+            summary["start_time"] = start_t
+            summary["duration_seconds"] = (end_t - start_t).total_seconds()
+
+        return summary
+
+    async def get_trace_detail(self, session: AsyncSession, trace_id: str) -> List[Dict[str, Any]]:
+        """
+        获取 Trace 详情列表 (表格视图)
         """
         inst_repo = create_event_instance_repo(session, dialect)
         tasks = await inst_repo.find_by_trace_id(trace_id)
         
-        if not tasks:
-            return []
-            
+        # 预先构建 ID 映射，为了在列表中显示 Parent Name
+        uuid_map = {t.id: t for t in tasks}
+
         results = []
         for task in tasks:
-            # 转换为字典
-            result = {
-                "id": task.id,
-                "trace_id": task.trace_id,
-                "def_id": task.def_id,
-                "user_id": task.user_id,
+            parent = uuid_map.get(task.parent_id)
+            
+            item = {
+                "task_id": task.task_id,
                 "name": task.name,
-                "actor_type": task.actor_type,
                 "status": task.status.value,
-                "input_ref": task.input_ref,
-                "output_ref": task.output_ref,
-                "error_msg": task.error_msg,
+                "worker_id": task.worker_id,
                 "depth": task.depth,
-                "layer": task.layer,
-                "parent_id": task.parent_id,
-                "job_id": task.job_id,
+                "parent_task_id": parent.task_id if parent else None,
                 "created_at": task.created_at,
-                "updated_at": task.updated_at,
-                "control_signal": task.control_signal if hasattr(task, 'control_signal') else None
+                "finished_at": getattr(task, 'finished_at', None),
+                "error_msg": task.error_detail.get("msg") if hasattr(task, 'error_detail') and task.error_detail else None,
+                # 透传 payload_snapshot 的一部分用于预览
+                "input_preview": str(task.input_params)[:100] if hasattr(task, 'input_params') and task.input_params else None
             }
+            results.append(item)
             
-            # 如果需要，且存在 cache client，尝试还原大字段
-            if fetch_payload and self.cache:
-                if task.input_ref and task.input_ref.startswith("payload-"):
-                    # 模拟从 LifecycleService._save_payload 保存的地方读取
-                    # 实际 key 可能是 task.input_ref
-                    payload_data = await self.cache.get(task.input_ref)
-                    if payload_data:
-                        result["input_params_full"] = payload_data
-            
-            results.append(result)
-        
         return results
 
-    # 保留原有方法以兼容旧代码
-    async def get_task_instance(
-        self,
-        session: AsyncSession,
-        task_id: str
-    ) -> Optional[EventInstance]:
-        """获取单个任务实例详情（兼容旧接口）"""
-        inst_repo = create_event_instance_repo(session, dialect)
-        return await inst_repo.get(task_id)
-
-    async def get_trace_instances(
-        self,
-        session: AsyncSession,
-        trace_id: str
-    ) -> List[EventInstance]:
-        """获取整个 Trace 的所有任务节点（兼容旧接口）"""
-        inst_repo = create_event_instance_repo(session, dialect)
-        return await inst_repo.find_by_trace_id(trace_id)
-
-    async def get_ready_tasks(self, session: AsyncSession) -> List[EventInstance]:
-        """
-        获取当前准备就绪（PENDING 且无未完成依赖）的任务
-        供调度器 (Scheduler/Dispatcher) 使用
-        """
-        inst_repo = create_event_instance_repo(session, dialect)
-        return await inst_repo.find_ready_tasks()
-
-    async def get_trace_status_summary(self, session: AsyncSession, trace_id: str) -> Dict[str, Any]:
-        """
-        获取 Trace 的状态摘要（兼容旧接口）
-        """
-        summary = await self.get_trace_summary(session, trace_id)
-        if not summary:
-            return None
-        
-        # 转换为旧格式
-        status_counts = summary.get("status_counts", {})
-        return {
-            "trace_id": trace_id,
-            "total": summary.get("total_tasks", 0),
-            "pending": status_counts.get("PENDING", 0),
-            "running": status_counts.get("RUNNING", 0),
-            "success": status_counts.get("SUCCESS", 0),
-            "failed": status_counts.get("FAILED", 0),
-            "cancelled": status_counts.get("CANCELLED", 0),
-            "skipped": status_counts.get("SKIPPED", 0),
-            "depth": summary.get("max_depth", 0),
-            "layers": 0,  # 旧字段，已废弃
-            "is_complete": any(status_counts.values()) and all(
-                status not in ["PENDING", "RUNNING"] 
-                for status, count in status_counts.items() if count > 0
-            )
-        }
-    
     async def find_traces_by_user_id(
         self,
         session: AsyncSession,
@@ -361,79 +210,120 @@ class ObserverService:
         inst_repo = create_event_instance_repo(session, dialect)
         return await inst_repo.find_traces_by_user_id(user_id, start_time, end_time, limit, offset)
     
+    # ==========================================
+    # 2. 核心：WebSocket 消息泵 (Event Pump)
+    # ==========================================
+
     async def start_listening(self) -> None:
         """
-        订阅事件总线，监听任务事件并通过WebSocket推送给前端
-        这是ObserverService的核心方法，实现了系统的实时能力
+        监听 Redis/EventBus，转换格式，并推送到 WebSocket。
+        这是 ObserverService 真正的核心，连接了 LifecycleService(写) 和 Frontend(读)。
         """
+        logger.info(f"ObserverService started listening on topic: {self.topic_name}")
+        
+        # 订阅 LifecycleService 发出的事件
         async for message in self.event_bus.subscribe(self.topic_name):
             try:
-                # 解析消息
-                trace_id = message.get("key")
                 event_type = message.get("event_type")
+                trace_id = message.get("key") # key 通常是 trace_id
                 payload = message.get("payload", {})
-                
+
                 if not trace_id:
                     continue
-                
-                # 根据事件类型，构造推送消息
+
+                socket_msg = None
+
+                # -----------------------------------------------
+                # 场景 A: 拓扑结构变化 (图谱要重画/增加节点)
+                # -----------------------------------------------
                 if event_type == "TRACE_CREATED":
-                    # 新链路创建
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                    socket_msg = {
                         "event": "trace_created",
-                        "data": payload
-                    })
-                
+                        "data": {
+                            "trace_id": trace_id,
+                            "root_task_id": payload.get("root_instance_id") # 注意字段匹配
+                        }
+                    }
+
                 elif event_type == "TOPOLOGY_EXPANDED":
-                    # 拓扑结构动态扩展
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
+                    # LifecycleService 发出的是 parent_id 和 new_instance_ids
+                    # 前端需要知道在哪儿加了谁
+                    socket_msg = {
                         "event": "graph_updated",
-                        "data": payload
-                    })
-                
-                elif event_type == "TASK_STATUS_CHANGED":
-                    # 任务状态变更
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "node_status_changed",
-                        "data": payload
-                    })
-                
-                elif event_type == "TASK_STARTED":
-                    # 任务开始执行
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "node_active",
-                        "node_id": payload.get("task_id")
-                    })
-                
+                        "data": {
+                            "parent_task_id": payload.get("parent_id"), # 确保是 task_id
+                            "new_children_ids": payload.get("new_instance_ids"),
+                            "count": payload.get("count")
+                        }
+                    }
+
+                # -----------------------------------------------
+                # 场景 B: 节点状态流转 (节点变色)
+                # -----------------------------------------------
+                elif event_type in ["TASK_STARTED", "TASK_RUNNING"]:
+                    socket_msg = {
+                        "event": "node_updated",
+                        "data": {
+                            "node_id": payload.get("task_id"),
+                            "status": "RUNNING",
+                            "worker_id": payload.get("worker_id"),
+                            "progress": payload.get("progress", 0)
+                        }
+                    }
+
                 elif event_type == "TASK_COMPLETED":
-                    # 任务执行成功
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "node_success",
-                        "node_id": payload.get("task_id")
-                    })
-                
+                    socket_msg = {
+                        "event": "node_updated",
+                        "data": {
+                            "node_id": payload.get("task_id"),
+                            "status": "SUCCESS",
+                            "progress": 100,
+                            # 可选：携带少量结果摘要
+                            "output_summary": str(payload.get("data", ""))[:50]
+                        }
+                    }
+
                 elif event_type == "TASK_FAILED":
-                    # 任务执行失败
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "node_failed",
-                        "node_id": payload.get("task_id"),
-                        "error_msg": payload.get("error_msg")
-                    })
-                
-                elif event_type == "TRACE_CANCELLED":
-                    # 链路被取消
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "trace_stop",
-                        "reason": payload.get("reason")
-                    })
-                
-                elif event_type == "LOOP_ROUND_STARTED":
-                    # 循环任务开始新的一轮
-                    await self.connection_manager.broadcast_to_trace(trace_id, {
-                        "event": "loop_round_started",
-                        "data": payload
-                    })
-            
+                    socket_msg = {
+                        "event": "node_updated",
+                        "data": {
+                            "node_id": payload.get("task_id"),
+                            "status": "FAILED",
+                            "error": payload.get("error_msg")
+                        }
+                    }
+
+                # -----------------------------------------------
+                # 场景 C: 实时心跳 (UI 动效)
+                # -----------------------------------------------
+                elif event_type == "AGENT_HEARTBEAT":
+                    # Payload: { "agent_id": "...", "task_info": { "task_id": "...", "step": 1 } }
+                    task_info = payload.get("task_info") or {}
+                    if task_info:
+                        socket_msg = {
+                            "event": "agent_activity",
+                            "data": {
+                                "agent_id": payload.get("agent_id"),
+                                "node_id": task_info.get("task_id"),
+                                "step": task_info.get("step")
+                            }
+                        }
+
+                # -----------------------------------------------
+                # 执行推送
+                # -----------------------------------------------
+                if socket_msg:
+                    # 推送给正在查看该 Trace 的所有前端客户端
+                    await self.connection_manager.broadcast_to_trace(trace_id, socket_msg)
+                    
+                    # (可选) 如果配置了 Webhook，这里也可以异步触发
+                    if self.webhook_registry:
+                        asyncio.create_task(self._trigger_webhook(trace_id, socket_msg))
+
             except Exception as e:
-                print(f"Error processing event: {e}")
+                logger.error(f"Error processing event in Observer: {e}", exc_info=True)
                 continue
+
+    async def _trigger_webhook(self, trace_id: str, payload: dict):
+        """WebHook 触发逻辑 (Placeholder)"""
+        pass

@@ -76,7 +76,7 @@ export const useDagStore = defineStore('dag', {
     getInitialDag() {
       return {
         nodes: [
-          { id: '1', type: 'glass', position: { x: 200, y: 50 }, data: { id: 'task-001', label: '任务节点', type: 'AGENT', status: 'running' as const, progress: 0, time: 0, childrenCount: 2 } },
+          { id: '1', type: 'glass', position: { x: 200, y: 50 }, data: { id: 'task-ready', label: '任务系统准备就绪', type: 'AGENT', status: 'success' as const, progress: 0, time: 0, childrenCount: 0 } },
           // { id: '2', type: 'glass', position: { x: 100, y: 300 }, data: { id: 'task-002', label: 'Data Group A', type: 'AGENT', status: 'success' as const, progress: 100, time: 120, childrenCount: 2 } },
           // { id: '3', type: 'glass', position: { x: 300, y: 300 }, data: { id: 'task-003', label: 'Data Group B', type: 'AGENT', status: 'running' as const, progress: 30, time: 450, childrenCount: 0 } },
           // { id: '4', type: 'glass', position: { x: 50, y: 550 }, data: { id: 'task-004', label: 'Worker 01', type: 'WORKER', status: 'success' as const, progress: 100, time: 20, childrenCount: 0 } },
@@ -104,13 +104,13 @@ export const useDagStore = defineStore('dag', {
         
         // 首先检查缓存
         const cachedDag = this.getCachedDag(traceId);
-        if (cachedDag) {
-          console.log('Using cached DAG data for trace:', traceId);
-          this.nodes = cachedDag.nodes;
-          this.edges = cachedDag.edges;
-          this.selectedNodeId = null;
-          return;
-        }
+        // if (cachedDag) {
+        //   console.log('Using cached DAG data for trace:', traceId);
+        //   this.nodes = cachedDag.nodes;
+        //   this.edges = cachedDag.edges;
+        //   this.selectedNodeId = null;
+        //   return;
+        // }
         
         // 缓存不存在，从 API 获取
         console.log('Loading DAG data from API for trace:', traceId);

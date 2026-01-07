@@ -46,24 +46,28 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         # 该方法与 find_ready_tasks 功能相同，复用实现
         return await self.find_ready_tasks()
 
-    async def update_fields(self, instance_id: str, fields: Dict[str, Any]) -> None:
-        stmt = (
-            update(EventInstanceDB)
-            .where(EventInstanceDB.id == instance_id)
-            .values(**fields)
-        )
-        await self.session.execute(stmt)
-        await self.session.commit()
-
+    async def update_fields(
+        self, 
+            instance_id: str, 
+            fields: Optional[Dict[str, Any]] = None,
+            **kwargs
+        ) -> None:
+            # 合并 fields 和 kwargs
+            all_updates = {**(fields or {}), **kwargs}
+            if not all_updates:
+                return
+            
+            stmt = (
+                update(EventInstanceDB)
+                .where(EventInstanceDB.id == instance_id)
+                .values(**all_updates)
+            )
+            await self.session.execute(stmt)
+            await self.session.commit()
+    
     async def update(self, instance_id: str, fields: Dict[str, Any]) -> None:
-        # 新增方法：更新指定字段
-        stmt = (
-            update(EventInstanceDB)
-            .where(EventInstanceDB.id == instance_id)
-            .values(**fields)
-        )
-        await self.session.execute(stmt)
-        await self.session.commit()
+        # 新增方法：更新指定字段（兼容旧版）
+        await self.update_fields(instance_id, fields)
 
     async def increment_completed_children(self, parent_id: str) -> int:
         stmt = (
@@ -114,26 +118,97 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         await self.session.execute(stmt)
         await self.session.commit()
 
+    async def upsert_by_task_id(self, task_id: str, trace_id: str, **fields) -> str:
+        """
+        根据 task_id 执行 upsert 操作
+        如果存在则更新，不存在则创建（挂载到根节点下）
+        返回操作后的实例 ID
+        """
+        import uuid
+        from datetime import datetime, timezone
+        
+        # 1. 尝试更新
+        stmt = (
+            update(EventInstanceDB)
+            .where(EventInstanceDB.task_id == task_id)
+            .values(**fields)
+        )
+        result = await self.session.execute(stmt)
+        
+        if result.rowcount > 0:
+            # 更新成功，获取实例 ID
+            get_stmt = select(EventInstanceDB.id).where(EventInstanceDB.task_id == task_id)
+            get_result = await self.session.execute(get_stmt)
+            return get_result.scalar_one()
+        
+        # 2. 更新失败，说明需要创建新实例
+        # 查找根节点
+        root_stmt = (
+            select(EventInstanceDB)
+            .where(
+                EventInstanceDB.trace_id == trace_id,
+                EventInstanceDB.parent_id == None
+            )
+            .limit(1)
+        )
+        root_res = await self.session.execute(root_stmt)
+        root_node = root_res.scalar_one_or_none()
+        
+        if not root_node:
+            raise ValueError(f"Trace {trace_id} has no root node")
+        
+        # 3. 创建新实例
+        new_id = str(uuid.uuid4())
+        new_instance = EventInstanceDB(
+            id=new_id,
+            task_id=task_id,
+            trace_id=trace_id,
+            parent_id=root_node.id,
+            node_path=f"{root_node.node_path}{root_node.id}/",
+            depth=root_node.depth + 1,
+            
+            # 从fields中获取值，或者使用默认值
+            actor_type=fields.get("actor_type", "AGENT"),
+            def_id=fields.get("def_id", "dynamic_task"),
+            status=fields.get("status", EventInstanceStatus.PENDING.value),
+            user_id=root_node.user_id,
+            
+            # 设置时间字段
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            started_at=fields.get("started_at"),
+            finished_at=fields.get("finished_at"),
+            
+            # 其他可选字段
+            worker_id=fields.get("worker_id"),
+            input_params=fields.get("input_params"),
+            runtime_state_snapshot=fields.get("runtime_state_snapshot"),
+            progress=fields.get("progress", 0),
+            error_detail=fields.get("error_detail")
+        )
+        
+        self.session.add(new_instance)
+        return new_id
+
     def _to_domain(self, db: EventInstanceDB) -> EventInstance:
-        from ....common.enums import ActorType, ScheduleType
+        from common.enums import ActorType
         return EventInstance(
             id=db.id,
             trace_id=db.trace_id,
             request_id=db.request_id,
             parent_id=db.parent_id,
-            job_id=db.job_id,
             def_id=db.def_id,
             user_id=db.user_id,
+            worker_id=db.worker_id,
+            name=db.name,
             node_path=db.node_path,
             depth=db.depth,
             actor_type=ActorType(db.actor_type),
+
             role=db.role,
             layer=db.layer,
             is_leaf_agent=db.is_leaf_agent,
-            schedule_type=ScheduleType(db.schedule_type),
-            round_index=db.round_index,
-            cron_trigger_time=db.cron_trigger_time,
-            status=EventInstanceStatus(db.status),
+            status=db.status,
             progress=db.progress,
             control_signal=db.control_signal,
             depends_on=db.depends_on if db.depends_on else None,
@@ -142,7 +217,10 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
             input_params=db.input_params if db.input_params else {},
             input_ref=db.input_ref,
             output_ref=db.output_ref,
-            error_msg=db.error_msg,
+            error_detail=db.error_detail,
+            runtime_state_snapshot=db.runtime_state_snapshot,
+            result_summary=db.result_summary,
+            interactive_signal=db.interactive_signal,
             started_at=db.started_at,
             finished_at=db.finished_at,
             created_at=db.created_at,
@@ -155,17 +233,15 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
             trace_id=instance.trace_id,
             request_id=instance.request_id,
             parent_id=instance.parent_id,
-            job_id=instance.job_id,
             def_id=instance.def_id,
             user_id=instance.user_id,
+            worker_id=instance.worker_id,
+            name=instance.name,
             actor_type=instance.actor_type,
             role=instance.role,
             layer=instance.layer,
             is_leaf_agent=instance.is_leaf_agent,
-            schedule_type=instance.schedule_type,
-            round_index=instance.round_index,
-            cron_trigger_time=instance.cron_trigger_time,
-            status=instance.status.value,
+            status=instance.status,
             node_path=instance.node_path,
             depth=instance.depth,
             progress=instance.progress,
@@ -176,7 +252,10 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
             input_params=instance.input_params,
             input_ref=instance.input_ref,
             output_ref=instance.output_ref,
-            error_msg=instance.error_msg,
+            error_detail=instance.error_detail,
+            runtime_state_snapshot=instance.runtime_state_snapshot,
+            result_summary=instance.result_summary,
+            interactive_signal=instance.interactive_signal,
             started_at=instance.started_at,
             finished_at=instance.finished_at,
             created_at=instance.created_at,
@@ -184,9 +263,67 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         )
         self.session.add(db_instance)
         await self.session.commit()
+
+    async def bulk_create(self, instances: List[EventInstance]) -> None:
+        """
+        批量创建事件实例
+        """
+        if not instances:
+            return
+        
+        # 转换为数据库模型列表
+        db_instances = []
+        for instance in instances:
+            db_instance = EventInstanceDB(
+                id=instance.id,
+                trace_id=instance.trace_id,
+                request_id=instance.request_id,
+                parent_id=instance.parent_id,
+                def_id=instance.def_id,
+                user_id=instance.user_id,
+                worker_id=instance.worker_id,
+                name=instance.name,
+                actor_type=instance.actor_type,
+                role=instance.role,
+                layer=instance.layer,
+                is_leaf_agent=instance.is_leaf_agent,
+                status=instance.status,
+                node_path=instance.node_path,
+                depth=instance.depth,
+                progress=instance.progress,
+                control_signal=instance.control_signal,
+                depends_on=instance.depends_on,
+                split_count=instance.split_count,
+                completed_children=instance.completed_children,
+                input_params=instance.input_params,
+                input_ref=instance.input_ref,
+                output_ref=instance.output_ref,
+                error_detail=instance.error_detail,
+                runtime_state_snapshot=instance.runtime_state_snapshot,
+                result_summary=instance.result_summary,
+                interactive_signal=instance.interactive_signal,
+                started_at=instance.started_at,
+                finished_at=instance.finished_at,
+                created_at=instance.created_at,
+                updated_at=instance.updated_at
+            )
+            db_instances.append(db_instance)
+        
+        # 批量添加到会话
+        self.session.add_all(db_instances)
+        await self.session.commit()
     
     async def get(self, instance_id: str) -> Optional[EventInstance]: 
         stmt = select(EventInstanceDB).where(EventInstanceDB.id == instance_id)
+        result = await self.session.execute(stmt)
+        row = result.scalar_one_or_none()
+        return self._to_domain(row) if row else None
+    
+    async def get_by_task_id(self, task_id: str) -> Optional[EventInstance]:
+        """
+        根据 task_id 获取事件实例
+        """
+        stmt = select(EventInstanceDB).where(EventInstanceDB.task_id == task_id).limit(1)
         result = await self.session.execute(stmt)
         row = result.scalar_one_or_none()
         return self._to_domain(row) if row else None
@@ -228,7 +365,7 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
             )
             .values(
                 status=EventInstanceStatus.RUNNING,
-                job_id=worker_id
+
             )
             .returning(EventInstanceDB.id)
         )
@@ -256,6 +393,59 @@ class PostgreSQLEventInstanceRepository(EventInstanceRepository):
         )
         await self.session.execute(stmt)
         await self.session.commit()
+    
+    async def find_traces_by_user_id(self, user_id: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, limit: int = 100, offset: int = 0) -> List[dict]:
+        """
+        根据user_id查询所有trace_id及其状态
+        
+        Args:
+            user_id: 用户ID
+            start_time: 开始时间
+            end_time: 结束时间
+            limit: 每页数量
+            offset: 偏移量
+            
+        Returns:
+            List[dict]: trace_id列表及其状态信息
+        """
+        # 使用子查询获取每个trace的最新状态
+        # 再次查询，获取每个trace的唯一记录和状态统计
+        stmt = (
+            select(
+                EventInstanceDB.trace_id,
+                func.max(EventInstanceDB.created_at).label('created_at'),
+                func.min(EventInstanceDB.status).label('first_status'),
+                func.max(EventInstanceDB.status).label('latest_status')
+            )
+            .where(EventInstanceDB.user_id == user_id)
+        )
+        
+        # 添加时间范围过滤
+        if start_time:
+            stmt = stmt.where(EventInstanceDB.created_at >= start_time)
+        if end_time:
+            stmt = stmt.where(EventInstanceDB.created_at <= end_time)
+        
+        # 按trace_id分组
+        stmt = stmt.group_by(EventInstanceDB.trace_id)
+        
+        # 排序并分页
+        stmt = stmt.order_by(func.max(EventInstanceDB.created_at).desc()).limit(limit).offset(offset)
+        
+        # 执行查询
+        result = await self.session.execute(stmt)
+        rows = result.all()
+        
+        # 转换结果格式
+        traces = []
+        for row in rows:
+            traces.append({
+                "trace_id": row.trace_id,
+                "created_at": row.created_at,
+                "status": row.latest_status
+            })
+        
+        return traces
 
 
 class PostgreSQLEventDefinitionRepository(EventDefinitionRepository):
@@ -263,25 +453,13 @@ class PostgreSQLEventDefinitionRepository(EventDefinitionRepository):
         self.session = session
     
     def _to_domain(self, db: EventDefinitionDB) -> EventDefinition:
-        from ....common.enums import ActorType, ScheduleType, NodeType
         return EventDefinition(
             id=db.id,
             name=db.name,
             user_id=db.user_id,
-            node_type=NodeType(db.node_type),
-            actor_type=ActorType(db.actor_type),
+            node_type=db.node_type,
+            actor_type=db.actor_type,
             role=db.role,
-            code_ref=db.code_ref,
-            entrypoint=db.entrypoint,
-            schedule_type=ScheduleType(db.schedule_type),
-            cron_expr=db.cron_expr,
-            loop_config=db.loop_config,
-            resource_profile=db.resource_profile,
-            strategy_tags=db.strategy_tags or [],
-            default_params=db.default_params or {},
-            default_timeout=db.default_timeout,
-            retry_policy=db.retry_policy or {"max_retries": 3, "backoff": "exponential"},
-            ui_config=db.ui_config or {"icon": "robot", "color": "#FF0000"},
             is_active=db.is_active,
             created_at=db.created_at
         )
@@ -301,8 +479,7 @@ class PostgreSQLEventDefinitionRepository(EventDefinitionRepository):
         rows = result.scalars().all()
         return [self._to_domain(row) for row in rows]
     
-    async def get_by_job_id(self, job_id: str) -> EventDefinition:
-        stmt = select(EventDefinitionDB).where(EventDefinitionDB.id == job_id)
+
         result = await self.session.execute(stmt)
         row = result.scalar_one_or_none()
         return self._to_domain(row) if row else None
@@ -321,20 +498,9 @@ class PostgreSQLEventDefinitionRepository(EventDefinitionRepository):
             id=definition.id,
             name=definition.name,
             user_id=definition.user_id,
-            node_type=definition.node_type.value,
-            actor_type=definition.actor_type.value,
+            node_type=definition.node_type,
+            actor_type=definition.actor_type,
             role=definition.role,
-            code_ref=definition.code_ref,
-            entrypoint=definition.entrypoint,
-            schedule_type=definition.schedule_type.value,
-            cron_expr=definition.cron_expr,
-            loop_config=definition.loop_config,
-            resource_profile=definition.resource_profile,
-            strategy_tags=definition.strategy_tags,
-            default_params=definition.default_params,
-            default_timeout=definition.default_timeout,
-            retry_policy=definition.retry_policy,
-            ui_config=definition.ui_config,
             is_active=definition.is_active,
             created_at=definition.created_at
         )

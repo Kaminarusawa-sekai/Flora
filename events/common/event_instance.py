@@ -1,31 +1,29 @@
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
-from .enums import ActorType, ScheduleType, EventInstanceStatus
+from .enums import ActorType,EventInstanceStatus
 
 
 class EventInstance(BaseModel):
     id: str
+    task_id: str
     trace_id: str
     request_id: Optional[str] = None  # 关联请求ID，用于支持 request_id -> trace_id 的一对多关系
     parent_id: Optional[str] = None
-    job_id: str
-    def_id: str  # 关联任务定义
+    def_id: Optional[str] = None  # 关联任务定义，变为可选
     user_id: str
+    worker_id: Optional[str] = None  # 新增：标识当前处理该实例的worker
+    name: Optional[str] = None  # 新增：事件实例名称
 
     # 【关键优化】物化路径，格式如 "/root_id/parent_id/"
     # 作用：一个 SQL 就能查出整棵子树，不用递归查询
     node_path: str
     depth: int = 0
 
-    actor_type: ActorType
+    actor_type: ActorType # 改为字符串类型
     role: Optional[str] = None
     layer: int = 0
     is_leaf_agent: bool = False
-
-    schedule_type: ScheduleType = ScheduleType.ONCE
-    round_index: Optional[int] = None
-    cron_trigger_time: Optional[datetime] = None
 
     status: EventInstanceStatus
     

@@ -62,8 +62,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { VueFlow, addEdge } from '@vue-flow/core';
+import { ref, watch, nextTick } from 'vue';
+import { VueFlow, addEdge, useVueFlow } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import '@vue-flow/core/dist/style.css';
 import GlassCard from '@/components/ui/GlassCard.vue';
@@ -79,6 +79,9 @@ const props = defineProps<{
 
 const dagStore = useDagStore();
 
+// 获取 VueFlow 实例，用于控制视图
+const { fitView, updateNodeInternals } = useVueFlow();
+
 // 从 session info 获取 request_id，然后获取 trace_id，最后加载 DAG 数据
 const loadDagForSession = async (sessionId: string) => {
   try {
@@ -86,8 +89,27 @@ const loadDagForSession = async (sessionId: string) => {
       console.error('Session ID is empty, using default DAG structure');
       // Session ID 为空，使用默认 DAG 结构
       const defaultDag = dagStore.getDefaultDag();
+      
+      // 正常加载数据
       dagStore.nodes = defaultDag.nodes;
       dagStore.edges = defaultDag.edges;
+      
+      // 等待 Vue 完成 DOM 更新
+      await nextTick();
+      
+      // 强制 Vue Flow 重新测量所有节点的句柄位置
+      if (dagStore.nodes.length > 0) {
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      }
+      
+      // 使用 requestAnimationFrame 确保在下一帧调整视图
+      window.requestAnimationFrame(() => {
+        fitView({ padding: 0.2, duration: 800 });
+        
+        // 双重保险：动画帧里再触发一次连线更新
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      });
+      
       dagStore.selectedNodeId = null;
       return;
     }
@@ -102,8 +124,27 @@ const loadDagForSession = async (sessionId: string) => {
       console.error('Request ID not found in session info, using initial DAG structure');
       // Request ID 不存在，使用初始 DAG 结构
       const initialDag = dagStore.getInitialDag();
+      
+      // 正常加载数据
       dagStore.nodes = initialDag.nodes;
       dagStore.edges = initialDag.edges;
+      
+      // 等待 Vue 完成 DOM 更新
+      await nextTick();
+      
+      // 强制 Vue Flow 重新测量所有节点的句柄位置
+      if (dagStore.nodes.length > 0) {
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      }
+      
+      // 使用 requestAnimationFrame 确保在下一帧调整视图
+      window.requestAnimationFrame(() => {
+        fitView({ padding: 0.2, duration: 800 });
+        
+        // 双重保险：动画帧里再触发一次连线更新
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      });
+      
       dagStore.selectedNodeId = null;
       return;
     }
@@ -112,14 +153,33 @@ const loadDagForSession = async (sessionId: string) => {
     
     // 2. 通过 request_id 获取 trace_id
     const traceInfo = await getLatestTraceByRequest(requestId);
-    const traceId = traceInfo.latest_trace_id;
+    const traceId = traceInfo.trace_id;
     
     if (!traceId) {
       console.error('Trace ID not found for request:', requestId, 'using initial DAG structure');
       // Trace ID 不存在，使用初始 DAG 结构
       const initialDag = dagStore.getInitialDag();
+      
+      // 正常加载数据
       dagStore.nodes = initialDag.nodes;
       dagStore.edges = initialDag.edges;
+      
+      // 等待 Vue 完成 DOM 更新
+      await nextTick();
+      
+      // 强制 Vue Flow 重新测量所有节点的句柄位置
+      if (dagStore.nodes.length > 0) {
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      }
+      
+      // 使用 requestAnimationFrame 确保在下一帧调整视图
+      window.requestAnimationFrame(() => {
+        fitView({ padding: 0.2, duration: 800 });
+        
+        // 双重保险：动画帧里再触发一次连线更新
+        updateNodeInternals(dagStore.nodes.map(node => node.id));
+      });
+      
       dagStore.selectedNodeId = null;
       return;
     }
@@ -128,12 +188,47 @@ const loadDagForSession = async (sessionId: string) => {
     
     // 3. 使用 trace_id 加载 DAG 数据
     await dagStore.loadDagByTraceId(traceId);
+    
+    // 等待 Vue 完成 DOM 更新
+    await nextTick();
+    
+    // 强制 Vue Flow 重新测量所有节点的句柄位置
+    if (dagStore.nodes.length > 0) {
+      updateNodeInternals(dagStore.nodes.map(node => node.id));
+    }
+    
+    // 使用 requestAnimationFrame 确保在下一帧调整视图
+    window.requestAnimationFrame(() => {
+      fitView({ padding: 0.2, duration: 800 });
+      
+      // 双重保险：动画帧里再触发一次连线更新
+      updateNodeInternals(dagStore.nodes.map(node => node.id));
+    });
   } catch (error) {
     console.error('Failed to load DAG for session:', error, 'using default DAG structure');
     // 发生错误，使用默认 DAG 结构
     const defaultDag = dagStore.getDefaultDag();
+    
+    // 正常加载数据
     dagStore.nodes = defaultDag.nodes;
     dagStore.edges = defaultDag.edges;
+    
+    // 等待 Vue 完成 DOM 更新
+    await nextTick();
+    
+    // 强制 Vue Flow 重新测量所有节点的句柄位置
+    if (dagStore.nodes.length > 0) {
+      updateNodeInternals(dagStore.nodes.map(node => node.id));
+    }
+    
+    // 使用 requestAnimationFrame 确保在下一帧调整视图
+    window.requestAnimationFrame(() => {
+      fitView({ padding: 0.2, duration: 800 });
+      
+      // 双重保险：动画帧里再触发一次连线更新
+      updateNodeInternals(dagStore.nodes.map(node => node.id));
+    });
+    
     dagStore.selectedNodeId = null;
   }
 };

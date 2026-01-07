@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Body
 from typing import Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 # 导入依赖注入
 from ..deps import get_lifecycle_service, get_signal_service, get_db_session 
@@ -27,21 +30,23 @@ async def start_trace(
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    启动一个新的事件跟踪
+    启动一个新的 Trace。
+    需要外部生成 trace_id 和 request_id 传入。
     """
     try:
         trace_id = await lifecycle_svc.start_trace(
             session=session,
-            root_def_id=request.root_def_id,
             input_params=request.input_params,
-            request_id=request.request_id,
-            trace_id=request.trace_id,
-            user_id=request.user_id  # 透传用户ID
+            request_id=request.request_id,  # 传入 request_id
+            trace_id=request.trace_id,      # 传入 trace_id
+
+            user_id=request.user_id
         )
-        return {"trace_id": trace_id}
-    except ValueError as e:
-        # 捕获 Service 层抛出的业务错误，如 Definition not found
-        raise HTTPException(status_code=400, detail=str(e))
+        return {"trace_id": trace_id, "status": "created"}
+    except Exception as e:
+        # 捕获可能的数据库唯一键冲突等
+        logger.error(f"Failed to start trace: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to start trace: {str(e)}")
 
 
 # ------------------------------------------------------------------
@@ -52,69 +57,69 @@ async def report_execution_event(
     request: ExecutionEventRequest,
     lifecycle_svc: LifecycleService = Depends(get_lifecycle_service),
     session: AsyncSession = Depends(get_db_session),
+    signal_svc: SignalService = Depends(get_signal_service), # 引入信号服务用于返回指令
 ):
     """
-    核心接口：接收执行系统的所有状态变更 (Args)
+    Worker 汇报接口。
+    Response 会携带控制指令 (Piggyback Control)，减少 Worker 的轮询请求。
     """
     try:
-        # 将 Pydantic 对象转为 dict 传给 Service
+        # 1. 处理数据上报 (Write)
+        # model_dump() 会将 Pydantic 对象转为纯 Dict，完美适配 Service 签名
         await lifecycle_svc.sync_execution_state(
             session=session,
             execution_args=request.model_dump()
         )
-        return {"received": True}
+        
+        # 2. 检查是否有控制信号 (Read) - 顺便捎带回去
+        # 优先查 Trace 级信号，再查 Node 级信号 (如果你的业务支持单节点控制)
+        command = "CONTINUE"
+        
+        # 假设 signal_svc 有个快速查缓存的方法 check_signal
+        # 如果 trace 被暂停或取消，这里立刻返回
+        signal = await signal_svc.check_signal(request.trace_id, session=session)
+        if signal:
+            command = signal # 例如 "CANCEL" 或 "PAUSE"
+
+        return {
+            "received": True,
+            "command": command  # Worker 收到这个字段后决定是否抛出异常停止运行
+        }
+        
     except Exception as e:
-        # 注意：这里可能需要做降级处理，不能因为汇报失败影响主流程
-        # 但如果是开发环境，建议抛出异常方便调试
-        raise HTTPException(status_code=500, detail=str(e))
+        # 这里记录 Error Log
+        logger.error(f"Event sync failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Event sync failed: {str(e)}")
 
 
-@router.post("/{trace_id}/cancel")
-async def cancel_trace(
+@router.post("/{trace_id}/control/trace")
+async def control_whole_trace(
     trace_id: str,
+    request: ControlNodeRequest,
     signal_svc: SignalService = Depends(get_signal_service),
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    取消整个跟踪链路
+    控制整个链路 (Cancel/Pause/Resume Trace)
     """
     try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.CANCELLED)
-        return {"status": "cancelled", "trace_id": trace_id}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.post("/{trace_id}/pause")
-async def pause_trace(
-    trace_id: str,
-    signal_svc: SignalService = Depends(get_signal_service),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """
-    暂停整个跟踪链路
-    """
-    try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.PAUSED)
-        return {"status": "paused", "trace_id": trace_id}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.post("/{trace_id}/resume")
-async def resume_trace(
-    trace_id: str,
-    signal_svc: SignalService = Depends(get_signal_service),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """
-    恢复整个跟踪链路
-    """
-    try:
-        await signal_svc.send_signal(session, trace_id=trace_id, signal=SignalStatus.NORMAL)
-        return {"status": "resumed", "trace_id": trace_id}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        # 将枚举值转换为 SignalStatus
+        from common.signal import SignalStatus
+        signal_map = {
+            "CANCEL": SignalStatus.CANCELLED,
+            "PAUSE": SignalStatus.PAUSED,
+            "RESUME": SignalStatus.NORMAL
+        }
+        
+        await signal_svc.send_signal(
+            session,
+            trace_id=trace_id,
+            signal=signal_map[request.signal.value] # 取 Enum 的值 (String)
+        )
+        return {"status": "success", "signal": request.signal}
+    except Exception as e:
+        logger.error(f"Failed to control trace {trace_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{trace_id}/status")
@@ -127,80 +132,72 @@ async def get_trace_signal(
     查询整个跟踪链路的当前信号状态
     """
     try:
-        signal = await signal_svc.check_signal(trace_id, session=session)
+        current_signal = await signal_svc.check_signal(trace_id, session=session)
         return {
             "trace_id": trace_id,
-            "signal": signal
+            "global_signal": current_signal or "NORMAL"
         }
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.error(f"Failed to get trace signal for {trace_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/latest-by-request/{request_id}")
-async def get_latest_trace_by_request(
+async def get_latest_trace(
     request_id: str,
     lifecycle_svc: LifecycleService = Depends(get_lifecycle_service),
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    根据request_id获取最新的trace_id
-    支持 request_id (1) -> trace_id (N) 的关系查询
+    根据业务 request_id 查找最新的 trace_id
     """
-    try:
-        trace_id = await lifecycle_svc.get_latest_trace_by_request(
-            session=session,
-            request_id=request_id
-        )
-        if trace_id:
-            return {
-                "request_id": request_id,
-                "latest_trace_id": trace_id
-            }
-        else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No trace found for request_id: {request_id}"
-            )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    trace_id = await lifecycle_svc.get_latest_trace_by_request(session, request_id)
+    if not trace_id:
+        raise HTTPException(status_code=404, detail="Trace not found for this request_id")
+    
+    return {"request_id": request_id, "trace_id": trace_id}
 
 
-@router.post("/{trace_id}/split")
+@router.post("/{trace_id}/split", status_code=status.HTTP_200_OK)
 async def split_task(
-    trace_id: str,
     request: SplitTaskRequest,
+    trace_id: str = Path(..., description="链路ID"),
     lifecycle_svc: LifecycleService = Depends(get_lifecycle_service),
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    动态拓扑扩展：在指定父节点下裂变子任务
+    Agent 决策后调用此接口，在当前 Parent 节点下挂载子任务。
     """
     try:
-        # 将 Pydantic model 转为 list[dict] 传给 Service
-        # 注意：这里传入了 trace_id 以便 Service 做一致性校验
+        # 转换 subtasks 数据结构
         subtasks_data = [t.model_dump() for t in request.subtasks_meta]
         
+        # 调用 Service
         child_ids = await lifecycle_svc.expand_topology(
-            session,
-            trace_id=trace_id,  # 传入 URL 中的 trace_id
+            session=session,
             parent_id=request.parent_id,
             subtasks_meta=subtasks_data,
-            context_snapshot=request.reasoning_snapshot  # 新增：透传 Agent 的决策快照
+            trace_id=trace_id,  # 传入 trace_id 用于校验 parent_id 是否属于该 trace
+            context_snapshot=request.reasoning_snapshot # 传入决策快照
         )
         
         return {
             "trace_id": trace_id,
             "parent_id": request.parent_id,
-            "child_ids": child_ids,
-            "status": "split_completed"
+            "new_child_ids": child_ids,
+            "count": len(child_ids)
         }
     except ValueError as e:
-        # 比如 Parent not found 或 trace_id 不匹配
+        # 捕获 Service 层抛出的逻辑校验错误 (如 Parent not found, Trace mismatch)
+        logger.error(f"Failed to split task for trace {trace_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Internal error when splitting task for trace {trace_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{trace_id}/nodes/{instance_id}/control")
-async def control_node(
+@router.post("/{trace_id}/control/nodes/{instance_id}")
+async def control_specific_node(
     trace_id: str,
     instance_id: str,
     request: ControlNodeRequest,
@@ -208,29 +205,30 @@ async def control_node(
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    级联控制：向指定节点及其子孙发送信号 (CANCEL/PAUSE)
+    控制特定节点及其子树 (Cascade Control)
     """
     try:
         # 将请求中的字符串信号转换为枚举值
+        from common.signal import SignalStatus
         signal_map = {
             "CANCEL": SignalStatus.CANCELLED,
             "PAUSE": SignalStatus.PAUSED,
             "RESUME": SignalStatus.NORMAL
         }
-        signal = signal_map[request.signal]
+        signal = signal_map[request.signal.value]
         
         # 同时传入 trace_id 和 instance_id 确保安全
         await signal_svc.send_signal(
             session,
             trace_id=trace_id,
-            instance_id=instance_id,
+            instance_id=instance_id, # 指定节点
             signal=signal
         )
         return {
-            "trace_id": trace_id,
-            "instance_id": instance_id,
+            "status": "success",
             "signal": request.signal,
-            "status": "control_sent"
+            "scope": "subtree"
         }
-    except ValueError as e:
+    except Exception as e:
+        logger.error(f"Failed to control node {instance_id} in trace {trace_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))

@@ -4,11 +4,23 @@ import json
 import os
 import sys
 import asyncio
+import logging
+import traceback
 from typing import Dict, Any, Optional, DefaultDict
 from collections import defaultdict
-from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks, status
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks, status, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -18,6 +30,9 @@ from common import UserInputDTO, SystemResponseDTO
 from capabilities.capability_manager import CapabilityManager
 from capabilities.capbility_config import CapabilityConfig
 
+from capabilities.registry import capability_registry
+from capabilities.memory.interface import IMemoryCapability
+from external.rag import DifyDatasetClient
 # 创建FastAPI应用
 app = FastAPI(title="AI任务管理API")
 
@@ -47,6 +62,11 @@ class ResumeTaskResponse(BaseModel):
     message: str = Field(..., description="响应消息")
     task_id: str = Field(..., description="任务ID")
 
+
+class CoreMemoryRequest(BaseModel):
+    """核心记忆设置请求模型"""
+    key: str = Field(..., description="核心记忆键")
+    value: str = Field(..., description="核心记忆值")
 
 def init_orchestrator():
     """初始化对话编排器"""
@@ -91,6 +111,41 @@ def trigger_memory_extraction(session_id: str, user_id: str):
     print(f"[后台任务] 会话 {session_id} 的记忆沉淀完成")
 
 
+def _get_dify_dataset_client() -> DifyDatasetClient:
+    """从配置中获取Dify数据集客户端"""
+    # 从能力注册表获取memory能力，它包含了RAG配置
+    from capabilities.registry import capability_registry
+    from capabilities.memory.interface import IMemoryCapability
+    
+    memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+    
+    # 获取RAG配置
+    rag_config = memory_cap.rag_config if hasattr(memory_cap, 'rag_config') else {}
+    
+    api_key = rag_config.get("api_key")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="DIFY_API_KEY 未配置")
+    
+    base_url = rag_config.get("base_url", "https://api.dify.ai/v1")
+    return DifyDatasetClient(api_key=api_key, base_url=base_url)
+
+
+def _get_dataset_id(dataset_id: Optional[str]) -> str:
+    """从配置中获取数据集ID"""
+    # 从能力注册表获取memory能力，它包含了RAG配置
+    from capabilities.registry import capability_registry
+    from capabilities.memory.interface import IMemoryCapability
+    
+    memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+    
+    # 获取RAG配置
+    rag_config = memory_cap.rag_config if hasattr(memory_cap, 'rag_config') else {}
+    
+    resolved = dataset_id or rag_config.get("dataset_id")
+    if not resolved:
+        raise HTTPException(status_code=400, detail="dataset_id 未提供且未配置")
+    return resolved
+
 # 事件处理 & 推送函数
 async def process_and_push_events(user_input: UserInputDTO, session_id: str, user_id: str, background_tasks: BackgroundTasks):
     """处理用户输入，并将每个事件推入会话队列"""
@@ -111,6 +166,8 @@ async def process_and_push_events(user_input: UserInputDTO, session_id: str, use
         # 触发记忆沉淀
         background_tasks.add_task(trigger_memory_extraction, session_id, user_id)
     except Exception as e:
+        # 记录完整错误信息
+        logger.exception(f"处理用户输入时发生错误，session_id={session_id}, user_id={user_id}")
         # 推送错误事件
         error_data = {"error": str(e)}
         await SESSION_QUEUES[session_id].put({"event": "error", "data": json.dumps(error_data)})
@@ -166,6 +223,7 @@ async def stream_conversation_events(session_id: str):
             raise
         except Exception as e:
             # 其他错误
+            logger.exception(f"SSE流处理错误，session_id={session_id}")
             yield f"event: error\n"
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
             raise
@@ -198,9 +256,100 @@ async def resume_task(
             task_id=task_id
         )
     except ValueError as e:
+        logger.exception(f"任务执行能力未找到，task_id={task_id}")
         raise HTTPException(status_code=500, detail=f"任务执行能力未找到: {str(e)}")
     except Exception as e:
+        logger.exception(f"恢复任务失败，task_id={task_id}")
         raise HTTPException(status_code=500, detail=f"恢复任务失败: {str(e)}")
+
+
+
+@app.get("/memory/{user_id}/core", tags=["记忆"])
+async def list_core_memory(user_id: str, limit: int = 50):
+    """获取用户核心记忆列表
+    
+    Args:
+        user_id: 用户唯一标识
+        limit: 返回的记忆数量限制，默认50条
+    
+    Returns:
+        list[dict]: 核心记忆列表，每条记忆包含以下字段：
+            - id (str): 记忆唯一标识符
+            - key (str): 记忆的键名
+            - value (str): 记忆的内容值
+    
+    具体实现位于 mem0_memory.py 的 list_core_memories 方法中，
+    从 mem0 客户端获取核心记忆数据并格式化返回。
+    """
+    try:
+        memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+        return memory_cap.list_core_memories(user_id=user_id, limit=limit)
+    except Exception as e:
+        logger.exception(f"获取核心记忆失败，user_id={user_id}, limit={limit}")
+        raise HTTPException(status_code=500, detail=f"获取核心记忆失败: {str(e)}")
+
+
+@app.post("/memory/{user_id}/core", tags=["记忆"])
+async def set_core_memory(user_id: str, request: CoreMemoryRequest):
+    """设置或更新用户核心记忆"""
+    try:
+        memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+        memory_cap.set_core_memory(user_id=user_id, key=request.key, value=request.value)
+        return {"success": True}
+    except Exception as e:
+        logger.exception(f"设置核心记忆失败，user_id={user_id}, key={request.key}")
+        raise HTTPException(status_code=500, detail=f"设置核心记忆失败: {str(e)}")
+
+
+@app.delete("/memory/{user_id}/core/{key}", tags=["记忆"])
+async def delete_core_memory(user_id: str, key: str):
+    """删除用户核心记忆"""
+    try:
+        memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+        memory_cap.delete_core_memory(user_id=user_id, key=key)
+        return {"success": True}
+    except Exception as e:
+        logger.exception(f"删除核心记忆失败，user_id={user_id}, key={key}")
+        raise HTTPException(status_code=500, detail=f"删除核心记忆失败: {str(e)}")
+
+
+@app.get("/rag/documents", tags=["记忆"])
+async def list_rag_documents(page: int = 1, limit: int = 20, dataset_id: Optional[str] = None, keyword: Optional[str] = None):
+    """列出 Dify 数据集文档（文件库）"""
+    try:
+        client = _get_dify_dataset_client()
+        resolved_dataset_id = _get_dataset_id(dataset_id)
+        return client.list_documents(dataset_id=resolved_dataset_id, page=page, limit=limit, keyword=keyword)
+    except Exception as e:
+        logger.exception(f"列出 Dify 数据集文档失败，page={page}, limit={limit}, dataset_id={dataset_id}, keyword={keyword}")
+        raise HTTPException(status_code=500, detail=f"列出 Dify 数据集文档失败: {str(e)}")
+
+
+@app.post("/rag/documents", tags=["记忆"])
+async def upload_rag_document(
+    file: UploadFile = File(...),
+    dataset_id: Optional[str] = Form(None),
+    indexing_technique: str = Form("high_quality"),
+    process_mode: str = Form("automatic"),
+):
+    """上传文件到 Dify 数据集"""
+    try:
+        client = _get_dify_dataset_client()
+        resolved_dataset_id = _get_dataset_id(dataset_id)
+        return client.upload_document(
+            dataset_id=resolved_dataset_id,
+            file_obj=file.file,
+            filename=file.filename,
+            content_type=file.content_type,
+            indexing_technique=indexing_technique,
+            process_mode=process_mode,
+        )
+    except Exception as e:
+        logger.exception(f"上传文件到 Dify 数据集失败，dataset_id={dataset_id}, filename={file.filename}, indexing_technique={indexing_technique}, process_mode={process_mode}")
+        raise HTTPException(status_code=500, detail=f"上传文件到 Dify 数据集失败: {str(e)}")
+
+
+
 
 
 # 添加设计文档中指定的新接口
@@ -230,6 +379,7 @@ async def get_session_info(session_id: str):
             "request_id": state.current_request_id if hasattr(state, 'current_request_id') else None
         }
     except Exception as e:
+        logger.exception(f"获取会话信息失败，session_id={session_id}")
         raise HTTPException(status_code=500, detail=f"Failed to get session info: {str(e)}")
 
 
@@ -255,6 +405,7 @@ async def get_user_sessions(user_id: str):
         
         return result
     except Exception as e:
+        logger.exception(f"获取用户会话列表失败，user_id={user_id}")
         raise HTTPException(status_code=500, detail=f"Failed to get user sessions: {str(e)}")
 
 
@@ -287,6 +438,7 @@ async def bind_user_to_session(session_id: str, user_id: str):
             "message": "User bound to session successfully" if success else "Failed to bind user to session"
         }
     except Exception as e:
+        logger.exception(f"绑定用户到会话失败，session_id={session_id}, user_id={user_id}")
         raise HTTPException(status_code=500, detail=f"Failed to bind user to session: {str(e)}")
 
 
@@ -300,6 +452,7 @@ async def get_session_history(session_id: str, limit: int = 20, offset: int = 0)
         turns = context_manager.get_turns_by_session(session_id, limit, offset)
         return [turn.model_dump() for turn in turns]
     except Exception as e:
+        logger.exception(f"获取会话历史失败，session_id={session_id}, limit={limit}, offset={offset}")
         raise HTTPException(status_code=500, detail=f"Failed to get session history: {str(e)}")
 
 
@@ -313,6 +466,7 @@ async def get_user_history(user_id: str, limit: int = 20, offset: int = 0):
         turns = context_manager.get_turns_by_user(user_id, limit, offset)
         return [turn.model_dump() for turn in turns]
     except Exception as e:
+        logger.exception(f"获取用户历史失败，user_id={user_id}, limit={limit}, offset={offset}")
         raise HTTPException(status_code=500, detail=f"Failed to get user history: {str(e)}")
 
 
@@ -344,6 +498,7 @@ async def create_conversation(x_user_id: str = Depends(get_current_user)):
             "status": "created"
         }
     except Exception as e:
+        logger.exception(f"创建对话失败，user_id={x_user_id}")
         raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
 
 

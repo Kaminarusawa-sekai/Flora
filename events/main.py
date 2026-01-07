@@ -1,5 +1,6 @@
 import asyncio
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
@@ -52,21 +53,15 @@ async def lifespan(app: FastAPI):
         {
             "id": "DEFAULT_ROOT_AGENT",
             "name": "默认根代理",
-            "node_type": NodeType.AGENT_ACTOR,
-            "actor_type": ActorType.AGENT,
-            "code_ref": "local://default/root_agent",
-            "entrypoint": "main.run",
-            "default_params": {},
+            "node_type": "AGENT_ACTOR",
+            "actor_type": "AGENT",
             "is_active": True
         },
         {
             "id": "DEFAULT_CHILD_AGENT",
             "name": "默认子代理",
-            "node_type": NodeType.AGENT_ACTOR,
-            "actor_type": ActorType.AGENT,
-            "code_ref": "local://default/child_agent",
-            "entrypoint": "main.run",
-            "default_params": {},
+            "node_type": "AGENT_ACTOR",
+            "actor_type": "AGENT",
             "is_active": True
         }
     ]
@@ -81,11 +76,9 @@ async def lifespan(app: FastAPI):
                 event_def = EventDefinition(
                     id=def_data["id"],
                     name=def_data["name"],
+                    user_id="system",
                     node_type=def_data["node_type"],
                     actor_type=def_data["actor_type"],
-                    code_ref=def_data["code_ref"],
-                    entrypoint=def_data["entrypoint"],
-                    default_params=def_data["default_params"],
                     is_active=def_data["is_active"],
                     created_at=datetime.now(timezone.utc)
                 )
@@ -167,7 +160,14 @@ app = FastAPI(title="Command Tower", lifespan=lifespan)
 # 注册 API 路由
 app.include_router(commands_router, prefix="/api/v1")
 app.include_router(queries_router, prefix="/api/v1")
-
+# 添加 CORS 中间件（放在所有路由之前）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 或 ["*"] 用于开发（不推荐生产）
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法（包括 OPTIONS）
+    allow_headers=["*"],  # 允许所有 headers
+)
 
 @app.get("/")
 async def root():

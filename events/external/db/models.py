@@ -1,9 +1,24 @@
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON, text,desc
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Index, JSON, text,desc, Enum
 from sqlalchemy.ext.declarative import declarative_base
 
 from sqlalchemy.sql import func
+import uuid
+from common.enums import ActorType, NodeType, EventInstanceStatus
 
 Base = declarative_base()
+
+
+class EventTraceDB(Base):
+    __tablename__ = "event_traces"
+    
+    trace_id = Column(String(64), primary_key=True)
+    request_id = Column(String(64), index=True)
+    status = Column(String, nullable=False)  # RUNNING / FAILED / SUCCEEDED / CANCELED
+    user_id = Column(String(64), nullable=False)
+    input_params = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=func.now())
+    ended_at = Column(DateTime, nullable=True)
+    meta = Column(JSON, nullable=True)
 
 
 class EventDefinitionDB(Base):
@@ -14,62 +29,45 @@ class EventDefinitionDB(Base):
     user_id = Column(String, nullable=False,server_default=text("''"))
     
     # 核心字段：决定了前端怎么渲染，以及后端怎么处理超时/重试
-    node_type = Column(String, nullable=False)
+    node_type = Column(Enum(NodeType), nullable=False)
     
-    actor_type = Column(String, nullable=False)
+    actor_type = Column(Enum(ActorType), nullable=False)
     role = Column(String, nullable=True)
-    code_ref = Column(String, nullable=False)
-    entrypoint = Column(String, nullable=False)
-    schedule_type = Column(String, nullable=False)
-    cron_expr = Column(String(100), nullable=True)
-    loop_config = Column(JSON, nullable=True)
-    resource_profile = Column(String, default="default")
-    strategy_tags = Column(JSON, nullable=True)
-    default_params = Column(JSON, nullable=True)
-    
-    # 策略配置
-    default_timeout = Column(Integer, default=3600)
-    retry_policy = Column(JSON, default=lambda: {"max_retries": 3, "backoff": "exponential"})
-    
-    # UI 配置：决定在拓扑图上的颜色、图标
-    ui_config = Column(JSON, default=lambda: {"icon": "robot", "color": "#FF0000"})
     
     is_active = Column(Boolean, default=True)
-    last_triggered_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        Index("idx_active_cron", "is_active", "cron_expr", if_not_exists=True),
-    )
 
 
 class EventInstanceDB(Base):
     __tablename__ = "event_instances"
 
-    id = Column(String, primary_key=True)
-    trace_id = Column(String, index=True)
-    request_id = Column(String, index=True, nullable=True)  # 关联请求ID，用于支持 request_id -> trace_id 的一对多关系
+    # id = Column(String, primary_key=True)
+    # 1. 内部主键 (外部不可见，用于物理存储和路径构建)
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # 2. 外部业务ID (外部系统传进来的，如 "node_1")
+    task_id = Column(String(64), nullable=False,server_default=text("'unknown_task'"))
+    
+    trace_id = Column(String(64), nullable=False, index=True)  # 变为必填
+    request_id = Column(String(64), index=True, nullable=True)  # 关联请求ID，用于支持 request_id -> trace_id 的一对多关系
     parent_id = Column(String, index=True)
-    job_id = Column(String)
-    def_id = Column(String, nullable=False)  # 关联任务定义
+    def_id = Column(String, nullable=True)  # 变为可选
     user_id = Column(String, nullable=False,server_default=text("''"))
+    worker_id = Column(String, nullable=True)  # 新增：标识当前处理该实例的worker
+    name = Column(String, nullable=True)  # 新增：事件实例名称
 
     # 【关键优化】物化路径，格式如 "/root_id/parent_id/"
     # 添加索引以支持高效的子树查询
     node_path = Column(String, index=True)
-    depth = Column(Integer)
+    depth = Column(Integer, default=0)
 
-    actor_type = Column(String)
+    actor_type = Column(Enum(ActorType))
     role = Column(String, nullable=True)
-    layer = Column(Integer)
-    is_leaf_agent = Column(Boolean)
+    layer = Column(Integer, default=0)
+    is_leaf_agent = Column(Boolean, default=False)
 
-    schedule_type = Column(String)
-    round_index = Column(Integer, nullable=True)
-    cron_trigger_time = Column(DateTime, nullable=True)
-
-    status = Column(String, index=True)
+    status = Column(Enum(EventInstanceStatus), index=True)
     
     # 进度条 (0-100)
     progress = Column(Integer, default=0)
@@ -78,17 +76,26 @@ class EventInstanceDB(Base):
     # 指令塔写入 "PAUSE", Agent 读取并执行
     control_signal = Column(String, nullable=True)
     
-    depends_on = Column(JSON)
+    depends_on = Column(JSON, nullable=True)
     split_count = Column(Integer, default=0)
     completed_children = Column(Integer, default=0)
 
-    input_params = Column(JSON)
+    input_params = Column(JSON, default=dict)
     
     # 上下文数据引用 (不直接存大字段，存 OSS/S3 key 或 redis key)
     input_ref = Column(String, nullable=True)
     output_ref = Column(String, nullable=True)
     
-    error_msg = Column(Text, nullable=True)
+    error_detail = Column(JSON, nullable=True)  # 错误详情，支持存储更丰富的错误信息
+    
+    # 运行时快照，用于存储执行系统上报的最新关键上下文
+    runtime_state_snapshot = Column(JSON, nullable=True)
+    
+    # 结果摘要，用于存储简短的返回值
+    result_summary = Column(String, nullable=True)
+    
+    # 交互信号，Agent -> 指令塔，比如 "NEED_HUMAN_CONFIRM"
+    interactive_signal = Column(String, nullable=True)
 
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)

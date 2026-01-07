@@ -56,6 +56,7 @@ class ScheduleDispatcher:
                 # 推送到外部系统
                 success = await push_status_to_external(
                     task_id=task_id,
+                    trace_id=task.trace_id,
                     status="READY_FOR_EXECUTION",
                     scheduled_time=task.scheduled_time,
                     metadata={

@@ -7,11 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入正确的模块
 from common.event_instance import EventInstance
-from common.event_log import EventLog
-from common.enums import EventInstanceStatus
+from common.enums import EventInstanceStatus,ActorType
 from external.cache.base import CacheClient
 from external.db.session import dialect
-from external.db.impl import create_event_definition_repo, create_event_instance_repo, create_event_log_repo
+from external.db.impl import create_event_instance_repo
 from external.events.bus import EventBus
 
 ##TODO:这里有双写一致性问题，后期再解决
@@ -29,21 +28,21 @@ class LifecycleService:
         self.CACHE_PREFIX = "ev:inst:"
         self.CACHE_TTL = 3600 * 24  # 缓存 24 小时，保证活跃任务都在内存
 
-    async def _save_payload(self, payload: dict) -> str:
-        """
-        保存大字段到外部存储（如 OSS/S3 或 Redis）
-        目前简化实现，直接返回一个模拟的 key
-        """
-        # 实际实现中，这里应该将 payload 保存到外部存储
-        # 并返回对应的引用 key
-        return f"payload-{str(uuid.uuid4())[:8]}"
+
 
     # ==========================
     #  核心：缓存读写封装
     # ==========================
 
-    def _cache_key(self, instance_id: str) -> str:
-        return f"{self.CACHE_PREFIX}{instance_id}"
+    def _cache_key(self, task_id: str) -> str:
+        """
+        【修正 1】Key 的生成必须统一。
+        现在的约定是：所有的缓存查找和 DB 查找都优先基于 task_id (业务ID)，
+        而不是内部的 UUID。确保 task_id 全局唯一或在 Trace 内唯一。
+        """
+        if not task_id:
+            raise ValueError("task_id cannot be None for cache key")
+        return f"{self.CACHE_PREFIX}{task_id}"
 
     def _serialize(self, instance: EventInstance) -> dict:
 
@@ -58,12 +57,13 @@ class LifecycleService:
             # 如果某些字段不需要序列化（比如 updated_at 不用于缓存），可加 exclude={"updated_at"}
         )
 
-    async def _get_instance_with_cache(self, session: AsyncSession, instance_id: str) -> Optional[dict]:
+    async def _get_instance_with_cache(self, session: AsyncSession, task_id: str) -> Optional[dict]:
         """
         【读优先】：Redis -> DB -> Redis
         返回的是 Dict（如果来自 Redis）或 Object 转成的 Dict
+        【修正 2】使用仓库层的 get_by_task_id 方法查询 DB
         """
-        key = self._cache_key(instance_id)
+        key = self._cache_key(task_id)
 
         # 1. 尝试从 Redis 读取
         cached_data = await self.cache.get(key)
@@ -72,9 +72,9 @@ class LifecycleService:
             # 如果 cache 客户端自动处理了 json，这里直接返回
             return json.loads(cached_data) if isinstance(cached_data, str) else cached_data
 
-        # 2. Redis Miss，回源查 DB
+        # 2. Redis Miss，回源查 DB (使用 task_id 查询)
         inst_repo = create_event_instance_repo(session, dialect)
-        instance = await inst_repo.get(instance_id)
+        instance = await inst_repo.get_by_task_id(task_id)
         
         if not instance:
             return None
@@ -86,14 +86,16 @@ class LifecycleService:
 
         return data_dict
 
-    async def _update_instance_cache(self, instance_id: str, update_fields: dict, original_data: dict = None):
+    async def _update_instance_cache(self, task_id: str, update_fields: dict, original_data: dict = None):
         """
         【写辅助】：更新 Redis 中的状态
+        【修正 3】如果缓存完全丢失，这里不应该初始化为空字典，
+        最好是触发一次 DB 重载，或者只记录 update_fields（风险是丢失旧字段）
+        这里的策略是：如果没有 original，且缓存也没了，暂时仅存储更新字段，
+        但实际上 _get_instance_with_cache 应该在 update 前被调用过。
         """
-        key = self._cache_key(instance_id)
+        key = self._cache_key(task_id)
         
-        # 如果没有原始数据，先查一次 Redis (或者直接覆盖，取决于业务)
-        # 推荐：先 get -> merge -> set
         current_data = original_data
         if not current_data:
              raw = await self.cache.get(key)
@@ -102,7 +104,7 @@ class LifecycleService:
              else:
                  # 极端情况：缓存没了，不处理或仅更新现有字段
                  # 这里选择仅写入 update_fields，虽然不完整，但包含了最新状态
-                 current_data = {}
+                 current_data = {"task_id": task_id} # 至少保证 task_id 存在
 
         # 合并数据
         # 注意：处理 datetime 对象的序列化
@@ -114,39 +116,46 @@ class LifecycleService:
                 safe_updates[k] = v
         
         current_data.update(safe_updates)
-        current_data["id"] = instance_id # 确保 ID 存在
+        current_data["task_id"] = task_id # 确保 task_id 存在
         
         await self.cache.set(key, json.dumps(current_data), ex=self.CACHE_TTL)
 
-    async def _record_event_log(self, session: AsyncSession, instance_id: str, trace_id: str, event_type: str, payload: dict, error: str = None):
+    async def _create_log_entry(
+        self,
+        session: AsyncSession,
+        instance_id: str,
+        trace_id: str,
+        event_type: str,
+        **kwargs
+    ):
         """
-        【新增辅助方法】通用流水账记录
-        对应执行系统的每一次“上报”
-        Log 依然走 DB，因为 Log 是 Append-Only 的，通常不需要读缓存
+        通用写流水方法，适配 EventLogDB
         """
-        log_repo = create_event_log_repo(session, dialect)
-        log_entry = EventLog(
+        from external.db.models import EventLogDB
+        
+        log = EventLogDB(
             id=str(uuid.uuid4()),
             instance_id=instance_id,
             trace_id=trace_id,
             event_type=event_type,
-            level="ERROR" if error else "INFO",
-            content=f"State changed to {event_type}",
-            payload_snapshot=payload.get("enriched_context_snapshot"), # 记录当时的快照
-            error_detail={"msg": error} if error else None,
-            execution_node=payload.get("execution_node"),
-            agent_id=payload.get("agent_id"),
+            level=kwargs.get("level", "INFO"),
+            content=kwargs.get("content"),
+            payload_snapshot=kwargs.get("payload_snapshot"),
+            execution_node=kwargs.get("execution_node"),
+            agent_id=kwargs.get("agent_id"),
+            error_detail=kwargs.get("error_detail"),
             created_at=datetime.now(timezone.utc)
         )
-        await log_repo.create(log_entry)
+        session.add(log)
+        # 注意：这里不 flush，依赖外层统一 commit，保证 Log 和 Instance 更新在同一事务
 
     async def start_trace(
         self,
         session: AsyncSession,
         input_params: dict,
         request_id: str,                # 【新增】必须传入 request_id 用于关联
-        root_def_id: Optional[str] = None, # 【修改】变为可选，如果不传则内部生成
-        trace_id: Optional[str] = None, # 【修改】变为可选，如果不传则内部生成
+        trace_id: str,                  # 【修改】变为必填，由外部生成
+
         user_id: Optional[str] = None   # 记录是谁触发的
 
     ) -> str:
@@ -154,54 +163,43 @@ class LifecycleService:
         启动链路
         维护 request_id (1) -> trace_id (N) 的关系
         """
-        # 1. 处理root_def_id为None的情况，生成默认ID
-        if root_def_id is None:
-            root_def_id = f"default-{str(uuid.uuid4())[:8]}"
+        from external.db.models import EventTraceDB
         
-        # 2. 校验定义是否存在，不存在则创建默认定义
-        def_repo = create_event_definition_repo(session, dialect)
-        definition = await def_repo.get(root_def_id)
-        if not definition:
-            # 创建默认定义
-            from common.event_definition import EventDefinition
-            from common.enums import ActorType, NodeType, ScheduleType
-            
-            definition = EventDefinition(
-                id=root_def_id,
-                name=f"Default Definition for {root_def_id}",
-                user_id=user_id or "system",
-                node_type=NodeType.AGENT_ACTOR,
-                actor_type=ActorType.AGENT,
-                code_ref="default/default:latest",
-                entrypoint="main.run",
-                schedule_type=ScheduleType.ONCE,
-                resource_profile="default",
-                default_params={}
-            )
-            await def_repo.create(definition)
+        # 1. 创建 EventTrace 记录
+        trace = EventTraceDB(
+            trace_id=trace_id,
+            request_id=request_id,
+            status="RUNNING",
+            user_id=user_id or "system",
+            input_params=input_params
+        )
+        
+        # 2. 直接写入数据库，不使用repo层，因为是新增表
+        session.add(trace)
+        await session.flush()
 
-        # 2. 【修改】生成 trace_id (如果外部没传)
-        if not trace_id:
-            trace_id = str(uuid.uuid4())
-
-        # 3. 创建根节点
+        # 3. 创建根节点 (def_id 可选)
         root_id = str(uuid.uuid4())
+        # 【修正 4】Root 节点的 task_id 必须唯一。
+        # 原代码是固定的 "init_task"，并发时会有问题。
+        # 建议：使用 trace_id 作为 root 的 task_id，或者特定前缀
+        root_task_id = f"root_{trace_id}"
+        
         root = EventInstance(
             id=root_id,
+            task_id=root_task_id,          # 【新增】传入唯一的 task_id
             trace_id=trace_id,
             request_id=request_id,   # 【新增】关键：将 request_id 写入根节点
             parent_id=None,
-            job_id=f"job-{trace_id[:8]}",
-            def_id=root_def_id,
+            def_id=None,             # 变为可选
             user_id=user_id,
             node_path="/",  # 根路径
             depth=0,
-            actor_type=definition.actor_type,
-            role=definition.role,
+            actor_type=ActorType.AGENT,  # 直接设置默认值
+            role=None,
             status=EventInstanceStatus.PENDING, # 根节点直接开始
-            input_params={**definition.default_params, **input_params},
-            input_ref=await self._save_payload(input_params), # 抽离大字段存储
-            # 【新增】初始快照
+            input_params=input_params,
+            # 【移除】抽离大字段存储，直接使用 payload_snapshot 记录
             runtime_state_snapshot={"lifecycle": "created"},
             created_at=datetime.now(timezone.utc)
         )
@@ -210,23 +208,25 @@ class LifecycleService:
         await inst_repo.create(root)
         
         # 立即写入 Redis，这样下一毫秒如果有查询就能命中
+        # 【修正 5】写入 Redis 时，Key 使用 task_id (root_task_id)，而不是 UUID
+        # 这样后续根据 task_id 查找才能命中
         await self.cache.set(
-            self._cache_key(root_id),
+            self._cache_key(root_task_id),
             json.dumps(self._serialize(root)),
             ex=self.CACHE_TTL
         )
         
         # 【新增】记录 EventLog (历史轨迹)
         # 即使是创建，也应该是一条 Log，方便回溯 "什么时候开始的"
-        await self._record_event_log(
+        await self._create_log_entry(
             session,
-            root_id,
-            trace_id,
-            event_type="STARTED",
-            payload={
-                "user_id": user_id, 
-                "request_id": request_id, # Log 里也记一下
-                "params_preview": str(input_params)[:100]
+            instance_id=root_id,
+            trace_id=trace_id,
+            event_type="TRACE_STARTED",
+            content=f"Root task started by {user_id or 'system'}",
+            payload_snapshot={
+                "input_params": input_params,
+                "request_id": request_id
             }
         )
         
@@ -238,7 +238,7 @@ class LifecycleService:
             key=trace_id,
             payload={
                 "root_instance_id": root_id,
-                "def_id": root_def_id,
+                "root_task_id": root_task_id, # 传递给前端/下游
                 "request_id": request_id, # 通知下游，这个 trace 属于哪个 request
                 "trace_id": trace_id      # 返回生成的 trace_id
             }
@@ -251,7 +251,7 @@ class LifecycleService:
         根据 request_id 获取最新的 trace_id
         """
         from sqlalchemy import select, desc
-        from ..external.db.models import EventInstanceDB
+        from external.db.models import EventInstanceDB
         
         # 只需要查根节点 (parent_id 为空)
         stmt = (
@@ -306,56 +306,40 @@ class LifecycleService:
             raise ValueError("Parent event is cancelled")
 
         new_instances = []
-        new_ids = []
+        new_task_ids = []
         inst_repo = create_event_instance_repo(session, dialect)
-        def_repo = create_event_definition_repo(session, dialect)
 
         for meta in subtasks_meta:
             # 从外部输入获取id
             if "id" not in meta:
                 raise ValueError(f"Missing required 'id' field in subtask meta: {meta}")
-            child_id = meta["id"]
-            new_ids.append(child_id)
+            child_task_id = meta["id"]
+            new_task_ids.append(child_task_id)
             
-            # 获取子任务定义，不存在则创建默认定义
-            child_def = await def_repo.get(meta["def_id"])
-            if not child_def:
-                # 创建默认定义
-                from common.event_definition import EventDefinition
-                from common.enums import ActorType, NodeType, ScheduleType
-                
-                child_def = EventDefinition(
-                    id=meta["def_id"],
-                    name=f"Default Definition for {meta['def_id']}",
-                    user_id=parent_data.get('user_id') or "system",
-                    node_type=NodeType.TASK,
-                    actor_type=ActorType.GENERAL,
-                    code_ref="default/default:latest",
-                    entrypoint="main.run",
-                    schedule_type=ScheduleType.ONCE,
-                    resource_profile="default",
-                    default_params={}
-                )
-                await def_repo.create(child_def)
+            # 【修正 6】显式生成 UUID
+            # 这样在 bulk_create 之前我们就有了 PK，可以放心的存缓存
+            child_uuid = str(uuid.uuid4())
             
+            # 直接使用meta中的信息，不再强制要求def_id
+            child_def_id = meta.get("def_id")
+            
+            # 构建子节点
             child = EventInstance(
-                id=child_id,
+                id=child_uuid,         # 显式赋值 UUID
+                task_id=child_task_id,
                 trace_id=parent_data['trace_id'],
-                parent_id=parent_id,
-                job_id=parent_data['job_id'],
-                def_id=meta["def_id"], # 必须关联到具体的 Definition
+                parent_id=parent_data.get('task_id'), # 必须存 Parent 的 UUID
+                def_id=child_def_id,  # 可选
                 user_id=parent_data.get('user_id'),
                 
                 # 【关键】构建物化路径
-                node_path=f"{parent_data['node_path']}{parent_id}/",
+                node_path=f"{parent_data['node_path']}{parent_data.get('task_id')}/",
                 depth=parent_data['depth'] + 1,
                 
-                actor_type=child_def.actor_type,
-                role=child_def.role,
-                name=meta.get("name"),
+                actor_type=ActorType(meta.get("actor_type", "AGENT")),  # 从meta获取或使用默认值，转换为枚举
+                role=meta.get("role"),
                 status=EventInstanceStatus.PENDING, # 初始为 PENDING，等待调度
-                input_params={**child_def.default_params, **meta.get("params", {})},
-                input_ref=await self._save_payload(meta.get("params", {})),
+                input_params=meta.get("params", {}),  # 直接使用meta中的params
                 created_at=datetime.now(timezone.utc),
                 # 【修改点 3】: 状态继承 (Inheritance)
                 # 关键！如果父节点有信号（比如 PAUSE），子节点必须继承。
@@ -368,42 +352,42 @@ class LifecycleService:
         
         # 3. 批量回写 Redis
         for inst in new_instances:
+            # 【修正 7】Cache Key 使用 task_id
             await self.cache.set(
-                self._cache_key(inst.id),
+                self._cache_key(inst.task_id),
                 json.dumps(self._serialize(inst)),
                 ex=self.CACHE_TTL
             )
         
         # 【新增】记录 Parent 的 EventLog
         # 记录 "我生了孩子" 这一事件
-        await self._record_event_log(
+        await self._create_log_entry(
             session,
-            parent_id,
-            parent_data['trace_id'],
+            instance_id=parent_data.get('id'),
+            trace_id=parent_data['trace_id'],
             event_type="TOPOLOGY_EXPANDED",
-            payload={
-                "new_children_count": len(new_ids),
-                "children_ids": new_ids,
-                # 优先使用传入的 snapshot，如果没有则使用默认
-                "enriched_context_snapshot": context_snapshot or {"action": "spawn_subtasks"}
+            content=f"Spawned {len(new_instances)} subtasks",
+            payload_snapshot={
+                "children_ids": new_task_ids,
+                "meta_preview": str(subtasks_meta)[:200]
             }
         )
         
         # 【使用抽象】发送 TOPOLOGY_EXPANDED 事件
-        # 告诉外界：parent_id 下面裂变出了 new_ids 这些新任务
-        if new_ids:
+        # 告诉外界：parent_id 下面裂变出了 new_task_ids 这些新任务
+        if new_task_ids:
             await self.event_bus.publish(
                 topic=self.topic_name,
                 event_type="TOPOLOGY_EXPANDED",
                 key=parent_data['trace_id'],
                 payload={
-                    "parent_id": parent_id,
-                    "new_instance_ids": new_ids,
-                    "count": len(new_ids)
+                    "parent_id": parent_data.get('id'),
+                    "new_instance_ids": new_task_ids,
+                    "count": len(new_task_ids)
                 }
             )
         
-        return new_ids
+        return new_task_ids
 
     # ------------------------------------------------------
     # 场景3：【核心新增】同步执行状态 (对接执行系统的 Args)
@@ -414,100 +398,155 @@ class LifecycleService:
         execution_args: dict
     ):
         """
-        接收执行系统的 Args 对象，更新 Instance 状态并记录 Log
-        execution_args: 即你提供的 Args 数据结构
+        【核心方法】接收 Worker 汇报 -> 记流水 -> 更新状态
+        execution_args 包含: task_id, event_type, data, error, worker_id, agent_id...
         """
         task_id = execution_args.get("task_id")
-        event_type = execution_args.get("event_type") # STARTED, RUNNING, COMPLETED, FAILED
-        snapshot = execution_args.get("enriched_context_snapshot")
-        data = execution_args.get("data")
-        error_msg = execution_args.get("error")
-
-        # 1. 【读取优化】先从 Redis 拿，避免 SELECT
-        # 这一步非常关键，高并发下数据库读压力减少 90%
-        instance_data = await self._get_instance_with_cache(session, task_id)
+        event_type = execution_args.get("event_type")
+        trace_id = execution_args.get("trace_id") # 最好由 Worker 透传，否则要查
         
-        if not instance_data:
-            print(f"Warning: Received event {event_type} for unknown task {task_id}")
-            return
+        # =========================================
+        # 0. 防御性检查：如果没有 trace_id，几乎无法挽救
+        # =========================================
+        if not trace_id:
+            # 尝试最后一次努力：查缓存（虽然此时还没创建，但万一有其他并发？）
+            instance_cache = await self._get_instance_with_cache(session, task_id)
+            trace_id = instance_cache.get('trace_id') if instance_cache else None
+            if not trace_id:
+                print(f"CRITICAL: Task {task_id} has no trace_id and not found in DB.")
+                return
 
-        # 2. 计算 Update Fields
+        # =========================================
+        # B. 第一步：状态投影 (State Projection)
+        # 根据事件类型，计算 Instance 应该变成什么样
+        # =========================================
         update_fields = {"updated_at": datetime.now(timezone.utc)}
         
+        # 提取常用字段
+        if "worker_id" in execution_args:
+            update_fields["worker_id"] = execution_args["worker_id"]
+            
         if event_type == "STARTED":
-            update_fields["status"] = EventInstanceStatus.RUNNING.value # 注意存 String 或 Enum Value
+            update_fields["status"] = EventInstanceStatus.RUNNING.value
             update_fields["started_at"] = datetime.now(timezone.utc)
+            
         elif event_type == "COMPLETED":
             update_fields["status"] = EventInstanceStatus.SUCCESS.value
             update_fields["finished_at"] = datetime.now(timezone.utc)
             update_fields["progress"] = 100
-            if data:
-                update_fields["output_ref"] = str(data)
+            # 结果可以只存引用，或者存简略信息
+            if execution_args.get("data"):
+                 # 假设 instance 表有个 result 字段，或者存入 output_payload
+                pass
+
         elif event_type == "FAILED":
             update_fields["status"] = EventInstanceStatus.FAILED.value
             update_fields["finished_at"] = datetime.now(timezone.utc)
-            update_fields["error_detail"] = {"msg": error_msg}
+            update_fields["error_detail"] = {"msg": execution_args.get("error")} if execution_args.get("error") else None
+
         elif event_type == "PROGRESS":
+            data = execution_args.get("data", {})
             if isinstance(data, dict) and "percent" in data:
                 update_fields["progress"] = data["percent"]
 
-        # 更新快照 (始终保持最新)
-        if snapshot:
-            update_fields["runtime_state_snapshot"] = snapshot
+        # 更新 Instance 快照字段 (如果有)
+        if "enriched_context_snapshot" in execution_args:
+             update_fields["runtime_state_snapshot"] = execution_args["enriched_context_snapshot"]
 
-        # 3. 【写优先】更新 Redis
-        # 让后续的查询立刻看到状态变更，无需等待 DB 事务提交
-        await self._update_instance_cache(task_id, update_fields, original_data=instance_data)
-
-        # 4. 【写落地】更新 DB
-        # 使用 update_fields 只需要 ID，不需要 attach 整个对象，效率很高
+        # =========================================
+        # C. 第二步：执行 UPDATE 或 UPSERT
+        # 现在使用封装好的 upsert_by_task_id 方法
+        # =========================================
+        # 创建仓库实例
         inst_repo = create_event_instance_repo(session, dialect)
-        await inst_repo.update_fields(task_id, **update_fields)
+        
+        # 执行 upsert 操作，返回实例 ID
+        instance_uuid = await inst_repo.upsert_by_task_id(
+            task_id=task_id,
+            trace_id=trace_id,
+            **update_fields
+        )
+        await session.flush()
+        # 确保 instance_cache 有值（用于后续日志和缓存更新）
+        instance_cache = await self._get_instance_with_cache(session, task_id)
+        if not instance_cache:
+            # 如果缓存没命中，说明是新建的实例，需要手动构建缓存数据
+            # 使用仓库层的 get 方法获取实例
+            instance = await inst_repo.get(instance_uuid)
+            
+            # 构建缓存数据
+            instance_cache = {
+                "id": instance.id,
+                "task_id": instance.task_id,
+                "trace_id": instance.trace_id,
+                "parent_id": instance.parent_id,
+                "node_path": instance.node_path,
+                "depth": instance.depth,
+                "actor_type": instance.actor_type.value if hasattr(instance.actor_type, 'value') else instance.actor_type,
+                "def_id": instance.def_id,
+                "status": instance.status.value if hasattr(instance.status, 'value') else instance.status,
+                "created_at": instance.created_at.isoformat() if instance.created_at else None,
+                "started_at": instance.started_at.isoformat() if instance.started_at else None,
+                "finished_at": instance.finished_at.isoformat() if instance.finished_at else None,
+                "updated_at": instance.updated_at.isoformat() if instance.updated_at else None,
+                "user_id": instance.user_id,
+                "input_params": instance.input_params,
+                "worker_id": instance.worker_id,
+                "progress": instance.progress
+            }
 
-        # 5. 记录日志 (Append Only, 直接写 DB)
-        await self._record_event_log(
+        # =========================================
+        # A. 第三步：记流水 (Event Log)
+        # 这是“发生过什么”的绝对事实
+        # =========================================
+        error_info = None
+        if execution_args.get("error"):
+            error_info = {"msg": execution_args.get("error")}
+            
+        await self._create_log_entry(
             session,
-            task_id,
-            instance_data.get('trace_id'), # 从缓存拿到的 trace_id
-            event_type,
-            execution_args,
-            error=error_msg
+            instance_id=instance_uuid, # Log 关联内部 UUID
+            trace_id=trace_id,
+            event_type=event_type,
+            level="ERROR" if error_info else "INFO",
+            content=execution_args.get("description", f"State change: {event_type}"),
+            # 将大字段放入 payload_snapshot
+            payload_snapshot=execution_args.get("enriched_context_snapshot") or execution_args.get("data"),
+            execution_node=execution_args.get("worker_id"), # 映射 worker
+            agent_id=execution_args.get("agent_id"),        # 映射 agent
+            error_detail=error_info
         )
 
-        # 6. 【新增逻辑】提取 Agent 身份并通过事件总线上报心跳
-        agent_id = execution_args.get("agent_id")
+        # =========================================
+        # E. 第四步：更新缓存 & 推送通知 (Side Effects)
+        # =========================================
         
-        if agent_id:
-            task_info = None
-            
-            # 如果是正在运行，记录当前任务信息
-            if event_type in ["STARTED", "RUNNING", "PROGRESS"]:
-                task_info = {
-                    "trace_id": instance_data.get("trace_id"),
-                    "task_id": task_id,
-                    "name": instance_data.get("name", "Unknown Task"),
-                    "step": execution_args.get("realtime_info", {}).get("step")
-                }
-            
-            # 这里的 "Report Heartbeat" 意味着 Agent 刚刚还在说话，它是活的
-            # 如果 event_type 是 FAILED 或 COMPLETED，task_info 可能是 None，表示它刚干完活，现在闲下来了(IDLE)
-            await self.event_bus.publish(
+        # 1. 更新 Redis 缓存
+        # 这里传入 task_id，且 original_data 传入之前查到的 instance_cache
+        # 这样可以避免缓存为空时的部分更新问题
+        await self._update_instance_cache(task_id, update_fields, original_data=instance_cache)
+        
+        # 2. 如果是 Agent 心跳，推送到总线
+        if execution_args.get("agent_id") and event_type in ["STARTED", "RUNNING", "PROGRESS"]:
+             await self.event_bus.publish(
                 topic=self.topic_name,
                 event_type="AGENT_HEARTBEAT",
-                key=agent_id,
+                key=execution_args["agent_id"],
                 payload={
-                    "agent_id": agent_id,
-                    "task_info": task_info
+                    "agent_id": execution_args["agent_id"],
+                    "task_id": task_id,
+                    "status": update_fields.get("status")
                 }
             )
 
-        # 7. 发送通知
+        # 3. 推送任务状态变更通知 (给前端 Socket 或 监控)
         await self.event_bus.publish(
             topic=self.topic_name,
             event_type=f"TASK_{event_type}",
-            key=instance_data.get('trace_id'),
+            key=trace_id,
             payload={
                 "task_id": task_id,
+                "event_type": event_type,
                 "status": update_fields.get("status"),
                 "progress": update_fields.get("progress")
             }

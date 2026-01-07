@@ -48,8 +48,8 @@ function getStatusIcon(statusLabel) {
  * @returns {{x: number, y: number}} 计算出的位置
  */
 function calculateNodePosition(index, totalSiblings, parentX, parentY, depth) {
-  const verticalSpacing = 250;
-  const horizontalSpacing = 200;
+  const verticalSpacing = 400;
+  const horizontalSpacing = 400;
   
   // 计算水平偏移量，使子节点均匀分布在父节点下方
   const offset = (totalSiblings - 1) * horizontalSpacing / 2;

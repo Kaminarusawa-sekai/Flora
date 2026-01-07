@@ -31,3 +31,16 @@ class IMemoryCapability(CapabilityBase):
     def add_memory(self, user_id: str, text: str) -> None:
         """添加一条交互记录或事实"""
         pass
+
+    # 可选扩展：核心记忆管理（允许用户调整）
+    def list_core_memories(self, user_id: str, limit: int = 50):
+        """列出用户核心记忆"""
+        raise NotImplementedError
+
+    def set_core_memory(self, user_id: str, key: str, value: str) -> None:
+        """设置/更新用户核心记忆"""
+        raise NotImplementedError
+
+    def delete_core_memory(self, user_id: str, key: str) -> None:
+        """删除用户核心记忆"""
+        raise NotImplementedError
