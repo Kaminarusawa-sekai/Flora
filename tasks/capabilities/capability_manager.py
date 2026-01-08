@@ -15,7 +15,7 @@ class CapabilityManager:
     负责动态扫描目录、自动化注册和统一初始化所有能力。
     """
     
-    def __init__(self, config_path: str = "./tasks/config.json"):
+    def __init__(self, config_path: str = "./config.json"):
         # self.registry = CapabilityRegistry()
         self.registry = capability_registry
         self.config = CapabilityConfig(config_path)

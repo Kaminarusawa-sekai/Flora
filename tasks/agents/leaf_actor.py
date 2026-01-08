@@ -126,7 +126,7 @@ class LeafActor(Actor):
     def _execute_leaf_logic(self, task: AgentTaskMessage, sender: ActorAddress):
         """处理叶子节点执行逻辑"""
         # 获取 ExecutionActor
-        from ..capability_actors.execution_actor import ExecutionActor
+        from capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
 
         # 构建 running_config（原 params 内容）
@@ -309,7 +309,7 @@ class LeafActor(Actor):
         self.current_user_id = state_data.get("current_user_id")
         
         # 3. 获取原始任务信息
-        from ..capability_actors.execution_actor import ExecutionActor
+        from capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
         
         # 4. 构建新的执行请求，合并用户输入数据

@@ -44,7 +44,7 @@ class TreeContextResolver(IContextResolverCapbility):
         if tree_manager:
             self.tree_manager = tree_manager
         else:
-            from ...agents.tree.tree_manager import treeManager
+            from agents.tree.tree_manager import treeManager
             self.tree_manager=treeManager
         if llm_client:
             self.llm_client = llm_client
@@ -102,10 +102,19 @@ class TreeContextResolver(IContextResolverCapbility):
                 # 构造 Vanna 所需的 agent_meta 格式：database = "db.table"
                 db_name = leaf_meta.get("database") or leaf_meta.get("db")
                 table_name = leaf_meta.get("table") or leaf_meta.get("tbl")
+
+                # Some nodes store "db.table" in database field.
+                if db_name and not table_name and "." in str(db_name):
+                    parts = str(db_name).split(".", 1)
+                    db_name = parts[0].strip() or None
+                    table_name = parts[1].strip() or None
+
+                if not db_name or not table_name:
+                    db_name, table_name = self._extract_db_table_from_meta(leaf_meta)
                 
                 if not db_name or not table_name:
                     self.logger.warning(f"⚠️ Incomplete location info for '{key}': {leaf_meta}, skip Vanna query")
-                    result[key] = leaf_meta  # 或设为 None，按需
+                    result[key] = None
                     continue
 
                 vanna_agent_meta = {
@@ -116,9 +125,14 @@ class TreeContextResolver(IContextResolverCapbility):
                 # 初始化 Vanna 能力
                 from ..registry import capability_registry
                 from ..text_to_sql.text_to_sql import ITextToSQLCapability
-                text_to_sql_cap: ITextToSQLCapability = capability_registry.get_capability(
-                    "text_to_sql", expected_type=ITextToSQLCapability
-                )
+                try:
+                    text_to_sql_cap: ITextToSQLCapability = capability_registry.get_capability(
+                        "text_to_sql", expected_type=ITextToSQLCapability
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Text-to-SQL capability unavailable: {e}")
+                    result[key] = None
+                    continue
 
                 text_to_sql_cap.initialize({
                     "agent_id": agent_id,
@@ -148,6 +162,40 @@ class TreeContextResolver(IContextResolverCapbility):
                 result[key] = None
 
         return result
+
+    def _extract_db_table_from_meta(self, meta: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Try to extract database/table info from datascope or other metadata.
+        """
+        db_name = None
+        table_name = None
+        datascope = meta.get("datascope") or meta.get("data_scope")
+
+        if isinstance(datascope, str) and datascope.strip():
+            try:
+                datascope = json.loads(datascope)
+            except Exception:
+                # Fallback: allow "db.table" literal in datascope string.
+                if "." in datascope:
+                    parts = datascope.split(".", 1)
+                    db_name = parts[0].strip() or None
+                    table_name = parts[1].strip() or None
+
+        if isinstance(datascope, dict):
+            db_name = db_name or datascope.get("database") or datascope.get("db") or datascope.get("schema")
+            table_name = (
+                table_name
+                or datascope.get("table")
+                or datascope.get("tbl")
+                or datascope.get("table_name")
+            )
+            # Allow database value to be "db.table".
+            if db_name and not table_name and "." in str(db_name):
+                parts = str(db_name).split(".", 1)
+                db_name = parts[0].strip() or None
+                table_name = parts[1].strip() or None
+
+        return db_name, table_name
 
     def _resolve_kv_via_layered_search(self, start_agent_id: str, query: str, key: str) -> Optional[Dict]:
         """

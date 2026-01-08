@@ -201,7 +201,8 @@ class LifecycleService:
             input_params=input_params,
             # 【移除】抽离大字段存储，直接使用 payload_snapshot 记录
             runtime_state_snapshot={"lifecycle": "created"},
-            created_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc),
+            name="Ready",
         )
         
         inst_repo = create_event_instance_repo(session, dialect)
@@ -336,6 +337,7 @@ class LifecycleService:
                 node_path=f"{parent_data['node_path']}{parent_data.get('task_id')}/",
                 depth=parent_data['depth'] + 1,
                 
+                name=meta.get("name", "Dynamic Task"),
                 actor_type=ActorType(meta.get("actor_type", "AGENT")),  # 从meta获取或使用默认值，转换为枚举
                 role=meta.get("role"),
                 status=EventInstanceStatus.PENDING, # 初始为 PENDING，等待调度
@@ -484,6 +486,7 @@ class LifecycleService:
                 "depth": instance.depth,
                 "actor_type": instance.actor_type.value if hasattr(instance.actor_type, 'value') else instance.actor_type,
                 "def_id": instance.def_id,
+                "name": instance.name,
                 "status": instance.status.value if hasattr(instance.status, 'value') else instance.status,
                 "created_at": instance.created_at.isoformat() if instance.created_at else None,
                 "started_at": instance.started_at.isoformat() if instance.started_at else None,
@@ -520,13 +523,50 @@ class LifecycleService:
         # =========================================
         # E. 第四步：更新缓存 & 推送通知 (Side Effects)
         # =========================================
-        
+
         # 1. 更新 Redis 缓存
-        # 这里传入 task_id，且 original_data 传入之前查到的 instance_cache
-        # 这样可以避免缓存为空时的部分更新问题
         await self._update_instance_cache(task_id, update_fields, original_data=instance_cache)
+
+        # -------------------------------------------------------
+        # [通用准备] 提前准备好通用数据 (时间、名称)，供心跳和事件使用
+        # -------------------------------------------------------
+        # A. 准备 Task Name (优先查缓存，因为那是最初定义的；其次查当前传入)
+        task_name = "Unknown Task"
+        if instance_cache and instance_cache.get("name"):
+            task_name = instance_cache.get("name")
+        elif execution_args.get("name"):
+            task_name = execution_args.get("name")
+
+        # B. 准备时间数据 (Start/End/Duration)
+        end_time_obj = datetime.now(timezone.utc)
+        start_time_obj = None
         
-        # 2. 如果是 Agent 心跳，推送到总线
+        # 尝试从缓存获取开始时间（这是最准确的）
+        if instance_cache and instance_cache.get("started_at"):
+            raw_start = instance_cache["started_at"]
+            if isinstance(raw_start, str):
+                try:
+                    start_time_obj = datetime.fromisoformat(raw_start)
+                except ValueError:
+                    pass
+            elif isinstance(raw_start, datetime):
+                start_time_obj = raw_start
+        
+        # 如果缓存没有（比如刚启动），尝试从当前更新字段拿
+        if not start_time_obj and update_fields.get("started_at"):
+            start_time_obj = update_fields["started_at"]
+
+        # 计算耗时
+        duration_ms = 0
+        if start_time_obj:
+            if start_time_obj.tzinfo is None:
+                start_time_obj = start_time_obj.replace(tzinfo=timezone.utc)
+            duration_ms = int((end_time_obj - start_time_obj).total_seconds() * 1000)
+
+        # -------------------------------------------------------
+        # [修正 1] Heartbeat 推送：增加 task_info 嵌套结构 + 补全字段
+        # -------------------------------------------------------
+        # 只有这些状态才代表 Agent 在忙，需要心跳
         if execution_args.get("agent_id") and event_type in ["STARTED", "RUNNING", "PROGRESS"]:
              await self.event_bus.publish(
                 topic=self.topic_name,
@@ -534,21 +574,42 @@ class LifecycleService:
                 key=execution_args["agent_id"],
                 payload={
                     "agent_id": execution_args["agent_id"],
-                    "task_id": task_id,
-                    "status": update_fields.get("status")
+                    # 必须嵌套 task_info
+                    "task_info": {
+                        "task_id": task_id,
+                        "trace_id": trace_id,  # [新增] 补全 trace_id，方便前端跳转
+                        "name": task_name,     # [新增] 补全 name，Monitor重启也能知道名字
+                        "status": update_fields.get("status", "RUNNING"),
+                        "progress": update_fields.get("progress", 0),
+                        "started_at": start_time_obj.timestamp() if start_time_obj else None # 建议转成 timestamp 或 ISO
+                    }
                 }
             )
 
-        # 3. 推送任务状态变更通知 (给前端 Socket 或 监控)
+        # -------------------------------------------------------
+        # [修正 2] 任务状态变更推送：Task Event
+        # -------------------------------------------------------
+        payload = {
+            "task_id": task_id,
+            "event_type": event_type,
+            "status": update_fields.get("status"),
+            "progress": update_fields.get("progress"),
+            "agent_id": execution_args.get("agent_id"),
+            "trace_id": trace_id,
+            "task_name": task_name, # 使用前面提取好的名字
+            
+            # 归档关键字段
+            "start_time": start_time_obj.isoformat() if start_time_obj else None,
+            "end_time": end_time_obj.isoformat(),
+            "duration_ms": duration_ms,
+            "result": execution_args.get("data"),
+            "error_msg": execution_args.get("error")
+        }
+
         await self.event_bus.publish(
             topic=self.topic_name,
             event_type=f"TASK_{event_type}",
             key=trace_id,
-            payload={
-                "task_id": task_id,
-                "event_type": event_type,
-                "status": update_fields.get("status"),
-                "progress": update_fields.get("progress")
-            }
+            payload=payload
         )
 

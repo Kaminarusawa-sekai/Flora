@@ -19,7 +19,7 @@ import atexit
 from uvicorn import run
 from entry_layer.api_server import create_api_server
 from thespian.actors import ActorSystem
-
+from config import RABBITMQ_URL
 from external.message_queue import MessageQueueFactory
 
 # 导入消息队列和 ActorSystem 相关模块
@@ -40,7 +40,7 @@ _global_rabbitmq_listener = None
 _global_actor_system = None
 
 
-def start_rabbitmq_listener(rabbitmq_url='localhost'):
+def start_rabbitmq_listener():
     """
     启动消息队列监听器
     
@@ -58,7 +58,7 @@ def start_rabbitmq_listener(rabbitmq_url='localhost'):
 
     try:
         # 初始化 Actor 系统（使用 TCP 多进程模式）
-        actor_system = ActorSystem('multiprocTCPBase')
+        actor_system = ActorSystem('simpleSystemBase')
         _global_actor_system = actor_system  # 保存引用以便清理
         from agents.agent_actor import AgentActor
 
@@ -70,7 +70,7 @@ def start_rabbitmq_listener(rabbitmq_url='localhost'):
             queue_type='rabbitmq',
             actor_system=actor_system,
             agent_actor_ref=agent_actor_ref,
-            config={'rabbitmq_url': rabbitmq_url}
+            config={'rabbitmq_url': RABBITMQ_URL}
         )
 
         if listener:
@@ -106,41 +106,37 @@ def cleanup_resources():
             logger.error(f"Error shutting down ActorSystem: {e}")
 
 
-def main():
+def main(host='0.0.0.0', port=8002, debug=False, rabbitmq=True, rabbitmq_url='amqp://admin:Lanba%40123@121.36.203.36:10005/prod'):
     """
     主函数：启动 FastAPI 服务和 RabbitMQ 监听器（如启用）
+    
+    Args:
+        host: Host to bind to
+        port: Port to bind to
+        debug: Enable debug mode in FastAPI (detailed errors, etc.)
+        rabbitmq: Enable RabbitMQ task listener
+        rabbitmq_url: RabbitMQ server URL
     """
-    parser = argparse.ArgumentParser(description='Flora API Server')
-    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
-    parser.add_argument('--port', type=int, default=8002, help='Port to bind to')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode in FastAPI (detailed errors, etc.)')
-    parser.add_argument('--rabbitmq', action='store_true', help='Enable RabbitMQ task listener')
-    parser.add_argument('--rabbitmq-url', default='localhost', help='RabbitMQ server URL')
-
-    args = parser.parse_args()
-
     # 注册退出清理函数
     atexit.register(cleanup_resources)
 
     # 启动 RabbitMQ 监听器（如果启用）
-    if args.rabbitmq:
-        start_rabbitmq_listener(args.rabbitmq_url)
+    if rabbitmq:
+        start_rabbitmq_listener()
 
     try:
         # 创建 FastAPI 应用（debug 模式仅影响 API 行为，不影响 reload）
-        app = create_api_server(config={"debug": args.debug})
+        app = create_api_server(config={"debug": debug})
 
-        logger.info(f"Starting Flora API Server on http://{args.host}:{args.port} (debug={args.debug})")
+        logger.info(f"Starting Flora API Server on http://{host}:{port} (debug={debug})")
         logger.info("Press Ctrl+C to stop.")
 
         # 启动 Uvicorn —— 关键：reload=False（始终禁用热重载）
         run(
             app,
-            host=args.host,
-            port=args.port,
+            host=host,
+            port=port,
             reload=False,  # ←←← 强制禁用热重载
-            log_level="info",
-            log_config=None,          # 👈 关键！禁用 uvicorn 的日志配置
         )
 
     except KeyboardInterrupt:
@@ -152,4 +148,20 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Flora API Server')
+    # parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
+    # parser.add_argument('--port', type=int, default=8002, help='Port to bind to')
+    # parser.add_argument('--debug', action='store_true', help='Enable debug mode in FastAPI (detailed errors, etc.)')
+    # parser.add_argument('--rabbitmq', action='store_true', help='Enable RabbitMQ task listener')
+    # parser.add_argument('--rabbitmq-url', default='localhost', help='RabbitMQ server URL')
+
+    args = parser.parse_args()
+    main(
+        # host=args.host,
+        # port=args.port,
+        # debug=args.debug,
+        # rabbitmq=args.rabbitmq,
+        # rabbitmq_url=args.rabbitmq_url
+    )
+
+

@@ -10,9 +10,9 @@ def is_safe_sql(sql: str) -> bool:
     if not sql_upper.startswith("SELECT"):
         return False
     
-    # 2. 禁止危险关键字
-    dangerous = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "EXEC", "UNION"]
-    if any(kw in sql_upper for kw in dangerous):
+    # 2. 禁止危险关键字（使用词边界，避免误伤字段名如 deleted）
+    dangerous_pattern = r"\b(?:DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|EXEC|UNION)\b"
+    if re.search(dangerous_pattern, sql_upper):
         return False
 
     # 3. 长度限制
@@ -26,7 +26,6 @@ def is_safe_sql(sql: str) -> bool:
     #     if not all(t.lower() in [x.lower() for x in ALLOWED_TABLES] for t in tables):
     #         return False
 
-    return True
 
 def should_learn(df, sql: str) -> bool:
     """判断是否值得学习"""

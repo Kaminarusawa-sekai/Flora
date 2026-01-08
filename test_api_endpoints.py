@@ -92,7 +92,8 @@ def test_report_execution_event(task_id, event_type="STARTED"):
         "error": "test error" if event_type == "FAILED" else None,
         "agent_id": "test-agent-123",
         "worker_id": "test-worker-456",
-        "realtime_info": {"step": 1}
+        "realtime_info": {"step": 1},
+        "name": "Test Task",
     }
     
     response = send_post_request("/traces/events", data)

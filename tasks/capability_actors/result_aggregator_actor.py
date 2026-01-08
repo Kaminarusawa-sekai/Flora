@@ -145,7 +145,7 @@ class ResultAggregatorActor(Actor):
         self._timeout = 300
         self._aggregation_strategy = "sequential"
 
-        from ..agents.tree.tree_manager import treeManager
+        from agents.tree.tree_manager import treeManager
         self.registry = treeManager
         self.current_user_id = msg.user_id
 
@@ -226,11 +226,11 @@ class ResultAggregatorActor(Actor):
             is_leaf = self._is_leaf_node(agent_id)
 
             if is_leaf:
-                from ..agents.leaf_actor import LeafActor
+                from agents.leaf_actor import LeafActor
                 ref = self.createActor(LeafActor)
                 actor_type = "LeafActor"
             else:
-                from ..agents.agent_actor import AgentActor
+                from agents.agent_actor import AgentActor
                 ref = self.createActor(AgentActor)
                 actor_type = "AgentActor"
 
@@ -511,7 +511,7 @@ class ResultAggregatorActor(Actor):
         Returns:
             bool: 是否为叶子节点
         """
-        from ..agents.tree.tree_manager import TreeManager
+        from agents.tree.tree_manager import TreeManager
         tree_manager = TreeManager()
         children = tree_manager.get_children(agent_id)
         return len(children) == 0

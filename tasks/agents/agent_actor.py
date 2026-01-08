@@ -409,7 +409,7 @@ class AgentActor(Actor):
             task_group_request: 任务组请求
             sender: 原始发送者（用于回复）
         """
-        from ..capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
+        from capability_actors.task_group_aggregator_actor import TaskGroupAggregatorActor
 
         # 创建TaskGroupAggregatorActor
         aggregator = self.createActor(TaskGroupAggregatorActor)

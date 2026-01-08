@@ -32,6 +32,30 @@ class RedisCacheClient(CacheClient):
             kwargs['maxlen'] = maxlen
             kwargs['approximate'] = True  # 使用近似截断，提高性能
         await self.redis.xadd(stream_key, data, **kwargs)
+    
+    async def xgroup_create(self, stream_key: str, group_name: str, mkstream: bool = False) -> None:
+        """创建消费者组"""
+        await self.redis.xgroup_create(stream_key, group_name, id="$", mkstream=mkstream)
+    
+    async def xreadgroup(self, group_name: str, consumer_name: str, streams: dict, count: int = 1, block: int = 0) -> list:
+        """从消费者组读取消息"""
+        return await self.redis.xreadgroup(group_name, consumer_name, streams, count=count, block=block)
+
+    async def lpush(self, key: str, value: str) -> None:
+        """将值添加到列表的开头"""
+        await self.redis.lpush(key, value)
+
+    async def ltrim(self, key: str, start: int, end: int) -> None:
+        """裁剪列表，保留指定范围的元素"""
+        await self.redis.ltrim(key, start, end)
+
+    async def lrange(self, key: str, start: int, end: int) -> list[str]:
+        """获取列表中指定范围的元素"""
+        return await self.redis.lrange(key, start, end)
+
+    async def expire(self, key: str, ttl: int) -> None:
+        """设置键的过期时间"""
+        await self.redis.expire(key, ttl)
 
 
 # 创建全局 redis 客户端实例

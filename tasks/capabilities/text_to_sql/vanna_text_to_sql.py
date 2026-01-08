@@ -26,6 +26,7 @@ class VannaTextToSQL(ITextToSQLCapability):
         self.business_id = None
         self.database = None
         self.table_name = None
+        self.db_type = db_type
         self._initialized = False
         # 支持依赖注入，便于测试
         self.connection_pool = connection_pool
@@ -52,14 +53,19 @@ class VannaTextToSQL(ITextToSQLCapability):
         agent_id = config.get("agent_id")
         agent_meta = config.get("agent_meta", {})
         db_type = agent_meta.get("database_type", "mysql")
+        self.db_type = db_type
 
         if not agent_id:
-            raise ValueError("Missing 'agent_id' in config")
+            logger.info("[VannaTextToSQL] Deferred init: missing agent_id in config.")
+            self._initialized = False
+            return
 
         data_source = agent_meta.get("database")
 
         if not data_source or "." not in data_source:
-            raise ValueError(f"Invalid database config for agent {agent_id}: {data_source}")
+            logger.info(f"[VannaTextToSQL] Deferred init for agent {agent_id}: missing database metadata.")
+            self._initialized = False
+            return
 
         self.business_id = agent_id
         self.database = data_source.split(".")[0]
@@ -145,10 +151,10 @@ class VannaTextToSQL(ITextToSQLCapability):
         """
         if self.connection_pool:
             return self.connection_pool.get_connection()
-        else:
-            # 回退到原始的 mysql_pool（保持向后兼容）
-            from external.repositories.sql_metadata_repo import MySQLMetadataRepository
-            return MySQLMetadataRepository()
+        # 回退：动态创建连接池并获取连接
+        from external.database.connection_pool import ConnectionPoolFactory
+        pool = ConnectionPoolFactory.create_pool(self.db_type)
+        return pool.get_connection()
 
     def _enrich_query(self, query: str, context: dict) -> str:
         if not context:

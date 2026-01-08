@@ -110,7 +110,7 @@ const collapseAll = () => {
 };
 
 // 默认agent_id
-const defaultAgentId = 'private_domain';
+const defaultAgentId = 'marketing';
 
 // 组件挂载时连接WebSocket
 onMounted(() => {

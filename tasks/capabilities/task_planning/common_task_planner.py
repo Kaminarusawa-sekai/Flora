@@ -33,7 +33,7 @@ class CommonTaskPlanning(ITaskPlanningCapability):
 
     def initialize(self, config: Dict[str, Any]) -> bool:
  
-        from ...agents.tree.tree_manager import treeManager
+        from agents.tree.tree_manager import treeManager
 
         self.tree_manager = treeManager
         from ..llm.interface import ILLMCapability

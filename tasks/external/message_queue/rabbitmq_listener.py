@@ -124,7 +124,7 @@ class RabbitMQListenerImpl(MessageQueueListener):
             # 声明direct类型的exchange
             self.channel.exchange_declare(
                 exchange=queue_name,
-                type='direct',
+                exchange_type='direct',
                 durable=True
             )
             # 声明队列

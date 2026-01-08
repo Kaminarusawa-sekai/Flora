@@ -41,7 +41,7 @@ __all__ = [
 
 # 创建全局能力管理器实例
 _global_manager = None
-CONFIG_PATH = "./tasks/config.json"
+CONFIG_PATH = "./config.json"
 
 def get_capability_manager(config_path: str = CONFIG_PATH) -> CapabilityManager:
     """

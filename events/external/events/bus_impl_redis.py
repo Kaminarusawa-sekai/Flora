@@ -3,6 +3,10 @@ import time
 from typing import Dict, Any, Optional, AsyncIterator
 from .bus import EventBus
 from ..cache.base import CacheClient
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 class RedisEventBus(EventBus):
     def __init__(self, cache_client: CacheClient):
@@ -43,51 +47,64 @@ class RedisEventBus(EventBus):
         :param topic: 对应 Redis Stream 的 Key
         :return: 事件迭代器
         """
+
+        
         if not self.cache:
             return
         
         try:
             # 检查并创建消费者组
+            # 创建消费者组（如果不存在）
             try:
                 await self.cache.xgroup_create(topic, self.consumer_group, mkstream=True)
-            except Exception as e:
-                # 消费者组已存在，忽略错误
+            except Exception:
+                # 消费者组已存在，正常情况
                 pass
             
-            # 从最后一个事件开始消费
-            last_id = "$"
-            
+            # ✅ 关键修复：使用 ">" 而不是 "$"，表示只读取新消息
+            last_id = ">"
+
             while True:
                 # 阻塞等待新事件，超时时间 1 秒
-                response = await self.cache.xreadgroup(
-                    self.consumer_group, 
-                    self.consumer_name, 
-                    {topic: last_id}, 
-                    count=1, 
-                    block=1000
-                )
-                
+                try:
+                    response = await self.cache.xreadgroup(
+                        group_name=self.consumer_group,
+                        consumer_name=self.consumer_name,
+                        streams={topic: last_id},
+                        count=1,
+                        block=1000  # 1秒超时，避免永久卡死
+                    )
+                except Exception as e:
+                    logger.warning(f"XREADGROUP failed: {e}")
+                    await asyncio.sleep(1)
+                    continue
+
                 if response:
-                    for stream in response:
-                        stream_name, messages = stream
+                    for stream_name, messages in response:
                         for message_id, message in messages:
-                            last_id = message_id
-                            # 解析消息
+                            # 解析字段
                             event_type = message.get("type", "")
                             key = message.get("key", "")
                             data = message.get("data", "{}")
-                            
+
                             try:
                                 payload = json.loads(data)
                             except json.JSONDecodeError:
                                 payload = {}
-                            
+
                             yield {
                                 "key": key,
                                 "event_type": event_type,
                                 "payload": payload,
                                 "message_id": message_id
                             }
+
+                            # 注意：在消费者组中，last_id 不需要手动更新！
+                            # 因为我们始终用 ">"，Redis 自动管理偏移
+
+        except asyncio.CancelledError:
+            logger.info("Subscription cancelled")
+            raise
         except Exception as e:
-            # 记录日志: logger.error(f"Event bus subscribe failed: {e}")
+            logger.error(f"Event bus subscribe failed: {e}", exc_info=True)
             pass

@@ -763,6 +763,21 @@ class PostgreSQLAgentTaskHistoryRepository(AgentTaskHistoryRepository):
             'failed_tasks': row.failed_tasks or 0,
             'avg_duration_ms': float(row.avg_duration_ms) if row.avg_duration_ms else 0.0
         }
+    
+    async def get_avg_duration(self, task_name: str) -> float:
+        """
+        获取指定任务名称的历史平均耗时（毫秒）
+        """
+        from ..models import AgentTaskHistory
+        
+        stmt = select(
+            func.avg(AgentTaskHistory.duration_ms).label('avg_duration_ms')
+        ).where(AgentTaskHistory.task_name == task_name)
+        
+        result = await self.session.execute(stmt)
+        row = result.first()
+        
+        return float(row.avg_duration_ms) if row.avg_duration_ms else 0.0
 
 
 class PostgreSQLAgentDailyMetricRepository(AgentDailyMetricRepository):

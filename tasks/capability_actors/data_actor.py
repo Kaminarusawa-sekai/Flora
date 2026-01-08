@@ -9,7 +9,7 @@ from ..common.messages import (
 
 
 # 引入刚刚拆分出来的 Capability
-from ..capabilities.registry import capability_registry
+from capabilities.registry import capability_registry
 
 logger = logging.getLogger(__name__)
 
