@@ -196,7 +196,7 @@ class LeafActor(Actor):
         original_sender = self.task_id_to_sender.get(task_id, sender)
         self.send(original_sender, task_completed_msg)
 
-        # 处理断点续传逻辑
+        # 处理断点续传逻辑，##TODO：好像没上去
         if status == "NEED_INPUT":
             # 1. 发布任务暂停事件
             event_bus.publish_task_event(

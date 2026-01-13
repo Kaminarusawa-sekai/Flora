@@ -381,7 +381,7 @@ class EventPublisher:
         """
         return {
             # 1. 必须生成一个新的唯一ID
-            "id": str(uuid.uuid4()),
+            "id": plan.get("task_id", str(uuid.uuid4())),
             
             # 2. 映射 def_id (关键约定：executor 字段必须对应数据库里的 def_id)
             "def_id": plan.get("executor"),

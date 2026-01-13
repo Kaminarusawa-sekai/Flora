@@ -156,8 +156,28 @@ class AgentActor(Actor):
             user_id=self.current_user_id
         )
 
+
+        # 写入记忆（按单节点存储，检索按 scope 聚合）
+        try:
+            memory_input = task.content or task.description or user_input
+            node_scope = self._build_node_memory_scope(self.current_user_id, task.task_path)
+            root_scope = self._build_memory_scope(self.current_user_id, task.task_path)
+            metadata = {
+                "root_scope": root_scope,
+                "agent_id": self.agent_id,
+                "task_path": task.task_path
+            }
+            self.memory_cap.add_memory_intelligently(node_scope, memory_input, metadata)
+        except Exception as e:
+            self.log.warning(f"Memory write skipped: {e}")
+
+
+
         # 构建对话上下文
-        conversation_context = self.memory_cap.build_conversation_context(self.current_user_id)
+        conversation_context = self.memory_cap.build_conversation_context(
+            self._build_memory_scope(self.current_user_id, task.task_path),
+            task.content or ""
+        )
         
         # --- 流程 ⑤: 任务规划 ---
         event_bus.publish_task_event(
@@ -280,7 +300,28 @@ class AgentActor(Actor):
 
         # 记录sender以便接收结果（更新，因为可能是新的前台请求）
         self.task_id_to_sender[task_id] = reply_to
+    @staticmethod
+    def _extract_root_agent_id(task_path: Optional[str]) -> str:
+        if not task_path:
+            return ""
+        parts = [part for part in task_path.split("/") if part]
+        return parts[0] if parts else ""
 
+    def _build_memory_scope(self, user_id: Optional[str], task_path: Optional[str]) -> str:
+        if not user_id:
+            return ""
+        root_agent_id = self._extract_root_agent_id(task_path) or self.agent_id
+        if root_agent_id:
+            return f"{user_id}:{root_agent_id}"
+        return user_id
+
+    def _build_node_memory_scope(self, user_id: Optional[str], task_path: Optional[str]) -> str:
+        if not user_id:
+            return ""
+        root_agent_id = self._extract_root_agent_id(task_path) or self.agent_id
+        if root_agent_id:
+            return f"{user_id}:{root_agent_id}:{self.agent_id}"
+        return f"{user_id}:{self.agent_id}"
    
 
     def _handle_task_paused_from_execution(self, message: Any, sender: ActorAddress):
@@ -292,8 +333,18 @@ class AgentActor(Actor):
             sender: ExecutionActor的地址
         """
         task_id = message.task_id
-        missing_params = getattr(message, "missing_params", [])
+        missing_params = getattr(message, "missing_params", None)
         question = getattr(message, "question", "")
+        if not missing_params:
+            result_payload = getattr(message, "result", None)
+            if isinstance(result_payload, dict):
+                missing_params = result_payload.get("missing_params")
+                if not missing_params and isinstance(result_payload.get("step_result"), dict):
+                    missing_params = result_payload["step_result"].get("missing_params")
+                if not question:
+                    question = result_payload.get("question") or result_payload.get("message", "")
+        if missing_params is None:
+            missing_params = []
         execution_actor_address = getattr(message, "execution_actor_address", None)
 
         self.log.info(f"Task {task_id} needs input by ExecutionActor, forwarding with TaskCompletedMessage")
@@ -305,9 +356,15 @@ class AgentActor(Actor):
         else:
             self.log.warning(f"No execution_actor_address in need_input message for task {task_id}")
 
+        # 从传入的message中获取trace_id和task_path，如果没有则使用默认值
+        trace_id = getattr(message, "trace_id", None) or task_id
+        task_path = getattr(message, "task_path", None) or self._task_path or ""
+
         # 构建TaskCompletedMessage，直接返回给调用者
         task_result = TaskCompletedMessage(
             task_id=task_id,
+            trace_id=trace_id,
+            task_path=task_path,
             status="NEED_INPUT",
             result={
                 "missing_params": missing_params,
@@ -374,6 +431,7 @@ class AgentActor(Actor):
                 "is_dependency_expanded": bool(plan.get("is_dependency_expanded", False)),
                 "original_parent": plan.get("original_parent"),
                 "user_id": getattr(self, 'current_user_id', task.user_id),  # 优先用 self.current_user_id
+                "task_id": str(uuid.uuid4()),
             }
 
             # 允许 plan 中包含额外字段（因 TaskSpec.Config.extra='allow'）

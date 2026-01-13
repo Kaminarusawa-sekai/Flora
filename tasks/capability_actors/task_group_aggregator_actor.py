@@ -243,7 +243,7 @@ class TaskGroupAggregatorActor(Actor):
 
         
         msg = ParallelTaskRequestMessage(
-            task_id=str(uuid.uuid4()),
+            task_id=task.task_id,
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
@@ -267,7 +267,7 @@ class TaskGroupAggregatorActor(Actor):
         
         # 发送 ResultAggregatorTaskRequestMessage - 统一上下文传播与富集方案
         msg = ResultAggregatorTaskRequestMessage(
-            task_id=str(uuid.uuid4()),
+            task_id=task.task_id,
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
@@ -291,7 +291,7 @@ class TaskGroupAggregatorActor(Actor):
 
         # 使用 MCPTaskRequestMessage 替代 ExecuteTaskMessage - 统一上下文传播与富集方案
         msg = MCPTaskRequestMessage(
-            task_id=str(uuid.uuid4()),
+            task_id=task.task_id,
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,

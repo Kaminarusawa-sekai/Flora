@@ -14,9 +14,19 @@ class ShortTermMemory:
         n = n or self.max_history
         return self.dao.get_recent_messages(user_id, limit=n)
 
+    def get_history_by_scope(self, scope_prefix: str, n: int = None) -> List[Dict[str, str]]:
+        n = n or self.max_history
+        return self.dao.get_recent_messages_by_scope(scope_prefix, limit=n)
+
     def format_history(self, user_id: str, n: int = 6) -> str:
         history = self.get_history(user_id, n)
         return "\n".join([f"{m['role']}: {m['content']}" for m in history])
+
+
+    def format_history_by_scope(self, scope_prefix: str, n: int = 6) -> str:
+        history = self.get_history_by_scope(scope_prefix, n)
+        return "\n".join([f"{m['role']}: {m['content']}" for m in history])
+
 
     def clear_user(self, user_id: str):
         self.dao.clear_user_history(user_id)

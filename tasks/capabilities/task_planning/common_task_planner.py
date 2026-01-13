@@ -57,7 +57,16 @@ class CommonTaskPlanning(ITaskPlanningCapability):
             # 记忆在这里影响：Agent vs MCP 的选择，以及第一层参数的提取
             base_plan = self._semantic_decomposition(agent_id, user_input, memory_context)
             if not base_plan:
-                return []
+                return [
+                    {
+                        "step": 1,
+                        "type": "MCP",
+                        "executor": "mcp_llm",
+                        "content": user_input,
+                        "description": "auto_fallback",
+                    }
+                ]
+
 
             # Phase 2: 结构化扩充（透传记忆）
             # 将 memory_context 打包进 context，传递给 Neo4j 协同规划层

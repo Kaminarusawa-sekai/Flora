@@ -47,6 +47,22 @@ class STMRecordDAO:
             # 注意：SQL 是 DESC，所以要 reverse 回时间顺序
             return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
+    def get_recent_messages_by_scope(self, scope_prefix: str, limit: int = 10) -> List[Dict[str, str]]:
+        like_pattern = f"{scope_prefix}:%"
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT role, content
+                FROM stm_records
+                WHERE user_id = ? OR user_id LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (scope_prefix, like_pattern, limit)
+            )
+            rows = cursor.fetchall()
+            return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+
     def clear_user_history(self, user_id: str):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM stm_records WHERE user_id = ?", (user_id,))

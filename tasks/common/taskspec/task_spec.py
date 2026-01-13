@@ -139,6 +139,7 @@ class TaskSpec(BaseModel):
     description: str
     content: str
     user_id: Optional[str] = None
+    task_id: Optional[str] = None
 
     # 新增控制字段
     is_parallel: bool = False

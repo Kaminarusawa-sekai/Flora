@@ -2,6 +2,7 @@ import json
 import os
 import time
 from typing import Dict, Any
+from pydantic import PrivateAttr
 from pydantic_settings import BaseSettings
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler

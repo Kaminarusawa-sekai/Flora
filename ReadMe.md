@@ -1,222 +1,188 @@
 
 
-<h1 align="center">Flora</h1>
-<h3 align="center">构建AI原生组织的开源框架</h3>
+# 🌿 Flora: The Reference Implementation of LLM-DRIVEN OOP
+
 <p align="center">
-  <strong>从"人找流程"到"流程找人"的范式革命 · 基于自相似架构的下一代多智能体框架</strong>
+<a href="LICENSE"><img src="[https://img.shields.io/badge/license-Apache%202.0-blue.svg](https://www.google.com/search?q=https://img.shields.io/badge/license-Apache%25202.0-blue.svg)" alt="License"></a>
+<img src="[https://img.shields.io/badge/Paradigm-LLM--Driven%20OOP-purple](https://www.google.com/search?q=https://img.shields.io/badge/Paradigm-LLM--Driven%2520OOP-purple)" alt="Paradigm">
+<img src="[https://img.shields.io/badge/Architecture-Abstract%20Semantic%20Computer-green](https://www.google.com/search?q=https://img.shields.io/badge/Architecture-Abstract%2520Semantic%2520Computer-green)" alt="ASC">
+<img src="[https://img.shields.io/badge/Paper-Coming%20Soon-red](https://www.google.com/search?q=https://img.shields.io/badge/Paper-Coming%2520Soon-red)" alt="Paper">
 </p>
 
 <p align="center">
-  <a href="https://github.com/your-username/flora/stargazers">
-    <img src="https://img.shields.io/github/stars/your-username/flora?style=social" alt="GitHub Stars">
-  </a>
-  <a href="https://opensource.org/licenses/Apache-2.0">
-    <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
-  </a>
-  <a href="https://github.com/your-username/flora/issues">
-    <img src="https://img.shields.io/github/issues/your-username/flora" alt="Issues">
-  </a>
+<strong>构建在“抽象语义计算机 (ASC)”之上的下一代数字化基础设施</strong>
+
+
+
+
+
+<sub>分形智能体模式 · 语义寻址 · 动态代码合成 · 神经符号同像性</sub>
 </p>
-
-<p align="center">
-  <a href="#-核心理念">核心理念</a> •
-  <a href="#-架构概述">架构概述</a> •
-  <a href="#-快速开始">快速开始</a> •
-  <a href="#-为什么选择flora">为什么选择Flora</a> •
-  <a href="#-应用场景">应用场景</a> •
-  <a href="#-贡献">贡献</a> •
-  <a href="#-许可证">许可证</a>
-</p>
-[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat-square&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/Kaminarusawa-sekai/Flora)
-
-
 
 ---
 
-## 🤔 核心理念
+## ⚡ 核心宣言 (Manifesto)
 
-**Flora** 诞生于一个核心洞察：工业时代的科层制组织在数字时代已触及天花板。内部协同成本高昂、信息失真、响应迟缓——这些"大公司病"的根源，在于前AI时代"人类智能"的绝对稀缺。
+Flora 不仅仅是一个多智能体框架，它是一次对计算机体系结构的**语义化重构**。
 
-Flora的答案是：**不再试图用更好的工具去"优化"旧范式，而是用AI作为新基因，从头构建一个"活"的、自组织的AI原生组织。**
+我们正在验证一篇即将发表的研究论文 **《LLM-DRIVEN OOP: Re-imagining Digital Infrastructure as an Abstract Semantic Computer》** 中的核心论点：
 
-### 范式转移：从"人找流程"到"流程找人"
+> "在大语言模型时代，代码不应再是僵化的指令序列，而应是有机的意图表达。我们将整个数字化系统形式化为一台逻辑上的 **抽象语义计算机 (ASC)**，并在其上运行一个 **语义虚拟机 (Semantic VM)**。"
 
-- **旧世界 (人找流程)**：员工作为组织的"CPU"，深陷于理解规则、寻找路径、推动协作的执行逻辑中。
-- **新世界 (流程找人)**：任务本身是"活"的。它通过一个分布式的"组织大脑"，自主寻找并驱动最合适的资源（人或AI）来完成自己。**人类，从此晋升为目标的"定义者"和异常的"裁决者"。**
+Flora 是这台虚拟机的**内核 (Kernel)**。它抛弃了传统的“方法链 (Method Chaining)”，实现了代码的**动态合成**与**极致晚绑定**。
 
-### 🚀 极速开发：突破流程改造的速度瓶颈
+---
 
-当前企业进行流程智能改造的最大痛点是**慢**：传统方案需要花费大量时间设计、建模和优化固定流程，导致改造周期冗长，难以快速响应业务变化。
+## 🔬 架构：抽象语义计算机 (ASC)
 
-Flora的创新视角是**从流程抽离，专注于业务域本身**：开发者无需陷入复杂的流程设计，只需定义业务目标和规则，AI会在执行过程中动态重建最优流程。
+Flora 将你的业务环境抽象为以下计算原语，彻底解决了传统 Agent "不可控"与"黑盒"的难题：
 
-这一转变带来的核心优势是**极快的开发速度和降低的实施难度**，使得大规模推广智能流程改造成为可能，让企业能够快速享受AI驱动的组织效能提升。
+### 1. LPU (Language Processing Unit) & 指令集
 
-### 🌟 为什么选择 Flora？
+Flora 将 LLM 视为系统的 **LPU**。不同于传统 CPU 处理二进制指令，LPU 处理 **自然语言指令集 (Natural Language ISA)**。
 
-| 传统框架                   | Flora AI组织                       |
-| :------------------------- | :--------------------------------- |
-| **❌ 固定工作流，难以扩展** | **✅ 自相似架构，无限递归扩展**     |
-| **❌ 单一执行策略**         | **✅ 蜂群执行器，多策略混沌探索**   |
-| **❌ 静态记忆管理**         | **✅ 三层记忆体系，自适应学习演进** |
-| **❌ 需要人工触发流程**     | **✅ 控制反转，AI自主决策执行路径** |
-| **❌ 流程设计复杂，改造缓慢** | **✅ 专注业务域，AI动态重建流程，开发速度极快，难度降低，支持大规模推广** |
+* **Intent Pointer (意图指针)**：替代传统的 Instruction Pointer，执行流由语义相似度驱动，而非硬编码跳转。
+* **JIT Logic Compilation**: 在运行时，虚拟机根据当前 `Context` 和 `Capability`，动态生成执行拓扑图。
 
-**Flora不是另一个聊天机器人编排框架。** 它是为**构建能够整体运作、具备"组织心智"的AI系统**而设计的。
+### 2. 语义寻址与内存模型 (Semantic Addressing)
 
-## 🏗️ 架构概述
+在 Flora 中，我们摒弃了脆弱的 ID 引用，实现了 **倒置引用解析 (Inverted Reference Resolution)**。
 
-Flora的核心是一个**自相似的分形架构**，它模仿了现代企业的组织结构，确保了组织的智能密度不会随规模扩大而被稀释。
+* **DataScope (数据作用域)**：类似于各种编程语言的作用域，防止全局上下文污染，抑制幻觉。
+* **Semantic Pointer (语义指针)**：智能体请求数据不再通过 `user_id=123`，而是通过语义描述 `(ref: "昨天那个投诉价格太高的客户")`。虚拟机负责在运行时将此描述“链接”到具体的数据库实体。
 
-### 自相似层设计
-每一层智能体都具有相同的内部结构，形成递归的自相似架构，就像分形几何一样，支持无限深度扩展。
+### 3. 分形智能体模式 (Fractal Agent Schema)
+
+系统中的每个节点（无论是个人助理还是整个销售部门）在结构上都是**同构**的。
+
+```text
+Agent = (Identity, Capability, DataScope, Sub-Agents, Topology)
 
 ```
-┌─────────────────────────────────┐
-│         智能体组织层 N           │
-│  ┌─────────────┬─────────────┐  │
-│  │   记忆系统   │   能力网络   │  │
-│  ├─────────────┼─────────────┤  │
-│  │   执行器    │   分配器    │  │
-│  └─────────────┴─────────────┘  │
-└─────────────────────────────────┘
-               ↓
-┌─────────────────────────────────┐
-│        智能体组织层 N-1         │
-│  ┌─────────────┬─────────────┐  │
-│  │   记忆系统   │   能力网络   │  │
-│  ├─────────────┼─────────────┤  │
-│  │   执行器    │   分配器    │  │
-│  └─────────────┴─────────────┘  │
-└─────────────────────────────────┘
+
+这种 **神经符号同像性 (Homoiconicity)** 意味着高层智能体可以像操作数据一样，动态读取、修改甚至重写底层智能体的能力定义，为**自演进软件 (Self-Improving Software)** 铺平道路。
+
+---
+
+## 🛠️ 虚拟机特性 (VM Features)
+
+Flora Runtime 是一个支持 **"人在回路" (Human-in-the-Loop)** 的确定性容器。
+
+### 🛑 软控制协议 (Soft Control Protocol)
+
+别再只用 `Ctrl+C` 了。Flora VM 支持语义级的中断信号，就像调试传统代码一样调试思维：
+
+* `SIG_PAUSE`: 在推理栈的特定帧暂停智能体。
+* `SIG_INJECT`: 运行时注入新的约束（例如："注意，预算临时下调了 20%"），VM 会自动触发重规划。
+* `SIG_RESUME`: 恢复执行流。
+
+### 🔍 认知栈追踪 (Cognitive Stack Trace)
+
+抛弃黑盒。Flora 提供完整的**认知栈帧 (Stack Frames)** 视图。你可以清晰看到：
+
+* Frame 1 (Root): 营销总监 Agent [规划策略]
+* Frame 2 (Child): 文案 Agent [生成草稿]
+* *Error*: 缺少产品参数 -> *Trigger*: 向上层 DataScope 寻址
+
+
+
+---
+
+## 💻 代码即自然语言 (Natural Language as Code)
+
+在 Flora 中，你定义的 YAML 不仅仅是配置，而是 **源代码**。
+
+```yaml
+# defined_agents/market_expert.yaml
+agent:
+  id: "market_growth_hacker"
+  
+  # [C]apability: 虚拟机的调度依据，支持模糊匹配
+  capabilities:
+    - "分析用户行为数据以识别增长点"
+    - "设计A/B测试实验方案"
+    - "动态调用文案与设计资源生成物料"
+
+  # [D]ataScope: 限制 LPU 的注意力窗口，防止幻觉
+  data_scope:
+    - "access: user_retention_table (last_30_days)"
+    - "access: competitor_report_v2"
+
+  # [T]opology: 业务合规性约束 (Soft Constraints)
+  constraints:
+    - "所有对外发布的文案必须经过 LegalAgent 审查"
+    - "单次实验预算不超过 $500"
+
 ```
 
+---
 
+## 🚀 快速启动 (Quick Start)
 
-![image-20251114120531728](C:\Users\17909\AppData\Roaming\Typora\typora-user-images\image-20251114120531728.png)
+### 1. 启动语义基础设施
 
-### 五大核心引擎
+Flora 依赖图数据库来存储其“语义状态”。
 
-每个Flora智能体都被注入了完整的"组织心智"，由五大引擎协同驱动：
+```bash
+# 启动 Neo4j (作为统一语义状态存储 USS)
+docker run -d -p 7474:7474 -p 7687:7687 \
+    -e NEO4J_AUTH=neo4j/flora_password neo4j:latest
 
-1.  **🧠 组织记忆系统**
-    - **功能**：分类记忆（关键记忆、情景记忆、长期记忆），确保任务上下文在传递中**无损**。
-    - **解决**：信息衰减与失真。
+```
 
-2.  **🕸️ 专项能力网络**
-    - **功能**：基于有向有环图的能力映射，支持影响的自动传播。任务能精准匹配到拥有对应"技能护照"的智能体。
-    - **解决**：责任空隙与协作泥潭。
+### 2. 安装 Flora VM
 
-3.  **🐝 蜂群执行引擎**
-    - **功能**：对复杂、探索性任务，启动多个智能体进行多路径并行探索与策略调优。
-    - **解决**：创新容错与成本。
+```bash
+git clone https://github.com/your-username/flora.git
+cd flora
+pip install -r requirements.txt
 
-4.  **🎯 精准任务分配器**
-    - **功能**：基于实时负载、技能匹配与任务优先级，进行全局动态调度。
-    - **解决**：资源利用最大化。
+```
 
-5.  **🎛️ 归纳演绎控制器**
-    - **功能**：从成功与失败中归纳核心模式，并在新场景中进行演绎推理，动态生成处理策略。
-    - **解决**：规则刚性与适应性缺失。
+### 3. 运行你的第一个分形智能体
 
-### 核心设计原则
+```bash
+export LLM_API_KEY="your-key-here"
+# 启动虚拟机 shell
+python flora_vm.py 
 
-- **自相似分形**：一个团队、一个部门、一个事业部，都具有相同且完整的内部协作结构，支持无损扩展。
-- **控制反转**：实现"流程找人"的基石。在Flora框架内，不是人去触发API，而是任务（流程）在驱动智能体。
+# 在 Shell 中输入指令：
+# flora> spawn agent:market_growth_hacker --goal "帮我设计一个针对流失用户的召回方案"
 
-## 🚀 快速开始
-
-### 前提条件
-
-- Python 3.10+
-- Neo4j (用于树型智能体系统)
-- 至少一个LLM API密钥 (OpenAI, Anthropic, 或本地模型)
-
-### 安装步骤
-
-1. **下载Neo4j**
-2. **克隆项目**
-   ```bash
-   git clone https://github.com/your-username/flora.git
-   cd flora
-   ```
-3. **在Neo4j中创建节点**
-4. **配置连接**
-5. **运行主程序**
-   ```bash
-   python main.py
-   ```
-6. **开始询问**
-
-## 📈 性能优势
-
-基于自相似架构和控制反转，Flora在复杂业务场景中表现出色：
-
-- **🚀 扩展性**：支持无限递归扩展，业务复杂度增长时性能线性下降
-- **🧩 适应性**：动态工作流组合，应对业务变更无需重构
-- **⚡ 效率**：蜂群执行器使探索性任务完成速度提升3-5倍
-- **🛡️ 可靠性**：三层记忆体系确保关键信息永不丢失
-
-## 📖 应用场景
-
-- **智能营销组织**：全周期自动执行从活动策划、内容创作到发布、互动的完整流程。
-- **敏捷研发团队**：动态分配任务、管理依赖、进行代码审查和知识沉淀。
-- **跨部门项目组**：自动填充责任空隙，实现无损信息传递和目标驱动协作。
-
-## 🔗 生态集成
-
-- **数据库**: Mysql(原生支持)
-- **AI模型**:  通义千问
-
-## 🤝 贡献
-
-我们正在构建的是未来组织的"操作系统标准"，这需要社区的集体智慧。我们热烈欢迎各种形式的贡献！
-
-- **🧬 核心框架**：帮助我们增强五大引擎，优化分布式调度算法。
-- **🧪 用例与模板**：贡献不同行业的智能体角色定义和工作流模板。
-- **📚 文档**：让Flora更易于理解和上手。
-
-请阅读我们的 [贡献指南](CONTRIBUTING.md) 开始。
-
-## 📄 许可证
-
-Flora核心框架采用 [Apache License 2.0](LICENSE) 开源。
-
-## 📌 版本历史
-
-### v0.20
-- 增加了前端界面
-- 对后端处理进行了拆分重构
-- 支持任务中暂停等复杂任务操作
-
-### v0.10
-- 整个框架基本完成
-- 核心架构和五大引擎实现
-- 基础功能验证完成
-
-## 🎯 后续计划
-
-- [ ] 可视化neo编排界面
-- [ ] 性能监控和调优工具
-
-## 📞 联系我们
-
-- **GitHub Issues**: [问题反馈](https://github.com/your-username/flora/issues)
+```
 
 ---
 
-**Flora：开启组织智能的新纪元。**
+## 🔮 路线图：通往自演进代码
 
-*如果您是一家正在经历"大公司病"之苦的企业，并希望深度探索AI组织的落地路径，我们提供专业的《企业AI成熟度与流程AI化潜力评估》咨询服务。欢迎通过我们的官网联系我们。*
+* **Phase 1 (Done)**: 实现 ASC 内核、语义寻址、分形架构。
+* **Phase 2 (In Progress)**: 实现 `SIG_INJECT` 等调试协议，完善可视化调试器 (The "Thought Debugger")。
+* **Phase 3 (Research)**: **自修改 (Self-Modification)**。实现 `ArchitectAgent`，允许高层智能体通过分析执行日志，自动重写底层 Agent 的 YAML 定义，实现代码的自我进化。
+
+---
+
+## 🤝 引用与贡献
+
+如果你对 **LLM-DRIVEN OOP** 范式感兴趣，或者想参与构建下一代计算机架构：
+
+* 阅读我们的 [贡献指南](https://www.google.com/search?q=CONTRIBUTING.md)。
+* 关注我们的 ArXiv 论文（即将发布）。
+
+**Citation:**
+
+> *Coming Soon. Please watch this repo for the ArXiv link.*
+
+---
 
 <p align="center">
-  如果 Flora 对您有帮助，请给我们一个 ⭐️ 支持！
-</p>
+<sub>Flora is an experimental implementation of the Abstract Semantic Computer (ASC).</sub>
 
-<p align="center">
-  <sub>用AI重新定义组织效能 · 从流程执行到智能涌现</sub>
+
+
+
+
+<sub>Designed for the post-Von Neumann era.</sub>
 </p>
 
 ---
 
-- 

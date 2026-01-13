@@ -45,7 +45,7 @@ class UnifiedMemoryManager():
     # 1. 六类记忆写入接口
     # ======================
 
-    def add_memory_intelligently(self,user_id,content: str):
+    def add_memory_intelligently(self,user_id,content: str, metadata: Dict = None):
         """
         智能记忆路由：
         1. 先存入短期记忆
@@ -60,7 +60,7 @@ class UnifiedMemoryManager():
                 "qwen", expected_type=ILLMCapability
             )
         # Step 1: 存入短期记忆（原始内容）
-        self.stm.add_message(content=content,role="user", user_id=self.user_id)
+        self.stm.add_message(content=content,role="user", user_id=user_id)
         print(user_id)
         # Step 2: 调用 Qwen 分类
         prompt = self._build_memory_classification_prompt(content)
@@ -74,26 +74,27 @@ class UnifiedMemoryManager():
             parsed = json.loads(response.strip())
         except Exception as e:
             print(f"[MemoryRouter] Qwen 解析失败: {e}，回退为 episodic")
-            self.add_episodic_memory(content)
+            self.add_episodic_memory(user_id,content)
             return
 
         # Step 3: 按类别写入
         if "core" in parsed:
             for item in parsed["core"]:
-                self.add_core_memory(item.strip())
+                self.add_core_memory(user_id,item.strip())
 
         if "episodic" in parsed:
             for item in parsed["episodic"]:
-                self.add_episodic_memory(item.strip())
+                self.add_episodic_memory(user_id,item.strip())
 
         if "semantic" in parsed:
             for item in parsed["semantic"]:
-                self.add_semantic_memory(item.strip())
+                self.add_semantic_memory(user_id,item.strip())
 
         if "procedural" in parsed:
             for item in parsed["procedural"]:
                 # 简化：将整句作为单步流程；进阶可让 Qwen 拆 steps
                 self.add_procedural_memory(
+                    user_id=user_id,
                     domain="general",
                     task_type="user_defined",
                     title=item[:50],  # 截取标题
@@ -113,6 +114,7 @@ class UnifiedMemoryManager():
             for item in parsed["vault"]:
                 # ⚠️ 安全建议：不要直接存储明文！这里仅为演示
                 self.add_vault_memory(
+                    user_id=user_id,
                     category="sensitive_auto_detected",
                     key_name="auto_" + str(hash(item))[:8],
                     value=item.strip()
@@ -343,8 +345,12 @@ class UnifiedMemoryManager():
         plan = self._generate_retrieval_plan(goal, scene="对话理解与任务选择")
         raw = self._execute_retrieval_plan(user_id, plan)
         
-        # 加入短期对话历史（始终需要）
-        chat_hist = self.stm.format_history(user_id,n=6)
+        
+        chat_hist = ""
+        if user_id and user_id.count(":") == 1:
+            chat_hist = self.stm.format_history_by_scope(user_id, n=6)
+        else:
+            chat_hist = self.stm.format_history(user_id,n=6)
         if chat_hist.strip():
             raw["short_term"] = f"[近期对话]\n{chat_hist}"
 

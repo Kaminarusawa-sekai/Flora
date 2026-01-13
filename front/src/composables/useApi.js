@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onUnmounted, unref } from 'vue';
 import { apiClient } from '../api/order';
 import { createSSEClient, getConversationStreamUrl } from '../utils/sse';
 import { createWebSocketClient, getTraceWebSocketUrl } from '../utils/socket';
@@ -15,21 +15,24 @@ export function useApi() {
 
 /**
  * 对话 SSE 组合函数
- * @param {string|Ref} sessionId - 会话 ID 或会话 ID 的 Ref
+ * @param {string} sessionId - 会话 ID
  * @param {Object} options - 配置选项
  * @returns {Object} SSE 相关的方法和状态
  */
-export function useConversationSSE(sessionId, options = {}) {
+export function useConversationSSE(sessionIdRef, options = {}) {
   const sseClient = ref(null);
   const isConnected = ref(false);
   const events = ref([]);
 
   const initializeSSE = async () => {
-    // 如果 sessionId 是 Ref，则使用其 value，否则直接使用
-    const currentSessionId = sessionId?.value || sessionId;
-    if (!currentSessionId) return;
+    const resolvedSessionId =
+      typeof sessionIdRef === 'function' ? sessionIdRef() : unref(sessionIdRef);
+    if (!resolvedSessionId) return;
 
-    const url = getConversationStreamUrl(currentSessionId);
+    const url = getConversationStreamUrl(resolvedSessionId);
+    const customEvents = (options.events || []).filter(
+      (eventType) => !['message', 'done', 'error', 'open'].includes(eventType)
+    );
     sseClient.value = createSSEClient(url, {
       events: ['done', 'error', ...(options.events || [])],
       maxReconnectAttempts: options.maxReconnectAttempts || 5,
@@ -56,6 +59,15 @@ export function useConversationSSE(sessionId, options = {}) {
       if (options.onError) options.onError(error);
     });
 
+    customEvents.forEach((eventType) => {
+      sseClient.value.on(eventType, (data) => {
+        events.value.push({ type: eventType, data });
+        if (options.onEvent) options.onEvent(eventType, data);
+        if (eventType === 'thought' && options.onThought) options.onThought(data);
+        if (eventType === 'meta' && options.onMeta) options.onMeta(data);
+      });
+    });
+
     await sseClient.value.connect();
   };
 
@@ -66,10 +78,6 @@ export function useConversationSSE(sessionId, options = {}) {
       isConnected.value = false;
     }
   };
-
-  onMounted(() => {
-    initializeSSE();
-  });
 
   onUnmounted(() => {
     disconnect();

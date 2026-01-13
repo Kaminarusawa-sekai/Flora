@@ -104,7 +104,7 @@ async def push_status_to_external(
 ):
     """推送状态到外部系统（单例函数）"""
     # 这里可以配置外部系统的地址
-    from ...config.settings import settings
+    from config.settings import settings
     
     client = PushClient(
         base_url=settings.EXTERNAL_SYSTEM_URL,
@@ -128,7 +128,7 @@ async def control_external_task(
     metadata: Optional[Dict[str, Any]] = None
 ):
     """控制外部系统中的任务（单例函数）"""
-    from ...config.settings import settings
+    from config.settings import settings
     
     client = PushClient(
         base_url=settings.EXTERNAL_SYSTEM_URL,

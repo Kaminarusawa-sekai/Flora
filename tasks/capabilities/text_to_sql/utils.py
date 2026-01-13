@@ -25,7 +25,7 @@ def is_safe_sql(sql: str) -> bool:
     #     tables = re.findall(r'FROM\s+`?(\w+)`?', sql_upper)
     #     if not all(t.lower() in [x.lower() for x in ALLOWED_TABLES] for t in tables):
     #         return False
-
+    return True
 
 def should_learn(df, sql: str) -> bool:
     """判断是否值得学习"""

@@ -38,7 +38,7 @@
         </div>
 
         <!-- AI Thinking Process -->
-        <div v-if="aiStatus === 'thinking' && aiThinkingText && !thinkingMessage" class="flex gap-3">
+        <div v-if="aiStatus === 'thinking' && aiThinkingText" class="flex gap-3">
           <div
             class="w-8 h-8 rounded-full flex items-center justify-center border text-xs bg-cyan-400/20 border-cyan-400/30">
             AI
@@ -100,14 +100,6 @@
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
                   </path>
                 </svg>
-              </div>
-              <div v-else-if="message.status === 'thinking'" class="flex flex-col gap-2">
-                <div class="text-xs font-mono text-cyan-300/80">
-                  Working ({{ thinkingElapsed }}s | esc to interrupt)
-                </div>
-                <div v-if="message.content" class="text-sm text-gray-400 italic">
-                  {{ message.content }}
-                </div>
               </div>
               <div v-else-if="message.status === 'error'" class="flex flex-col gap-2">
                 <div class="flex items-center gap-2">
@@ -227,12 +219,8 @@ const messagesContainer = ref(null)
 const showCommandMenu = ref(false);
 const commandPrefix = ref('');
 const showScrollToBottom = ref(false);
-const sessionId = computed(() => props.selectedTaskId);
+const sessionId = ref('default-session');
 const currentAIMessage = ref(null);
-const thinkingMessage = ref(null);
-const thinkingStartedAt = ref(null);
-const thinkingElapsed = ref(0);
-const thinkingTimer = ref(null);
 
 const messages = ref([]);
 const aiStatus = ref('idle'); // idle, thinking, processing
@@ -250,50 +238,6 @@ const renderMarkdown = (text) => {
   return DOMPurify.sanitize(html);
 };
 
-const startThinkingTimer = () => {
-  if (thinkingTimer.value) return;
-  thinkingStartedAt.value = Date.now();
-  thinkingElapsed.value = 0;
-  thinkingTimer.value = setInterval(() => {
-    if (!thinkingStartedAt.value) return;
-    thinkingElapsed.value = Math.max(
-      0,
-      Math.floor((Date.now() - thinkingStartedAt.value) / 1000)
-    );
-  }, 1000);
-};
-
-const stopThinkingTimer = () => {
-  if (thinkingTimer.value) {
-    clearInterval(thinkingTimer.value);
-    thinkingTimer.value = null;
-  }
-  thinkingStartedAt.value = null;
-  thinkingElapsed.value = 0;
-};
-
-const upsertThinkingMessage = (text) => {
-  if (text === undefined || text === null) return;
-  if (!thinkingMessage.value) {
-    thinkingMessage.value = {
-      id: Date.now(),
-      role: 'ai',
-      content: text,
-      timestamp: new Date(),
-      status: 'thinking'
-    };
-    messages.value.push(thinkingMessage.value);
-  }
-  thinkingMessage.value.content = text;
-};
-
-const clearThinkingMessage = () => {
-  if (!thinkingMessage.value) return;
-  messages.value = messages.value.filter(item => item !== thinkingMessage.value);
-  thinkingMessage.value = null;
-  stopThinkingTimer();
-};
-
 // 使用 SSE 组合函数连接对话流
 const {
   sseClient,
@@ -301,22 +245,14 @@ const {
   events,
   initializeSSE,
   disconnect
-} = useConversationSSE(sessionId, {
+} = useConversationSSE(sessionId.value, {
   // 确保这里监听了所有后端发出的事件名
-  events: ['thought', 'meta'],
+  events: ['thought', 'done', 'error'],
 
   onOpen: () => {
     console.log('SSE connected');
     aiStatus.value = 'idle';
   },
-  onThought: (data) => {
-    if (!data) return;
-    aiStatus.value = 'thinking';
-    aiThinkingText.value = data.message || '';
-    startThinkingTimer();
-    upsertThinkingMessage(aiThinkingText.value);
-  },
-  onMeta: () => {},
 
   onMessage: (data, event) => {
     // 处理 SSE 消息
@@ -337,8 +273,6 @@ const {
       // 可以选择显示这个思考过程，或者仅仅作为状态更新
       aiThinkingText.value = parsedData.message;
       console.log('AI Thought:', parsedData.message);
-      startThinkingTimer();
-      upsertThinkingMessage(aiThinkingText.value);
       return; // ⛔️ 这里的 return 很重要，防止思考过程进入下面的对话追加逻辑
     }
 
@@ -348,8 +282,6 @@ const {
       aiStatus.value = 'processing';
       const chunk = parsedData.chunk || parsedData.content;
 
-      stopThinkingTimer();
-      clearThinkingMessage();
       if (!currentAIMessage.value) {
         // 创建新的 AI 消息
         currentAIMessage.value = {
@@ -372,8 +304,6 @@ const {
     console.log('SSE done event:', data);
     aiStatus.value = 'idle';
     aiThinkingText.value = ''; // 清空思考文字
-    stopThinkingTimer();
-    clearThinkingMessage();
     if (currentAIMessage.value) {
       currentAIMessage.value.status = 'completed';
       currentAIMessage.value = null;
@@ -382,8 +312,6 @@ const {
   onError: (error) => {
     console.error('SSE error:', error);
     aiStatus.value = 'idle';
-    stopThinkingTimer();
-    clearThinkingMessage();
 
     // 添加错误消息
     const errorMessage = {
@@ -411,7 +339,6 @@ const {
 onUnmounted(() => {
   console.log('Component unmounting: Disconnecting SSE to prevent ghost connections.');
   disconnect();
-  stopThinkingTimer();
 });
 
 // !!! 关键修复 2：监听 Session ID 变化时的清理逻辑 !!!
@@ -426,7 +353,7 @@ watch(sessionId, async (newSessionId) => {
 
   // 再建立新连接
   initializeSSE();
-}, { immediate: true });
+});
 
 // 监听 selectedTaskId 变化，重新获取历史记录
 watch(() => props.selectedTaskId, async (newTaskId) => {
@@ -440,6 +367,9 @@ const fetchSessionHistory = async () => {
   if (!props.selectedTaskId) return;
   
   try {
+    // 同步 sessionId 为当前选中的任务 ID
+    sessionId.value = props.selectedTaskId;
+    
     // 使用 selectedTaskId 作为 sessionId 查询历史记录
     const history = await ConversationAPI.getSessionHistory(props.selectedTaskId);
     
@@ -451,13 +381,14 @@ const fetchSessionHistory = async () => {
       const formattedMessages = history.map(msg => ({
         id: msg.id || Date.now() + Math.random(),
         role: msg.role === 'user' ? 'user' : 'ai',
-        content: msg.utterance || '',
-        timestamp: new Date(msg.timestamp || Date.now()),
+        content: msg.content || '',
+        // 处理秒级时间戳，转换为毫秒级（乘以1000）
+        timestamp: new Date((msg.timestamp ? parseFloat(msg.timestamp) * 1000 : Date.now())),
         status: 'completed'
       }));
       
-      formattedMessages.reverse();
-      messages.value = formattedMessages;
+      // 将历史记录反转，确保按时间正序显示（最早的消息在前面）
+      messages.value = formattedMessages.reverse();
       await nextTick();
       scrollToBottom();
     }
@@ -466,13 +397,20 @@ const fetchSessionHistory = async () => {
   }
 };
 
+// !!! 关键修复 3：挂载时的防御性连接 !!!
 onMounted(async () => {
   scrollToBottom();
   
   // 获取历史记录
   await fetchSessionHistory();
 
-  // SSE 连接由 sessionId watcher 统一触发
+  // 先尝试断开可能存在的残留连接（防止热更新导致的重复）
+  disconnect();
+
+  // 稍微延迟一下再连接，确保之前的 socket 完全关闭
+  setTimeout(() => {
+    initializeSSE();
+  }, 100);
 });
 
 const aiStatusLabel = computed(() => {
@@ -557,14 +495,6 @@ const handleInputChange = () => {
 };
 
 const handleSend = async () => {
-  if (aiStatus.value !== 'idle') {
-    console.warn('AI is still responding; wait before sending another message.');
-    return;
-  }
-  if (!sessionId.value) {
-    console.warn('No session selected; skip sending message.');
-    return;
-  }
   if (!input.value.trim()) return;
 
   showCommandMenu.value = false;
@@ -586,8 +516,6 @@ const handleSend = async () => {
   messages.value.push(newMessage);
   input.value = '';
   aiStatus.value = 'thinking';
-  startThinkingTimer();
-  upsertThinkingMessage('');
 
   scrollToBottom();
 
@@ -618,8 +546,6 @@ const handleSend = async () => {
     console.error('Failed to send message:', error);
     newMessage.status = 'error';
     aiStatus.value = 'idle';
-    stopThinkingTimer();
-    clearThinkingMessage();
 
     // 添加错误提示
     const errorMessage = {

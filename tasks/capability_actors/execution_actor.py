@@ -14,6 +14,9 @@ from typing import Dict, Any, Optional, List, Union
 from common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage
 from capabilities import get_capability
 from capabilities.excution import BaseExecution
+from capabilities.llm.interface import ILLMCapability
+from capabilities.llm_memory.interface import IMemoryCapability
+
 from events.event_bus import event_bus
 from common.event import EventType
 
@@ -81,7 +84,74 @@ class ExecutionActor(Actor):
 
 
         # 注意：不再使用 msg.params（已废弃）
+        self._rewrite_running_config_with_memory(msg, running_config)
         self._execute(capability, self.task_id, running_config, self.reply_to)
+    
+    def _rewrite_running_config_with_memory(self, msg: ExecuteTaskMessage, running_config: Dict[str, Any]) -> None:
+        user_id = running_config.get("user_id") or msg.user_id
+        if not user_id:
+            return
+        text = running_config.get("description") or running_config.get("content")
+        if not text:
+            return
+        rewritten = self._rewrite_with_memory(user_id, msg.task_path, text)
+        if not rewritten or rewritten == text:
+            return
+        if "description" in running_config:
+            running_config["description"] = rewritten
+        if "content" in running_config:
+            running_config["content"] = rewritten
+
+    def _rewrite_with_memory(self, user_id: str, task_path: Optional[str], text: str) -> str:
+        if not text:
+            return text
+        try:
+            memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+        except Exception:
+            return text
+        scope = self._build_memory_scope(user_id, task_path, self.global_context)
+        if not scope:
+            return text
+        try:
+            memory_context = memory_cap.build_execution_context(scope, text)
+        except Exception as e:
+            self.logger.info(f"Memory read skipped: {e}")
+            return text
+        if not memory_context or memory_context.strip() == "无相关记忆可用。":
+            return text
+        try:
+            llm = get_capability("llm", expected_type=ILLMCapability)
+            prompt = (
+                "你是任务语句补全器。根据记忆，将用户语句补全为可执行的明确指令。\n"
+                "[记忆]\n"
+                f"{memory_context}\n"
+                "[原始语句]\n"
+                f"{text}\n"
+                "要求：\n"
+                "1. 只输出补全后的语句\n"
+                "2. 若无需补全，原样输出\n"
+                "3. 不要解释\n"
+            )
+            rewritten = llm.generate(prompt, max_tokens=200, temperature=0.2)
+            rewritten = rewritten.strip()
+            if rewritten:
+                self.logger.info(f"Rewritten execution task: {text} -> {rewritten}")
+                return rewritten
+        except Exception as e:
+            self.logger.info(f"Rewrite skipped: {e}")
+        return text
+
+    @staticmethod
+    def _build_memory_scope(user_id: str, task_path: Optional[str], global_context: Dict[str, Any]) -> str:
+        if not user_id:
+            return ""
+        root_agent_id = global_context.get("root_agent_id")
+        if not root_agent_id and task_path:
+            parts = [part for part in task_path.split("/") if part]
+            root_agent_id = parts[0] if parts else ""
+        if root_agent_id:
+            return f"{user_id}:{root_agent_id}"
+        return user_id
     
     def _execute(self, capability: str, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
         """
@@ -224,7 +294,10 @@ class ExecutionActor(Actor):
             trace_id=self.trace_id,
             task_path=self.task_path,
             status="NEED_INPUT",
-            result="yes, completed_params: " + str(completed_params),
+           result={
+                "missing_params": missing_params,
+                "completed_params": completed_params,
+            },
             error=None,
             agent_id="system",
             missing_params=missing_params

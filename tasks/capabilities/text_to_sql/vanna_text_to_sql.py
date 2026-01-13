@@ -129,8 +129,18 @@ class VannaTextToSQL(ITextToSQLCapability):
 
         # 执行 SQL（这部分仍需直接查业务库，不属于元数据，可保留）
         conn = self._get_database_connection()
+        records: List[Dict[str, Any]] = []
         try:
-            df = pd.read_sql(sql, conn)
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                rows = cursor.fetchall()
+                if rows:
+                    if isinstance(rows[0], dict):
+                        records = rows
+                    else:
+                        columns = [col[0] for col in cursor.description] if cursor.description else []
+                        records = [dict(zip(columns, row)) for row in rows]
+            df = pd.DataFrame(records)
             logger.info(f"[SQL] Executed: {sql} | Rows: {len(df)}")
         finally:
             conn.close()
@@ -140,9 +150,9 @@ class VannaTextToSQL(ITextToSQLCapability):
             logger.info(f"[LEARN] Auto-trained on query")
 
         return {
-            "result": df.to_dict(orient="records"),
+            "result": records,
             "sql": sql,
-            "rows": len(df)
+            "rows": len(records)
         }
 
     def _get_database_connection(self):

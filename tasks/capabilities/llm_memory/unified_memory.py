@@ -61,6 +61,7 @@ class UnifiedMemory(IMemoryCapability):
     # 类级缓存：所有实例共享，按 user_id 复用 manager
     _manager_cache: TTLCache = TTLCache(maxsize=500, ttl=3600)
     _cache_lock = threading.Lock()
+    _state_store: Dict[str, Any] = {}
 
     def __init__(
         self,
@@ -180,6 +181,16 @@ class UnifiedMemory(IMemoryCapability):
     def get_core_memory(self, user_id: str) -> str:
         self._ensure_initialized()
         return self._memory_manager.get_core_memory(user_id)
+
+    def save_state(self, task_id: str, state_data: Any) -> None:
+        if not task_id:
+            return
+        self._state_store[task_id] = state_data
+
+    def load_state(self, task_id: str):
+        if not task_id:
+            return None
+        return self._state_store.get(task_id)
 
     def _ensure_initialized(self):
         if not self.is_initialized:
