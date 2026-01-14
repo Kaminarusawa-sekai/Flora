@@ -8,7 +8,7 @@ from common import (
 from ..llm.interface import ILLMCapability
 from external.client.task_client import TaskClient
 
-class CommonTaskExecution(ITaskExecutionManagerCapability):
+class CommonTaskExecutionManager(ITaskExecutionManagerCapability):
     """任务执行管理器 - 负责任务的生命周期协调、外部执行系统交互和状态同步"""
     
     def initialize(self, config: Dict[str, Any]) -> None:
@@ -55,6 +55,9 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
         Returns:
             任务执行上下文DTO
         """
+        schedule_payload = parameters.pop("_schedule", None)
+        schedule_dto = parameters.pop("_schedule_dto", None)
+
         # 创建任务执行上下文
         task_context = TaskExecutionContextDTO(
             request_id=request_id,
@@ -65,7 +68,7 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
             awaiting_input_for=None,
             interruption_message=None,
             last_checkpoint=None,
-            schedule=None,
+            schedule=schedule_dto,
             control_status="NORMAL",
             parent_task_id=None,
             run_index=None,
@@ -88,15 +91,53 @@ class CommonTaskExecution(ITaskExecutionManagerCapability):
                 "description": parameters.get("description", "")
             })
 
-            # [适配修改] 使用新的 submit_task 方法
-            # 注意：trace_id 是返回值，request_id 是传入参数
-            trace_id = self.external_executor.submit_task(
-                task_name=task_type,      # 使用 task_type 作为任务名，或者从 parameters 获取 name
-                task_content=task_content,
-                parameters=parameters,
-                user_id=user_id,
-                request_id=request_id     # 传入 request_id 以便 client 传递给后端
-            )
+            trace_id = None
+            if schedule_payload:
+                schedule_type = schedule_payload.get("schedule_type")
+                schedule_config = schedule_payload.get("schedule_config") or {}
+
+                if schedule_type == "CRON" and schedule_config.get("cron_expression"):
+                    result = self.external_executor.register_scheduled_task(
+                        task_name=task_type,
+                        task_content=task_content,
+                        schedule=schedule_config,
+                        parameters=parameters,
+                        user_id=user_id,
+                        request_id=request_id
+                    )
+                    trace_id = result.get("trace_id")
+                elif schedule_type == "DELAYED" and schedule_config.get("delay_seconds") is not None:
+                    result = self.external_executor.register_delayed_task(
+                        task_name=task_type,
+                        task_content=task_content,
+                        delay_seconds=int(schedule_config.get("delay_seconds", 0)),
+                        parameters=parameters,
+                        user_id=user_id,
+                        request_id=request_id
+                    )
+                    trace_id = result.get("trace_id")
+                elif schedule_type == "LOOP" and schedule_config.get("interval_sec") is not None:
+                    result = self.external_executor.register_recurring_task(
+                        task_name=task_type,
+                        task_content=task_content,
+                        parameters=parameters,
+                        user_id=user_id,
+                        interval_seconds=int(schedule_config.get("interval_sec", 0)),
+                        max_runs=schedule_config.get("max_rounds"),
+                        request_id=request_id
+                    )
+                    trace_id = result.get("trace_id")
+
+            if not trace_id:
+                # [适配修改] 使用新的 submit_task 方法
+                # 注意：trace_id 是返回值，request_id 是传入参数
+                trace_id = self.external_executor.submit_task(
+                    task_name=task_type,      # 使用 task_type 作为任务名，或者从 parameters 获取 name
+                    task_content=task_content,
+                    parameters=parameters,
+                    user_id=user_id,
+                    request_id=request_id     # 传入 request_id 以便 client 传递给后端
+                )
             
             # 记录外部任务ID (即 trace_id)
             task_context.external_job_id = trace_id

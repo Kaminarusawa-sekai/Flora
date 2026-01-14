@@ -75,7 +75,7 @@ class ResultAggregatorActor(Actor):
         while True:
             try:
                 # 使用asyncio.run()在同步上下文中运行异步方法
-                signal_status = asyncio.run(event_bus.get_signal_status(trace_id))
+                signal_status = event_bus.get_signal_status(trace_id)
                 signal = signal_status.get("signal", SignalStatus.NORMAL)
                 
                 logger.info(f"Signal status check for trace_id {trace_id}: {signal}")

@@ -147,6 +147,44 @@ class TaskClient:
             "schedule_config": schedule
         }
     
+
+    def register_delayed_task(
+        self,
+        task_name: str,
+        task_content: Dict[str, Any],
+        delay_seconds: int,
+        parameters: Dict[str, Any],
+        user_id: str,
+        request_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if not request_id:
+            request_id = str(uuid.uuid4())
+
+        parameters["_user_id"] = user_id
+
+        payload = {
+            "task_name": task_name,
+            "task_content": task_content,
+            "input_params": parameters,
+            "loop_config": None,
+            "is_temporary": True,
+            "schedule_type": "DELAYED",
+            "schedule_config": {"delay_seconds": delay_seconds},
+            "request_id": request_id
+        }
+
+        resp_data = self._request("POST", "/ad-hoc-tasks", json=payload)
+
+        return {
+            "success": True,
+            "message": resp_data["message"],
+            "trace_id": resp_data["trace_id"],
+            "request_id": request_id,
+            "schedule_type": "DELAYED",
+            "schedule_config": {"delay_seconds": delay_seconds}
+        }
+
+
     def unregister_scheduled_task(self, trace_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """取消注册定时任务
         

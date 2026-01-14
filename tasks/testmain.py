@@ -28,7 +28,7 @@ def main():
             user_id="<user_id:1>,<tenant_id:1>",
             content="帮设定一下裂变目标，我是做投影仪的",
             description="设定裂变目标任务",
-            trace_id=str(uuid.uuid4()),
+            trace_id="test-trace-1e6823a5",
             task_path="/",
             reply_to=None,  # 回复将由系统自动路由回本进程（在 simpleSystem 中）
         )

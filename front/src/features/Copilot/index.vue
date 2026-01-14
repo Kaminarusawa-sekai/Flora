@@ -47,14 +47,9 @@
             <div
               class="border rounded-2xl p-3 text-sm text-gray-200 leading-relaxed shadow-sm bg-white/5 border-white/10 rounded-tl-none">
               <div class="flex items-center gap-2">
-                <span class="text-cyan-300 animate-pulse">Thinking</span>
-                <svg class="animate-spin -ml-1 mr-1 h-3 w-3 text-cyan-300" xmlns="http://www.w3.org/2000/svg"
-                  fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
-                  </path>
-                </svg>
+                <span class="inline-block w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                <span class="text-cyan-300">{{ thinkingStatusText }}</span>
+                <span class="text-gray-500 text-xs">({{ thinkingElapsed }}s)</span>
               </div>
               <div class="mt-2 text-sm text-gray-400 italic">
                 {{ aiThinkingText }}
@@ -102,8 +97,11 @@
                 </svg>
               </div>
               <div v-else-if="message.status === 'thinking'" class="flex flex-col gap-2">
-                <div class="text-xs font-mono text-cyan-300/80">
-                  Working ({{ thinkingElapsed }}s | esc to interrupt)
+                <div class="text-xs font-mono text-cyan-300/80 flex items-center gap-2">
+                  <span class="inline-block w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                  <span>{{ thinkingStatusText }}</span>
+                  <span class="text-gray-500">({{ thinkingElapsed }}s)</span>
+                  <span class="text-gray-600 text-[10px]">esc to interrupt</span>
                 </div>
                 <div v-if="message.content" class="text-sm text-gray-400 italic">
                   {{ message.content }}
@@ -234,9 +232,27 @@ const thinkingStartedAt = ref(null);
 const thinkingElapsed = ref(0);
 const thinkingTimer = ref(null);
 
+// 状态轮换相关
+const thinkingStates = [
+  'Analyzing request',
+  'Understanding context',
+  'Searching knowledge',
+  'Reasoning',
+  'Generating response',
+  'Thinking deeply',
+  'Processing information'
+];
+const currentThinkingStateIndex = ref(0);
+const thinkingStateTimer = ref(null);
+
 const messages = ref([]);
 const aiStatus = ref('idle'); // idle, thinking, processing
 const aiThinkingText = ref(''); // 新增：用于显示具体的思考步骤
+
+// 计算属性：当前显示的状态文字
+const thinkingStatusText = computed(() => {
+  return thinkingStates[currentThinkingStateIndex.value];
+});
 
 const md = new MarkdownIt({
   html: false,
@@ -250,6 +266,24 @@ const renderMarkdown = (text) => {
   return DOMPurify.sanitize(html);
 };
 
+// 启动状态轮换
+const startThinkingStateRotation = () => {
+  currentThinkingStateIndex.value = 0;
+  if (thinkingStateTimer.value) return;
+  thinkingStateTimer.value = setInterval(() => {
+    currentThinkingStateIndex.value = (currentThinkingStateIndex.value + 1) % thinkingStates.length;
+  }, 2000); // 每2秒切换一次
+};
+
+// 停止状态轮换
+const stopThinkingStateRotation = () => {
+  if (thinkingStateTimer.value) {
+    clearInterval(thinkingStateTimer.value);
+    thinkingStateTimer.value = null;
+  }
+  currentThinkingStateIndex.value = 0;
+};
+
 const startThinkingTimer = () => {
   if (thinkingTimer.value) return;
   thinkingStartedAt.value = Date.now();
@@ -261,6 +295,8 @@ const startThinkingTimer = () => {
       Math.floor((Date.now() - thinkingStartedAt.value) / 1000)
     );
   }, 1000);
+  // 同时启动状态轮换
+  startThinkingStateRotation();
 };
 
 const stopThinkingTimer = () => {
@@ -270,6 +306,8 @@ const stopThinkingTimer = () => {
   }
   thinkingStartedAt.value = null;
   thinkingElapsed.value = 0;
+  // 同时停止状态轮换
+  stopThinkingStateRotation();
 };
 
 const upsertThinkingMessage = (text) => {
@@ -292,6 +330,32 @@ const clearThinkingMessage = () => {
   messages.value = messages.value.filter(item => item !== thinkingMessage.value);
   thinkingMessage.value = null;
   stopThinkingTimer();
+};
+
+// ESC 键中断请求
+const interruptRequest = () => {
+  // 断开 SSE 连接
+  disconnect();
+  // 重置状态
+  aiStatus.value = 'idle';
+  stopThinkingTimer();
+  clearThinkingMessage();
+  // 清理当前 AI 消息
+  if (currentAIMessage.value) {
+    currentAIMessage.value.status = 'interrupted';
+    currentAIMessage.value.content += '\n\n*[Interrupted by user]*';
+    currentAIMessage.value = null;
+  }
+  // 重新连接 SSE
+  initializeSSE();
+};
+
+// ESC 键监听处理器
+const handleKeyDown = (e) => {
+  if (e.key === 'Escape' && (aiStatus.value === 'thinking' || aiStatus.value === 'processing')) {
+    e.preventDefault();
+    interruptRequest();
+  }
 };
 
 // 使用 SSE 组合函数连接对话流
@@ -412,6 +476,8 @@ onUnmounted(() => {
   console.log('Component unmounting: Disconnecting SSE to prevent ghost connections.');
   disconnect();
   stopThinkingTimer();
+  // 移除 ESC 键监听
+  window.removeEventListener('keydown', handleKeyDown);
 });
 
 // !!! 关键修复 2：监听 Session ID 变化时的清理逻辑 !!!
@@ -468,7 +534,10 @@ const fetchSessionHistory = async () => {
 
 onMounted(async () => {
   scrollToBottom();
-  
+
+  // 添加 ESC 键监听
+  window.addEventListener('keydown', handleKeyDown);
+
   // 获取历史记录
   await fetchSessionHistory();
 

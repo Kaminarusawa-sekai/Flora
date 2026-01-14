@@ -51,7 +51,79 @@ class DialogStateRepository:
         if 'description' not in data:
             data['description'] = ''
         
-        return DialogStateDTO.model_validate(data)
+         # 处理列表字段的默认值
+        if 'pending_tasks' not in data:
+            data['pending_tasks'] = []
+        if 'recent_tasks' not in data:
+            data['recent_tasks'] = []
+        if 'missing_required_slots' not in data:
+            data['missing_required_slots'] = []
+        
+        # 处理布尔字段的默认值
+        for bool_field in ['is_in_idle_mode', 'requires_clarification', 'waiting_for_confirmation']:
+            if bool_field not in data:
+                data[bool_field] = False
+        
+        # 处理 Optional 字段的默认值
+        for optional_field in ['current_intent', 'active_task_execution', 
+                               'last_mentioned_task_id', 'clarification_context', 'clarification_message',
+                               'confirmation_action', 'confirmation_payload', 'current_request_id']:
+            if optional_field not in data:
+                data[optional_field] = None
+        
+        # 特殊处理 active_task_draft（包含枚举和嵌套对象）
+        if 'active_task_draft' in data and data['active_task_draft']:
+            draft_data = data['active_task_draft']
+            
+            # 确保 status 是枚举值
+            if 'status' in draft_data:
+                
+                draft_data['status'] = TaskDraftStatus(draft_data['status'])
+            
+            # 处理 slots 中的 SlotValueDTO 对象
+            if 'slots' in draft_data and draft_data['slots']:
+                for slot_name, slot_value in draft_data['slots'].items():
+                    # 确保 source 是枚举值
+                    if isinstance(slot_value, dict) and 'source' in slot_value:
+                        slot_value['source'] = SlotSource(slot_value['source'])
+                        draft_data['slots'][slot_name] = SlotValueDTO(**slot_value)
+            
+            # 处理 schedule 对象
+            if 'schedule' in draft_data and draft_data['schedule']:
+                draft_data['schedule'] = ScheduleDTO(**draft_data['schedule'])
+            
+            # 处理其他默认值
+            if 'is_dynamic_schema' not in draft_data:
+                draft_data['is_dynamic_schema'] = True
+            if 'completeness_score' not in draft_data:
+                draft_data['completeness_score'] = 0.0
+            if 'original_utterances' not in draft_data:
+                draft_data['original_utterances'] = []
+            if 'missing_slots' not in draft_data:
+                draft_data['missing_slots'] = []
+            if 'invalid_slots' not in draft_data:
+                draft_data['invalid_slots'] = []
+            if 'user_id' not in draft_data:
+                draft_data['user_id'] = ''
+            
+            # 将 draft_data 转换为 TaskDraftDTO 对象
+            data['active_task_draft'] = TaskDraftDTO(**draft_data)
+        else:
+            data['active_task_draft'] = None
+        
+        # 确保 last_updated 是 datetime
+        if 'last_updated' in data:
+            # 如果是字符串，转换为 datetime
+            if isinstance(data['last_updated'], str):
+                data['last_updated'] = datetime.fromisoformat(data['last_updated'].replace('Z', '+00:00'))
+            # 如果是时间戳，转换为 datetime
+            elif isinstance(data['last_updated'], (int, float)):
+                data['last_updated'] = datetime.fromtimestamp(data['last_updated'], timezone.utc)
+        else:
+            data['last_updated'] = datetime.now(timezone.utc)
+        
+        return DialogStateDTO(**data)
+
 
     def save_dialog_state(self, state: DialogStateDTO) -> bool:
         conn = self.pool.get_connection()
@@ -141,16 +213,20 @@ class DialogStateRepository:
         conn = self.pool.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute('SELECT state_json FROM dialog_states')
+            cursor.execute('''
+                SELECT state_json, last_updated
+                FROM dialog_states
+                ORDER BY last_updated DESC
+            ''')
             rows = cursor.fetchall()
             
-            user_sessions = []
+            sessions: List[DialogStateDTO] = []
             for row in rows:
                 state = self._deserialize_state(row[0])
                 if state.user_id == user_id:
-                    user_sessions.append(state)
+                    sessions.append(state)
             
-            return user_sessions
+            return sessions
         except Exception as e:
             logger.error(f"Failed to get sessions by user id {user_id}: {e}")
             return []

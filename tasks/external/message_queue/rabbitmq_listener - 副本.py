@@ -21,7 +21,6 @@ from common.messages.task_messages import AgentTaskMessage, ResumeTaskMessage
 
 
 
-
 class RabbitMQListenerImpl(MessageQueueListener):
     """
     RabbitMQ消息监听器实现类
@@ -86,8 +85,8 @@ class RabbitMQListenerImpl(MessageQueueListener):
                 actor_msg = AgentTaskMessage(
                     task_id=task_id,
                     trace_id=trace_id,
-                    task_path="/",  # 根任务路径
-                    agent_id=schedule_meta.get("agent_id", "DEFAULT_ROOT_AGENT"),
+                    task_path="/0",  # 根任务路径
+                    agent_id=schedule_meta.get("definition_id", "DEFAULT_ROOT_AGENT"),
                     content=data.get('user_input', ''),
                     description=input_params.get('description', data.get('user_input', '')),
                     user_id=data.get('user_id', 'system'),

@@ -8,6 +8,19 @@ from external.db.session import dialect, async_session_factory
 from external.messaging.base import MessageBroker
 
 logger = logging.getLogger(__name__)
+def get_root_agent_id(definition_id: str) -> str:
+    """
+    根据 definition_id 获取对应的根节点 agent_id
+
+    Args:
+        definition_id: 任务定义ID
+
+    Returns:
+        str: 根节点 agent_id
+    """
+    # TODO: 实现根据 definition_id 查询对应根节点的逻辑
+    return "marketing"
+
 
 
 class ScheduleScanner:
@@ -55,16 +68,29 @@ class ScheduleScanner:
                 try:
                     # 更新状态为已调度
                     await repo.update_status(task.id, "SCHEDULED")
-                    
-                    # 构建执行消息
+
+                    # 从 input_params 中提取 user_id
+                    input_params = task.input_params or {}
+                    user_id = input_params.get("_user_id", "system")
+
+                    # 获取根节点 agent_id
+                    agent_id = get_root_agent_id(task.definition_id)
+
+                    # 构建执行消息（匹配 tasks 端 callback 期望的格式）
                     execute_msg = {
-                        "task_id": task.id,
-                        "definition_id": task.definition_id,
-                        "trace_id": task.trace_id,
-                        "input_params": task.input_params,
-                        "scheduled_time": task.scheduled_time.isoformat(),
-                        "round_index": task.round_index,
-                        "schedule_config": task.schedule_config
+                        "msg_type": "START_TASK",
+                        "task_id": task.trace_id or str(task.id),  # 使用 trace_id 作为任务标识
+                        "user_input": input_params.get("description", ""),  # 任务描述作为 user_input
+                        "user_id": user_id,
+                        "agent_id": agent_id,  # 根节点 agent_id
+                        # 附加调度相关信息
+                        "schedule_meta": {
+                            "definition_id": task.definition_id,
+                            "scheduled_time": task.scheduled_time.isoformat(),
+                            "round_index": task.round_index,
+                            "schedule_config": task.schedule_config,
+                            "input_params": input_params
+                        }
                     }
                     
                     # 推送到消息队列

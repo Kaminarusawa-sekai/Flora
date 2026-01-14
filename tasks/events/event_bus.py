@@ -17,6 +17,10 @@ import queue
 import time 
 from dataclasses import dataclass 
 from enum import Enum 
+from datetime import datetime, date
+from decimal import Decimal
+import numpy as np
+from pydantic import BaseModel
 
 # 导入信号状态枚举 
 from common.signal.signal_status import SignalStatus 
@@ -128,13 +132,18 @@ class EventPublisher:
         专用通道：发送裂变请求
         """
         
-        url = f"{self.base_url}/v1/lifecycle/{payload['trace_id']}/split" 
+        url = f"{self.base_url}/api/v1/traces/{payload['trace_id']}/split" 
         try: 
-            resp = await client.post(url, json=payload["data"]) 
+            # 调整请求体字段，将 snapshot 改为 reasoning_snapshot
+            split_data = payload["data"].copy()
+            if "snapshot" in split_data:
+                split_data["reasoning_snapshot"] = split_data.pop("snapshot")
+            
+            resp = await client.post(url, json=split_data) 
             if resp.status_code >= 400: 
                 self.log.error(f"Split task failed: {resp.status_code} - {resp.text}") 
             else: 
-                self.log.info(f"Task split successfully: {len(payload['data']['subtasks_meta'])} subtasks created.") 
+                self.log.info(f"Task split successfully: {len(split_data['subtasks_meta'])} subtasks created.") 
         except Exception as e: 
             self.log.error(f"Failed to send split request: {str(e)}") 
             raise 
@@ -144,9 +153,10 @@ class EventPublisher:
         通用通道：发送状态事件
         """
         
-        url = f"{self.base_url}/v1/lifecycle/events" 
+        url = f"{self.base_url}/api/v1/traces/events" 
         try: 
-            resp = await client.post(url, json=payload) 
+            serializable_payload = self.serialize_payload(payload)
+            resp = await client.post(url, json=serializable_payload) 
             if resp.status_code >= 400: 
                 self.log.error(f"Event report failed: {resp.status_code} - {resp.text}") 
             else: 
@@ -330,7 +340,7 @@ class EventPublisher:
     #         enriched_context_snapshot=data.get('snapshot') 
     #     ) 
 
-    async def get_signal_status(self, trace_id: str) -> Dict[str, Any]: 
+    def get_signal_status(self, trace_id: str) -> Dict[str, Any]: 
         """ 
         获取跟踪链路的当前信号状态 
         
@@ -344,13 +354,14 @@ class EventPublisher:
             httpx.RequestError: 如果请求失败 
             httpx.HTTPStatusError: 如果返回非200状态码 
         """ 
-        url = f"{self.base_url}/v1/commands/{trace_id}/status" 
-        async with httpx.AsyncClient(timeout=10.0) as client: 
+        url = f"{self.base_url}/api/v1/traces/{trace_id}/status" 
+        with httpx.Client(timeout=10.0) as client: 
             try: 
-                resp = await client.get(url) 
+                resp = client.get(url) 
                 resp.raise_for_status() 
                 result = resp.json() 
-                signal_value = result.get('signal') 
+                # 服务器返回的是 global_signal 字段，而不是 signal 字段
+                signal_value = result.get('global_signal') 
                 if signal_value: 
                     try: 
                         result['signal'] = SignalStatus(signal_value) 
@@ -396,7 +407,9 @@ class EventPublisher:
                 "task_type": plan.get("type") # AGENT / MCP
             }
         }
+    
 
+    
     # ======================== 
     # 生命周期管理 
     # ======================== 
@@ -433,6 +446,30 @@ class EventPublisher:
         if self._running.is_set(): 
             self.shutdown() 
 
-
+    def serialize_payload(self,obj):
+        # 处理常见非 JSON 类型
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        
+        # 处理容器类型
+        if isinstance(obj, list):
+            return [self.serialize_payload(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: self.serialize_payload(v) for k, v in obj.items()}
+        
+        # 处理 Pydantic 模型
+        if isinstance(obj, BaseModel):
+            return obj.model_dump()
+        
+         # 👇 关键修复：其他类型（str, int, bool, None 等）原样返回
+        return obj
 # 单例实例（注意：在多进程环境中慎用） 
 event_bus = EventPublisher()

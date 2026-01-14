@@ -105,6 +105,7 @@ class UnifiedMemoryManager():
             for item in parsed["resource"]:
                 # 进阶：可用正则提取路径，这里简化处理
                 self.add_resource_memory(
+                    user_id=user_id,
                     file_path="mentioned_in_text",
                     summary=item.strip(),
                     doc_type="text"
