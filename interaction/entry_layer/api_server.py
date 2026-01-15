@@ -102,13 +102,43 @@ def get_current_user(x_user_id: Optional[str] = Header(None)):
 # 记忆沉淀函数
 def trigger_memory_extraction(session_id: str, user_id: str):
     """触发记忆沉淀
-    
+
     在会话结束后，将对话内容沉淀为结构化记忆
     """
-    print(f"[后台任务] 开始为用户 {user_id} 的会话 {session_id} 沉淀记忆...")
-    # 这里应该调用记忆管理模块的API来实现记忆沉淀
-    # 例如：memory_manager.extract_and_store_memory(session_id, user_id)
-    print(f"[后台任务] 会话 {session_id} 的记忆沉淀完成")
+    try:
+        print(f"[后台任务] 开始为用户 {user_id} 的会话 {session_id} 沉淀记忆...")
+
+        # 1. 获取对话历史
+        from capabilities.context_manager.interface import IContextManagerCapability
+        context_manager = capability_registry.get_capability("context_manager", IContextManagerCapability)
+        recent_turns = context_manager.get_recent_turns(limit=20, session_id=session_id)
+
+        if not recent_turns:
+            print(f"[后台任务] 会话 {session_id} 没有对话记录，跳过记忆沉淀")
+            return
+
+        # 2. 格式化对话内容
+        conversation_text = ""
+        for turn in reversed(recent_turns):  # 反转为正序
+            role = getattr(turn, 'role', 'unknown')
+            utterance = getattr(turn, 'utterance', '')
+            if role == 'user':
+                conversation_text += f"用户: {utterance}\n"
+            else:
+                conversation_text += f"助手: {utterance}\n"
+
+        # 3. 调用记忆能力存储
+        from capabilities.memory.interface import IMemoryCapability
+        memory_cap = capability_registry.get_capability("memory", IMemoryCapability)
+
+        # 将整个对话作为记忆存储（Mem0 会自动提取关键信息）
+        memory_cap.add_memory(user_id=user_id, text=conversation_text)
+
+        print(f"[后台任务] 会话 {session_id} 的记忆沉淀完成")
+    except ValueError as e:
+        print(f"[后台任务] 记忆沉淀跳过（能力未启用）: {e}")
+    except Exception as e:
+        print(f"[后台任务] 记忆沉淀失败: {e}")
 
 
 def _get_dify_dataset_client() -> DifyDatasetClient:

@@ -94,7 +94,7 @@ class ScheduleScanner:
                     }
                     
                     # 推送到消息队列
-                    await self.broker.publish("task.scheduled", execute_msg)
+                    await self.broker.publish("work.excute", execute_msg)
                     
                     logger.debug(f"Scheduled task {task.id} for execution")
                     

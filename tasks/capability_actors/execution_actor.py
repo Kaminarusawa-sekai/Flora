@@ -247,31 +247,62 @@ class ExecutionActor(Actor):
             self.logger.exception(f"Dify execution failed: {e}")
             self._send_error(task_id, str(e), reply_to)
 
-    def _execute_http(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
-        """
-        执行 HTTP 请求
-        """
+        def _execute_http(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
+            """
+            执行 HTTP 请求
+
+            running_config 应包含:
+            - url: 完整的请求 URL
+            - method: HTTP 方法 (GET/POST/PUT/DELETE)
+            - headers: 请求头
+            - args_schema: 参数 schema 列表（来自节点的 args 属性）
+            - inputs: 输入参数
+            - description: 任务描述（用于 LLM 提取参数）
+            - content: 任务内容
+            """
         self.logger.info(f"Executing HTTP request for task {task_id}")
 
         try:
-            # HTTP 执行通常依赖 running_config 中的 url/method/headers/data 等
+            # 从 running_config 中提取 inputs
+            inputs = running_config.get("inputs", {})
+
+            # 执行 HTTP 请求
             result = self._excution.execute(
                 connector_name="http",
-                operation_name="execute",
-                inputs=running_config.get("data", {}),
+                inputs=inputs,
                 params=running_config  # 整个 running_config 作为 params 传入
             )
 
-            exec_result = result.get("result", {})
-            if exec_result.get("status") == "NEED_INPUT":
-                missing = exec_result.get("missing", [])
-                self._send_missing_parameters(task_id, missing, running_config, reply_to)
+            # 检查返回状态
+            status = result.get("status")
+
+            if status == "NEED_INPUT":
+                # 缺少必填参数
+                missing = result.get("missing", {})
+                completed = result.get("completed", {})
+                # 将 missing dict 转换为描述列表
+                missing_list = [f"{k}: {v}" for k, v in missing.items()] if isinstance(missing, dict) else missing
+                self._send_missing_parameters(task_id, missing_list, completed, reply_to)
+            elif status == "SUCCESS":
+                self._send_success(task_id, result.get("result", result), reply_to)
+            elif status == "ERROR":
+                self._send_error(task_id, result.get("error", "Unknown error"), reply_to)
             else:
-                self._send_success(task_id, exec_result, reply_to)
+                # 没有明确状态，视为成功（兼容旧格式）
+                exec_result = result.get("result", result)
+                if isinstance(exec_result, dict) and exec_result.get("status") == "NEED_INPUT":
+                    missing = exec_result.get("missing", {})
+                    completed = exec_result.get("completed", {})
+                    missing_list = [f"{k}: {v}" for k, v in missing.items()] if isinstance(missing, dict) else missing
+                    self._send_missing_parameters(task_id, missing_list, completed, reply_to)
+                else:
+                    self._send_success(task_id, exec_result, reply_to)
 
         except Exception as e:
             self.logger.error(f"HTTP request failed: {e}")
             self._send_error(task_id, f"HTTP request failed: {str(e)}", reply_to)
+    
+    
     
     
     def _send_missing_parameters(self, task_id: str, missing_params: List[str],
@@ -294,7 +325,7 @@ class ExecutionActor(Actor):
             trace_id=self.trace_id,
             task_path=self.task_path,
             status="NEED_INPUT",
-           result={
+            result={
                 "missing_params": missing_params,
                 "completed_params": completed_params,
             },

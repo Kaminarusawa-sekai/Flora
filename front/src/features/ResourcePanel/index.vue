@@ -143,7 +143,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const files = ref<File[]>([]);
 const memories = ref<Memory[]>([]);
-const currentUserId = ref('default-user'); // 这里可以根据实际情况获取用户ID
+const currentUserId = ref('1'); // 这里可以根据实际情况获取用户ID
 
 // 事件处理
 const selectFile = (file: File) => {

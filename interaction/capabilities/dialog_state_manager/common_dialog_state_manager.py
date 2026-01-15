@@ -52,6 +52,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             对话状态DTO
         """
+        self.logger.info(f"获取或创建对话状态，session_id={session_id}, user_id={user_id}")
         # 从存储中获取对话状态
         state = self.dialog_repo.get_dialog_state(session_id)
         
@@ -79,6 +80,7 @@ class CommonDialogState(IDialogStateManagerCapability):
                 state.user_id = user_id
                 self.dialog_repo.update_dialog_state(state)
         
+        self.logger.info(f"成功获取或创建对话状态，session_id={state.session_id}, user_id={state.user_id}")
         return state
     
     def update_dialog_state(self, state: DialogStateDTO) -> bool:
@@ -90,7 +92,10 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             是否更新成功
         """
-        return self.dialog_repo.update_dialog_state(state)
+        self.logger.info(f"更新对话状态，session_id={state.session_id}")
+        result = self.dialog_repo.update_dialog_state(state)
+        self.logger.info(f"对话状态更新{'成功' if result else '失败'}, session_id={state.session_id}")
+        return result
     
     def set_active_draft(self, session_id: str, draft: Optional[TaskDraftDTO]) -> DialogStateDTO:
         """设置活跃的任务草稿
@@ -102,12 +107,14 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"设置活跃的任务草稿，session_id={session_id}, draft_id={draft.draft_id if draft else 'None'}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
         state = self.get_or_create_dialog_state(session_id, user_id)
         state.active_task_draft = draft
         self.update_dialog_state(state)
+        self.logger.info(f"成功设置活跃的任务草稿，session_id={state.session_id}")
         return state
     
     def set_active_execution(self, session_id: str, task_id: Optional[str]) -> DialogStateDTO:
@@ -120,12 +127,14 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"设置活跃的任务执行，session_id={session_id}, task_id={task_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
         state = self.get_or_create_dialog_state(session_id, user_id)
         state.active_task_execution = task_id
         self.update_dialog_state(state)
+        self.logger.info(f"成功设置活跃的任务执行，session_id={state.session_id}, task_id={task_id}")
         return state
     
     def add_recent_task(self, session_id: str, task_summary: TaskSummary) -> DialogStateDTO:
@@ -138,6 +147,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"添加最近任务到对话状态，session_id={session_id}, task_id={task_summary.task_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
@@ -150,6 +160,7 @@ class CommonDialogState(IDialogStateManagerCapability):
             state.recent_tasks = state.recent_tasks[:MAX_RECENT_TASKS]
         
         self.update_dialog_state(state)
+        self.logger.info(f"成功添加最近任务，session_id={state.session_id}, task_id={task_summary.task_id}")
         return state
     
     def set_last_mentioned_task(self, session_id: str, task_id: Optional[str]) -> DialogStateDTO:
@@ -162,12 +173,14 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"设置最后提及的任务，session_id={session_id}, task_id={task_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
         state = self.get_or_create_dialog_state(session_id, user_id)
         state.last_mentioned_task_id = task_id
         self.update_dialog_state(state)
+        self.logger.info(f"成功设置最后提及的任务，session_id={state.session_id}, task_id={task_id}")
         return state
     
     def get_last_mentioned_task(self, session_id: str) -> Optional[str]:
@@ -179,11 +192,14 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             最后提及的任务ID
         """
+        self.logger.info(f"获取最后提及的任务，session_id={session_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
         state = self.get_or_create_dialog_state(session_id, user_id)
-        return state.last_mentioned_task_id
+        last_task_id = state.last_mentioned_task_id
+        self.logger.info(f"获取最后提及的任务，session_id={state.session_id}, last_task_id={last_task_id}")
+        return last_task_id
     
     def add_pending_task(self, session_id: str, task_id: str) -> DialogStateDTO:
         """添加待处理任务到任务栈
@@ -195,6 +211,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"添加待处理任务到任务栈，session_id={session_id}, task_id={task_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
@@ -202,6 +219,9 @@ class CommonDialogState(IDialogStateManagerCapability):
         if task_id not in state.pending_tasks:
             state.pending_tasks.append(task_id)
             self.update_dialog_state(state)
+            self.logger.info(f"成功添加待处理任务，session_id={state.session_id}, task_id={task_id}")
+        else:
+            self.logger.info(f"待处理任务已存在，session_id={state.session_id}, task_id={task_id}")
         return state
     
     def remove_pending_task(self, session_id: str, task_id: str) -> DialogStateDTO:
@@ -214,6 +234,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"从任务栈中移除待处理任务，session_id={session_id}, task_id={task_id}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
@@ -221,6 +242,9 @@ class CommonDialogState(IDialogStateManagerCapability):
         if task_id in state.pending_tasks:
             state.pending_tasks.remove(task_id)
             self.update_dialog_state(state)
+            self.logger.info(f"成功移除待处理任务，session_id={state.session_id}, task_id={task_id}")
+        else:
+            self.logger.info(f"待处理任务不存在，session_id={state.session_id}, task_id={task_id}")
         return state
     
 
@@ -241,6 +265,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"处理意图识别结果，session_id={session_id}, primary_intent={intent_result.primary_intent}")
         # 尝试从现有状态获取 user_id，如果不存在则生成临时 user_id
         existing_state = self.dialog_repo.get_dialog_state(session_id)
         user_id = existing_state.user_id if existing_state else f"temp_{session_id}"
@@ -296,6 +321,7 @@ class CommonDialogState(IDialogStateManagerCapability):
 
         # 9. 持久化
         self.update_dialog_state(state)
+        self.logger.info(f"成功处理意图识别结果，session_id={state.session_id}, corrected_intent={corrected_intent}")
         return state
     
     def _resolve_ambiguous_intent(
@@ -344,11 +370,13 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             清理的会话数量
         """
+        self.logger.info(f"清理过期会话，max_idle_minutes={max_idle_minutes}")
         # 假设 DialogStateDTO 有 last_updated 字段
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_idle_minutes)
         expired_ids = self.dialog_repo.find_expired_sessions(cutoff)
         for sid in expired_ids:
             self.dialog_repo.delete_dialog_state(sid)
+        self.logger.info(f"成功清理过期会话，清理数量={len(expired_ids)}")
         return len(expired_ids)
     
     def _has_pronouns(self, utterance: str) -> bool:
@@ -389,8 +417,11 @@ class CommonDialogState(IDialogStateManagerCapability):
 """
         try:
             task_id = self.llm.generate(prompt).strip()
-            return task_id if task_id != "none" else None
-        except:
+            result = task_id if task_id != "none" else None
+            self.logger.info(f"成功解析代词指代，session_id={session_id}, resolved_task_id={result}")
+            return result
+        except Exception as e:
+            self.logger.exception(f"解析代词指代失败，session_id={session_id}")
             return None
     
     def _generate_clarification_message(self, context: dict) -> str:
@@ -440,9 +471,11 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"设置等待确认状态，session_id={dialog_state.session_id}, action={action}")
         dialog_state.waiting_for_confirmation = True
         dialog_state.confirmation_action = action
         dialog_state.confirmation_payload = payload
+        self.logger.info(f"成功设置等待确认状态，session_id={dialog_state.session_id}, action={action}")
         return dialog_state
     
     def clear_waiting_for_confirmation(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
@@ -454,9 +487,11 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"清除等待确认状态，session_id={dialog_state.session_id}")
         dialog_state.waiting_for_confirmation = False
         dialog_state.confirmation_action = None
         dialog_state.confirmation_payload = None
+        self.logger.info(f"成功清除等待确认状态，session_id={dialog_state.session_id}")
         return dialog_state
     
     def clear_active_draft(self, dialog_state: DialogStateDTO) -> DialogStateDTO:
@@ -468,7 +503,9 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态
         """
+        self.logger.info(f"清除活跃的任务草稿，session_id={dialog_state.session_id}")
         dialog_state.active_task_draft = None
+        self.logger.info(f"成功清除活跃的任务草稿，session_id={dialog_state.session_id}")
         return dialog_state
     
     def generate_session_name(self, session_id: str, user_input: str) -> Dict[str, str]:
@@ -481,6 +518,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             包含name和description的字典
         """
+        self.logger.info(f"生成会话名称，session_id={session_id}")
         prompt = f"""
 你是一个会话助手，请根据用户的输入为会话生成一个简短的名称和描述。
 
@@ -496,9 +534,11 @@ class CommonDialogState(IDialogStateManagerCapability):
         try:
             result = self.llm.generate(prompt).strip()
             import json
-            return json.loads(result)
+            result_json = json.loads(result)
+            self.logger.info(f"成功生成会话名称，session_id={session_id}, name={result_json['name']}")
+            return result_json
         except Exception as e:
-            self.logger.error(f"生成会话名称失败: {e}")
+            self.logger.exception(f"生成会话名称失败")
             # 失败时返回默认值
             return {
                 "name": "会话",
@@ -515,6 +555,7 @@ class CommonDialogState(IDialogStateManagerCapability):
         Returns:
             更新后的对话状态DTO
         """
+        self.logger.info(f"更新对话状态的多个字段，session_id={dialog_state.session_id}, fields={list(kwargs.keys())}")
         # 获取DialogStateDTO的所有字段名
         valid_fields = dialog_state.model_fields.keys()
         
@@ -526,8 +567,9 @@ class CommonDialogState(IDialogStateManagerCapability):
                     # 尝试赋值
                     setattr(dialog_state, field_name, value)
                 except Exception as e:
-                    self.logger.error(f"更新对话状态字段 {field_name} 失败: {e}")
+                    self.logger.exception(f"更新对话状态字段 {field_name} 失败")
             else:
                 self.logger.warning(f"忽略无效的对话状态字段: {field_name}")
         self.update_dialog_state(dialog_state)
+        self.logger.info(f"成功更新对话状态的多个字段，session_id={dialog_state.session_id}")
         return dialog_state

@@ -8,6 +8,8 @@ from typing import Dict, Any, Type, Optional
 from .registry import CapabilityRegistry,capability_registry
 from .capability_base import CapabilityBase
 from .capbility_config import CapabilityConfig
+logger = logging.getLogger(__name__)
+
 
 class CapabilityManager:
     """
@@ -28,12 +30,12 @@ class CapabilityManager:
         self._class_type_map: Dict[str, str] = {}
         
     def _setup_logging(self) -> None:
-        log_level = self.config.get_global_config().get("log_level", "INFO")
-        logging.basicConfig(
-            level=getattr(logging, log_level),
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        self.logger = logging.getLogger(__name__)
+        # log_level = self.config.get_global_config().get("log_level", "INFO")
+        # logging.basicConfig(
+        #     level=getattr(logging, log_level),
+        #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        # )
+        self.logger = logger
 
     def _to_snake_case(self, name: str) -> str:
         """辅助函数：驼峰转蛇形 (TaskRouter -> task_router)"""

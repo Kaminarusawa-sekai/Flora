@@ -40,14 +40,20 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
         return self._llm
     
     def shutdown(self) -> None:
+        self.logger.info("关闭意图识别管理器")
         pass
     
     def get_capability_type(self) -> str:
-        return "nlu"
+        self.logger.info("获取能力类型")
+        result = "nlu"
+        self.logger.info(f"成功获取能力类型，类型={result}")
+        return result
     
     def recognize_intent(self, user_input: UserInputDTO) -> IntentRecognitionResultDTO:
+        self.logger.info(f"开始意图识别，user_id={user_input.user_id}, session_id={user_input.session_id}")
         utterance = user_input.utterance.strip()
         if not utterance:
+            self.logger.info("用户输入为空，返回IDLE_CHAT意图")
             return self._build_result(
                 primary=IntentType.IDLE_CHAT,
                 confidence=1.0,
@@ -81,10 +87,11 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             stage1_result = stage1_response.get("intent", "TASK")
             
         except Exception as e:
-            self.logger.warning("Stage1 LLM failed: %s", e)
+            self.logger.exception("Stage1 LLM failed")
             stage1_result = "TASK"
 
         if "TASK" not in stage1_result: # 宽松匹配
+            self.logger.info(f"Stage1判断为非任务相关，返回IDLE_CHAT意图，stage1_result={stage1_result}")
             return self._build_result(
                 primary=IntentType.IDLE_CHAT,
                 confidence=0.95,
@@ -133,6 +140,7 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             entities = self._parse_entities_from_llm(parsed.get("entities", []))
             is_ambiguous = self._check_ambiguity(confidence, alternatives)
 
+            self.logger.info(f"成功识别意图，primary={primary}, confidence={confidence:.2f}, is_ambiguous={is_ambiguous}")
             return self._build_result(
                 primary=primary,
                 confidence=confidence,
@@ -144,7 +152,7 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             )
 
         except Exception as e:
-            self.logger.warning("LLM parsing failed, falling back to rule-based: %s", e)
+            self.logger.exception("LLM parsing failed, falling back to rule-based")
             return self._fallback_to_rule_based(utterance, llm_raw)
 
     def _fallback_to_rule_based(self, utterance: str, llm_raw: str = "") -> IntentRecognitionResultDTO:
@@ -180,7 +188,9 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
                     return IntentType.RESUME_TASK, conf
                     
                 return intent, conf
-        return IntentType.IDLE_CHAT, 0.6
+        result = IntentType.IDLE_CHAT, 0.6
+        self.logger.debug(f"规则匹配结果：intent={result[0]}, confidence={result[1]}")
+        return result
 
     def _extract_entities(self, utterance: str) -> List[EntityDTO]:
         """增强版实体提取:优先 LLM，失败则规则（此处简化为仅 LLM）"""
@@ -196,7 +206,7 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             parsed = json.loads(raw)
             return self._parse_entities_from_llm(parsed)
         except Exception as e:
-            self.logger.debug("Entity extraction failed: %s", e)
+            self.logger.exception("Entity extraction failed")
             return []  # 或加入正则规则
 
     def _parse_entities_from_llm(self, entity_list: List[Dict]) -> List[EntityDTO]:
@@ -216,14 +226,18 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
                     confidence=conf
                 ))
             except Exception as e:
-                self.logger.debug("Skip invalid entity: %s, error: %s", item, e)
+                self.logger.exception(f"Skip invalid entity: {item}")
+        self.logger.debug(f"成功提取实体，数量={len(entities)}")
+        self.logger.debug(f"成功解析实体列表，有效实体数量={len(entities)}")
         return entities
 
     def _check_ambiguity(self, primary_conf: float, alternatives: List[Tuple[IntentType, float]]) -> bool:
         if not alternatives:
             return False
         top_alt_score = max(score for _, score in alternatives)
-        return (primary_conf - top_alt_score) < self.ambiguity_threshold
+        is_ambiguous = (primary_conf - top_alt_score) < self.ambiguity_threshold
+        self.logger.debug(f"歧义检查结果：primary_conf={primary_conf:.2f}, top_alt_score={top_alt_score:.2f}, is_ambiguous={is_ambiguous}")
+        return is_ambiguous
 
     def _build_result(
         self,
@@ -287,6 +301,7 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
         return "\n".join(parts)
     def judge_special_intent(self, user_input: str, dialog_state: DialogStateDTO) -> str:
         """判断特殊意图：确认、修改草稿或拒绝（使用LLM）"""
+        self.logger.info(f"开始判断特殊意图，user_input={user_input[:50]}...")
         context_desc = self._format_context_for_llm(dialog_state)
         
         prompt = (
@@ -313,30 +328,35 @@ class CommonIntentRecognition(IIntentRecognitionManagerCapability):
             
             # 验证返回值是否合法
             if intent_type in ["CONFIRM", "CANCEL", "MODIFY", ""]:
+                self.logger.info(f"成功判断特殊意图，结果={intent_type}")
                 return intent_type
             else:
                 self.logger.warning(f"Invalid special intent type: {intent_type}, returning empty string")
                 return ""
                 
         except Exception as e:
-            self.logger.warning("Special intent LLM failed: %s", e)
+            self.logger.exception("Special intent LLM failed")
             # 降级为关键字匹配
             lower_input = user_input.lower()
             
             # 检查确认意图
             confirm_keywords = ["确认", "是的", "对的", "好的", "行", "没问题", "可以", "同意", "ok", "yes"]
             if any(kw in lower_input for kw in confirm_keywords):
+                self.logger.info(f"成功判断特殊意图，结果=CONFIRM")
                 return "CONFIRM"
             
             # 检查拒绝意图
             cancel_keywords = ["取消", "拒绝", "不", "不行", "不要", "不对", "no", "取消操作", "停止"]
             if any(kw in lower_input for kw in cancel_keywords):
+                self.logger.info(f"成功判断特殊意图，结果=CANCEL")
                 return "CANCEL"
             
             # 检查修改草稿意图
             modify_keywords = ["修改", "编辑", "更新", "改一下", "调整", "换", "重新", "变更"]
             if any(kw in lower_input for kw in modify_keywords):
+                self.logger.info(f"成功判断特殊意图，结果=MODIFY")
                 return "MODIFY"
             
             # 默认返回空字符串，表示不是特殊意图
+            self.logger.info(f"成功判断特殊意图，结果=无特殊意图")
             return ""

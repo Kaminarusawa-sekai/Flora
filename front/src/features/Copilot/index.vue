@@ -414,7 +414,9 @@ const {
 
       stopThinkingTimer();
       clearThinkingMessage();
-      if (!currentAIMessage.value) {
+      
+      // 如果没有当前 AI 消息，或者当前消息已经完成，则创建新的
+      if (!currentAIMessage.value || currentAIMessage.value.status === 'completed') {
         // 创建新的 AI 消息
         currentAIMessage.value = {
           id: Date.now(),
@@ -626,10 +628,6 @@ const handleInputChange = () => {
 };
 
 const handleSend = async () => {
-  if (aiStatus.value !== 'idle') {
-    console.warn('AI is still responding; wait before sending another message.');
-    return;
-  }
   if (!sessionId.value) {
     console.warn('No session selected; skip sending message.');
     return;
@@ -654,9 +652,13 @@ const handleSend = async () => {
 
   messages.value.push(newMessage);
   input.value = '';
-  aiStatus.value = 'thinking';
-  startThinkingTimer();
-  upsertThinkingMessage('');
+  
+  // 只有当 AI 处于 idle 状态时才更新状态，否则保持当前状态
+  if (aiStatus.value === 'idle') {
+    aiStatus.value = 'thinking';
+    startThinkingTimer();
+    upsertThinkingMessage('');
+  }
 
   scrollToBottom();
 
@@ -682,13 +684,19 @@ const handleSend = async () => {
     }, 500);
 
     // AI 响应将通过 SSE 接收
-    aiStatus.value = 'processing';
+    if (aiStatus.value === 'thinking') {
+      aiStatus.value = 'processing';
+    }
   } catch (error) {
     console.error('Failed to send message:', error);
     newMessage.status = 'error';
-    aiStatus.value = 'idle';
-    stopThinkingTimer();
-    clearThinkingMessage();
+    
+    // 只有当没有其他正在处理的消息时才重置状态
+    if (messages.value.every(msg => msg.role !== 'ai' || msg.status === 'completed' || msg.status === 'error')) {
+      aiStatus.value = 'idle';
+      stopThinkingTimer();
+      clearThinkingMessage();
+    }
 
     // 添加错误提示
     const errorMessage = {

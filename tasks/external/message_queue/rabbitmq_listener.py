@@ -39,7 +39,7 @@ class RabbitMQListenerImpl(MessageQueueListener):
         """
         super().__init__(actor_system, agent_actor_ref, config)
         self.rabbitmq_url = self.config.get('rabbitmq_url', 'amqp://guest:guest@localhost:5672/')
-        self.queue_name = self.config.get('queue_name', 'task.scheduled')
+        self.queue_name = self.config.get('queue_name', 'work.excute')
         self.connection = None
         self.channel = None
         self.thread = None
@@ -87,7 +87,7 @@ class RabbitMQListenerImpl(MessageQueueListener):
                     task_id=task_id,
                     trace_id=trace_id,
                     task_path="/",  # 根任务路径
-                    agent_id=schedule_meta.get("agent_id", "DEFAULT_ROOT_AGENT"),
+                    agent_id=schedule_meta.get("agent_id", "marketing"),
                     content=data.get('user_input', ''),
                     description=input_params.get('description', data.get('user_input', '')),
                     user_id=data.get('user_id', 'system'),

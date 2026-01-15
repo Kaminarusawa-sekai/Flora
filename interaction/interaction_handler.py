@@ -925,12 +925,20 @@ class InteractionHandler:
                 draft = result_data.get("task_draft")
                 if not draft:
                     return
+                 # 构建执行参数
                 parameters = {
                     name: slot.resolved
                     for name, slot in draft.slots.items()
                 }
+                # 确保 description 存在：优先使用 task_content，否则从 original_utterances 获取
                 if "task_content" in parameters and not isinstance(parameters["task_content"], dict):
                     parameters["description"] = parameters.pop("task_content")
+                if not parameters.get("description") and draft.original_utterances:
+                    # 过滤掉系统补充信息，只保留用户原始输入
+                    user_utterances = [u for u in draft.original_utterances if not u.startswith("[系统补充信息]")]
+                    if user_utterances:
+                        parameters["description"] = " ".join(user_utterances)
+                
                 schedule_dto = draft.schedule
                 if schedule_dto:
                     schedule_payload = self._build_schedule_payload(
@@ -981,13 +989,21 @@ class InteractionHandler:
                 dialog_state_manager.update_dialog_state(dialog_state)
                 
                 task_execution_manager = self.registry.get_capability("task_execution", ITaskExecutionManagerCapability)
+                draft = result_data["task_draft"]
+                # 构建执行参数
                 parameters = {
                     name: slot.resolved
-                    for name, slot in result_data["task_draft"].slots.items()
+                    for name, slot in draft.slots.items()
                 }
+                # 确保 description 存在：优先使用 task_content，否则从 original_utterances 获取
                 if "task_content" in parameters and not isinstance(parameters["task_content"], dict):
                     parameters["description"] = parameters.pop("task_content")
-                schedule_dto = result_data["task_draft"].schedule
+                if not parameters.get("description") and draft.original_utterances:
+                    # 过滤掉系统补充信息，只保留用户原始输入
+                    user_utterances = [u for u in draft.original_utterances if not u.startswith("[系统补充信息]")]
+                    if user_utterances:
+                        parameters["description"] = " ".join(user_utterances)
+                schedule_dto = draft.schedule
                 if schedule_dto:
                     schedule_payload = self._build_schedule_payload(
                         schedule_dto,
@@ -999,9 +1015,9 @@ class InteractionHandler:
                 
                 exec_context = task_execution_manager.execute_task(
                     request_id,
-                    result_data["task_draft"].draft_id,
+                    draft.draft_id,
                     parameters,
-                    result_data["task_draft"].task_type,
+                    draft.task_type,
                     input.user_id
                 )
                 dialog_state.active_task_execution = exec_context.request_id

@@ -130,28 +130,41 @@ class LeafActor(Actor):
         exec_actor = self.createActor(ExecutionActor)
 
         # 构建 running_config（原 params 内容）
-        running_config = {
-            "api_key": self.meta["dify"],
-            "inputs": task.parameters,
-            "agent_id": self.agent_id,
-            "user_id": self.current_user_id,
-            # 如果执行器仍需要原始内容/描述，可显式传入
-            "content": str(task.content or ""),
-            "description": str(task.description or ""),
-            # 注意：task.context 可能已通过 enriched_context 或 global_context 传递，
-            # 若仍需在此透传，可加一行：
-            # "context": task.context,
-        }
+        # running_config = {
+        #     "api_key": self.meta["dify"],
+        #     "inputs": task.parameters,
+        #     "agent_id": self.agent_id,
+        #     "user_id": self.current_user_id,
+        #     # 如果执行器仍需要原始内容/描述，可显式传入
+        #     "content": str(task.content or ""),
+        #     "description": str(task.description or ""),
+        #     # 注意：task.context 可能已通过 enriched_context 或 global_context 传递，
+        #     # 若仍需在此透传，可加一行：
+        #     # "context": task.context,
+        # }
+         # 根据 meta 中的 dify 和 http 属性判断使用哪种能力
+        dify_config = self.meta.get("dify", "")
+        http_config = self.meta.get("http", "")
+        args_config = self.meta.get("args", "")
+
+        # 判断使用哪种能力：优先 http（如果有值），否则用 dify
+        if http_config and http_config.strip():
+            capability = "http"
+            running_config = self._build_http_running_config(task, http_config, args_config)
+        else:
+            capability = "dify"
+            running_config = self._build_dify_running_config(task, dify_config)
+
 
         # 构建执行请求消息
         exec_request = ExecuteTaskMessage(
             task_id=task.task_id,
             task_path=task.task_path,
             trace_id=task.trace_id,
-            capability="dify",
+            capability=capability,
             running_config=running_config,
-            content=task.content,          # 来自 TaskMessage
-            description=task.description,  # 来自 TaskMessage
+            content=task.content,
+            description=task.description,
             global_context=task.global_context,
             enriched_context=task.enriched_context,
             user_id=self.current_user_id,
@@ -169,10 +182,90 @@ class LeafActor(Actor):
             source="LeafActor",
             agent_id=self.agent_id,
             user_id=self.current_user_id,
-            data={"node_id": self.agent_id, "type": "leaf_execution"}
+            data={"node_id": self.agent_id, "type": "leaf_execution", "capability": capability}
         )
         
         self.send(exec_actor, exec_request)
+
+
+    def _build_dify_running_config(self, task: AgentTaskMessage, dify_api_key: str) -> Dict[str, Any]:
+        """构建 Dify 执行配置"""
+        running_config = {
+            "api_key": dify_api_key,
+            "inputs": task.parameters,
+            "agent_id": self.agent_id,
+            "user_id": self.current_user_id,
+            "content": str(task.content or ""),
+            "description": str(task.description or ""),
+        }
+        try:
+            from config import DIFY_API_KEY, DIFY_BASE_URL
+            if DIFY_BASE_URL and not running_config.get("base_url"):
+                running_config["base_url"] = DIFY_BASE_URL
+            api_key_val = running_config.get("api_key")
+            if not isinstance(api_key_val, str) or not api_key_val:
+                if DIFY_API_KEY:
+                    running_config["api_key"] = DIFY_API_KEY
+        except Exception:
+            pass
+        return running_config
+
+    def _build_http_running_config(self, task: AgentTaskMessage, http_config: str, args_config: str) -> Dict[str, Any]:
+        """
+        构建 HTTP 执行配置
+
+        Args:
+            task: 任务消息
+            http_config: HTTP 配置字符串，格式如 "POST /admin-api/erp/product/create"
+            args_config: 参数配置 JSON 字符串
+        """
+        import json
+
+        # 解析 http_config: "POST /admin-api/erp/product/create"
+        parts = http_config.strip().split(" ", 1)
+        method = parts[0].upper() if parts else "GET"
+        path = parts[1] if len(parts) > 1 else "/"
+
+        # 解析 args_config
+        args_list = []
+        if args_config:
+            try:
+                args_list = json.loads(args_config) if isinstance(args_config, str) else args_config
+            except json.JSONDecodeError:
+                self.log.warning(f"Failed to parse args_config: {args_config}")
+
+        ##TODO：excution里自己去获得地址与认证信息
+        # 从环境变量获取 base_url
+        base_url = ""
+
+
+        # 构建完整 URL
+        url = f"{base_url.rstrip('/')}{path}" if base_url else path
+
+        running_config = {
+            "url": url,
+            "method": method,
+            "path": path,
+            "args_schema": args_list,  # 参数 schema，用于参数校验和提取
+            "agent_id": self.agent_id,
+            "user_id": self.current_user_id,
+            "content": str(task.content or ""),
+            "description": str(task.description or ""),
+            "inputs": task.parameters or {},
+            # 关键：传递上下文，用于参数提取
+            "global_context": task.global_context or {},
+            "enriched_context": task.enriched_context or {},
+            # 传递节点元数据，便于 connector 使用
+            "node_meta": {
+                "capability": self.meta.get("capability", ""),
+                "datascope": self.meta.get("datascope", ""),
+                "database": self.meta.get("database", ""),
+            }
+        }
+
+
+
+        return running_config
 
     def _handle_execution_result(self, result_msg: ExecutionResultMessage, sender: ActorAddress):
         """处理执行结果消息"""

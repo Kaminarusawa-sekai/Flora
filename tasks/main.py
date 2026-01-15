@@ -21,6 +21,7 @@ from entry_layer.api_server import create_api_server
 from thespian.actors import ActorSystem
 from config import RABBITMQ_URL
 from external.message_queue import MessageQueueFactory
+from capabilities import init_capabilities
 
 # 导入消息队列和 ActorSystem 相关模块
 try:
@@ -59,6 +60,7 @@ def start_rabbitmq_listener():
     try:
         # 初始化 Actor 系统（使用 TCP 多进程模式）
         actor_system = ActorSystem('simpleSystemBase')
+        init_capabilities()
         _global_actor_system = actor_system  # 保存引用以便清理
         from agents.agent_actor import AgentActor
 
@@ -119,6 +121,7 @@ def main(host='0.0.0.0', port=8002, debug=False, rabbitmq=True, rabbitmq_url='am
     """
     # 注册退出清理函数
     atexit.register(cleanup_resources)
+    
 
     # 启动 RabbitMQ 监听器（如果启用）
     if rabbitmq:
@@ -137,6 +140,11 @@ def main(host='0.0.0.0', port=8002, debug=False, rabbitmq=True, rabbitmq_url='am
             host=host,
             port=port,
             reload=False,  # ←←← 强制禁用热重载
+            log_level="debug",
+            
+
+
+
         )
 
     except KeyboardInterrupt:

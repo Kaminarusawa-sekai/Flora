@@ -1,7 +1,7 @@
 from .interface import IScheduleManagerCapability
-from .common_schedule_manager import CommonSchedule
+from .common_schedule_manager import CommonScheduleManager
 
 __all__ = [
     "IScheduleManagerCapability",
-    "CommonSchedule"
+    "CommonScheduleManager"
 ]

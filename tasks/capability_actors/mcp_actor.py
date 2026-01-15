@@ -8,7 +8,6 @@ from capabilities.llm.interface import ILLMCapability
 from capabilities.llm_memory.interface import IMemoryCapability
 
 try:
-    ##TODO:怎么装这个
     from skills_for_all_agent.skill_tool import skill_tool, DEFAULT_SKILLS_ROOT
 except Exception:  # pragma: no cover - optional dependency
     skill_tool = None
@@ -23,7 +22,7 @@ from common.messages.types import MessageType
 class MCPCapabilityActor(Actor):
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.agent_id = "agent_001"
+        self.agent_id = "agent_MCP"
         self.skill_tool = skill_tool
         self.skills_root = DEFAULT_SKILLS_ROOT
         self.skill_index = []
@@ -37,7 +36,11 @@ class MCPCapabilityActor(Actor):
     def _handle_new_task(self, msg: MCPTaskMessage, sender: str):
         task_id = str(msg.step)
         description = msg.description
-        params = msg.params or {}
+        enriched_context = getattr(msg, "enriched_context", "")
+        
+        # 从 enriched_context 中提取参数
+        params = self._extract_params_with_llm(description, enriched_context)
+        
         agent_id = self._extract_agent_id_from_path(getattr(msg, "task_path", "") or "")
         if agent_id:
             self.agent_id = agent_id
@@ -73,6 +76,56 @@ class MCPCapabilityActor(Actor):
             # Step 3: 非查询任务，走 MCP LLM
             result = self._execute_via_mcp_llm(description, params)
             self._send_task_completed(sender, task_id, result)
+
+    def _extract_params_with_llm(self, task_description: str, context: Any) -> Dict[str, Any]:
+        """
+        使用 LLM 从任务描述和上下文中提取结构化参数。
+        返回一个字典，若失败则返回空字典。
+        """
+        # 如果 context 是 dict，可以先转为字符串供 LLM 处理
+        if isinstance(context, dict):
+            context_str = json.dumps(context, ensure_ascii=False)
+        else:
+            context_str = str(context)
+        
+        llm = get_capability("llm", expected_type=ILLMCapability)
+        prompt = f"""你是一个智能参数提取器。请根据以下任务描述和上下文，提取出完成该任务所需的结构化参数。
+以严格的 JSON 格式输出，不要包含任何解释或额外文本。
+
+任务描述：
+{task_description}
+
+上下文信息：
+{context_str}
+
+请输出参数（JSON 对象）：
+"""
+        
+        try:
+            # 调用 LLM 生成响应
+            raw_response = llm.generate(prompt, parse_json=False, max_tokens=200)
+            
+            # 清理可能的 Markdown 包裹（如 ```json ... ```）
+            if raw_response.strip().startswith("```"):
+                # 提取 ```json 和 ``` 之间的内容
+                start = raw_response.find("{")
+                end = raw_response.rfind("}") + 1
+                if start != -1 and end > start:
+                    json_str = raw_response[start:end]
+                else:
+                    json_str = raw_response.strip().strip("`").strip()
+            else:
+                json_str = raw_response.strip()
+            
+            params = json.loads(json_str)
+            if not isinstance(params, dict):
+                raise ValueError("LLM did not return a JSON object")
+            return params
+        
+        except (json.JSONDecodeError, ValueError, Exception) as e:
+            # 记录日志
+            self.logger.warning(f"Failed to extract params with LLM: {e}")
+            return {}
 
     def _judge_is_query_with_llm(self, description: str, params: Dict) -> bool:
         # from tasks.capabilities.registry import capability_registry

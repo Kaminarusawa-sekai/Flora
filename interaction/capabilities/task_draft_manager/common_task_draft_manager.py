@@ -55,6 +55,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             任务草稿DTO
         """
+        self.logger.info(f"创建任务草稿，task_type={task_type}, session_id={session_id}, user_id={user_id}")
         draft = TaskDraftDTO(
             user_id=user_id,
             task_type=task_type,
@@ -70,6 +71,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         
         # 保存到存储
         self.draft_storage.save_draft(draft)
+        self.logger.info(f"任务草稿创建成功，draft_id={draft.draft_id}")
         return draft
     
     def submit_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
@@ -81,12 +83,14 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             提交后的任务草稿
         """
+        self.logger.info(f"提交任务草稿，draft_id={draft.draft_id}, task_type={draft.task_type}")
         # 1. 执行必填项校验
         self._validate_required_slots(draft)
         # 2. 更新状态
         draft.status = TaskDraftStatus.SUBMITTED
         # 3. 保存到数据库
         self.draft_storage.save_draft(draft)
+        self.logger.info(f"任务草稿提交成功，draft_id={draft.draft_id}")
         return draft
     
     def cancel_draft(self, draft: TaskDraftDTO) -> TaskDraftDTO:
@@ -98,8 +102,10 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             取消后的任务草稿
         """
+        self.logger.info(f"取消任务草稿，draft_id={draft.draft_id}, task_type={draft.task_type}")
         draft.status = TaskDraftStatus.CANCELLED
         self.draft_storage.save_draft(draft)
+        self.logger.info(f"任务草稿取消成功，draft_id={draft.draft_id}")
         return draft
     
     def set_draft_pending_confirm(self, draft: TaskDraftDTO) -> TaskDraftDTO:
@@ -135,6 +141,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
                 ", ".join(validated_draft.missing_slots),
                 ", ".join(validated_draft.invalid_slots)
             )
+            self.logger.error(f"任务草稿校验失败，draft_id={draft.draft_id}, {error_msg.strip()}")
             raise ValueError(error_msg.strip())
     
     def update_draft(self, draft: TaskDraftDTO) -> bool:
@@ -157,7 +164,13 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             任务草稿DTO，不存在返回None
         """
-        return self.draft_storage.get_draft(draft_id)
+        self.logger.info(f"获取任务草稿，draft_id={draft_id}")
+        draft = self.draft_storage.get_draft(draft_id)
+        if draft:
+            self.logger.info(f"获取任务草稿成功，draft_id={draft_id}, task_type={draft.task_type}")
+        else:
+            self.logger.info(f"任务草稿不存在，draft_id={draft_id}")
+        return draft
     
     def delete_draft(self, draft_id: str) -> bool:
         """删除任务草稿
@@ -168,7 +181,10 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             是否删除成功
         """
-        return self.draft_storage.delete_draft(draft_id)
+        self.logger.info(f"删除任务草稿，draft_id={draft_id}")
+        result = self.draft_storage.delete_draft(draft_id)
+        self.logger.info(f"删除任务草稿{'成功' if result else '失败'}，draft_id={draft_id}")
+        return result
     
     def add_utterance_to_draft(self, draft: TaskDraftDTO, utterance: str) -> TaskDraftDTO:
         """添加用户输入到草稿历史（仅修改内存对象，需手动调用 update_draft 持久化）
@@ -256,6 +272,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             更新后的任务草稿，包含缺失和无效的槽位
         """
+        self.logger.debug(f"验证任务草稿，draft_id={draft.draft_id}, task_type={draft.task_type}")
         schema = self.config.get("task_schemas", {}).get(draft.task_type, {})
         required_slots = schema.get("required_slots", [])
         
@@ -273,6 +290,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
 
         draft.missing_slots = missing
         draft.invalid_slots = invalid
+        self.logger.debug(f"任务草稿验证完成，draft_id={draft.draft_id}, missing_slots={missing}, invalid_slots={invalid}")
         return draft
     
     def prepare_for_execution(self, draft: TaskDraftDTO) -> Dict[str, Any]:
@@ -288,6 +306,14 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         for slot_name, slot_value in draft.slots.items():
             if slot_value.confirmed:  # 关键：只取已确认的
                 parameters[slot_name] = slot_value.resolved
+        # 确保 description 字段存在：从 original_utterances 构建任务的自然语言描述
+        if "description" not in parameters and draft.original_utterances:
+            # 过滤掉系统补充信息，只保留用户原始输入
+            user_utterances = [
+                u for u in draft.original_utterances
+            ]
+            if user_utterances:
+                parameters["description"] = " ".join(user_utterances)
         return parameters
     
     def set_schedule(self, draft: TaskDraftDTO, schedule: ScheduleDTO) -> TaskDraftDTO:
@@ -386,6 +412,11 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         Returns:
             清理后的JSON字符串
         """
+        if not json_str:
+            return json_str
+
+        # 先去除首尾空白
+        json_str = json_str.strip()
         # 移除可能的markdown代码块
         if json_str.startswith('```json'):
             json_str = json_str[7:]
@@ -460,6 +491,11 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         3. 更新状态：根据评估结果更新draft状态
         4. 生成回复：根据状态生成合适的回复文本
         """
+        self.logger.info(f"根据意图更新草稿，draft_id={draft.draft_id}, intent={intent_result.intent}")
+        # 0. 获取用户原始输入并保存到草稿历史中
+        original_utterance = intent_result.raw_nlu_output.get("enhanced_utterance", "")
+        if original_utterance:
+            self.add_utterance_to_draft(draft, original_utterance)
         
         # 1. 把识别到的实体（Entities）全部填入槽位（Slots）
         # 既然槽位是虚的，我们就直接把 entity.name 当作 slot_name 存进去
@@ -526,7 +562,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
                     if current_missing_slots == new_missing_slots:
                         break
             except Exception as e:
-                self.logger.error(f"从memory获取信息失败: {e}")
+                self.logger.exception(f"从memory获取信息失败")
                 # 如果获取memory失败，继续使用原来的评估结果
         
         if is_ready:
@@ -544,12 +580,14 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
         self.update_draft(draft)
         
         # 6. 返回 InteractionHandler 能够理解的字典格式
-        return {
+        result = {
             "task_draft": draft,
             "response_text": evaluation_result["response_to_user"],  # 直接发给用户的回复
             "requires_input": not is_ready,  # 如果还没决定执行，就继续等待用户输入
             "should_execute": is_ready       # 如果 LLM 觉得信息够了，可以设为 True
         }
+        self.logger.info(f"根据意图更新草稿完成，draft_id={draft.draft_id}, is_ready={is_ready}")
+        return result
 
     def _evaluate_draft_completeness(self, draft: TaskDraftDTO, last_user_utterance: str) -> Dict[str, Any]:
         """
@@ -613,7 +651,7 @@ class CommonTaskDraft(ITaskDraftManagerCapability):
             return evaluation_result
         except Exception as e:
             # LLM调用失败时的兜底逻辑
-            print(f"[ERROR] _evaluate_draft_completeness failed: {e}")
+            self.logger.exception(f"_evaluate_draft_completeness failed")
             return {
                 "is_ready": False,
                 "missing_slot": "unknown",

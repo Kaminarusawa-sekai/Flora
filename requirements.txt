@@ -40,3 +40,4 @@ neo4j
 optuna
 pyeda
 scikit-learn
+json5

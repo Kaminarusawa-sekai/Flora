@@ -28,9 +28,9 @@ from .context_manager.common_context_manager import CommonContextManager
 from .task_control_manager.interface import ITaskControlManagerCapability
 from .task_control_manager.common_task_control_manager import CommonTaskControl
 from .schedule_manager.interface import IScheduleManagerCapability
-from .schedule_manager.common_schedule_manager import CommonSchedule
+from .schedule_manager.common_schedule_manager import CommonScheduleManager
 from .task_execution_manager.interface import ITaskExecutionManagerCapability
-from .task_execution_manager.common_task_execution_manager import CommonTaskExecution
+from .task_execution_manager.common_task_execution_manager import CommonTaskExecutionManager
 from .system_response_manager.interface import ISystemResponseManagerCapability
 from .system_response_manager.common_system_response_manager import CommonSystemResponse
 
@@ -70,9 +70,9 @@ __all__ = [
     "ITaskControlManagerCapability",
     "CommonTaskControl",
     "IScheduleManagerCapability",
-    "CommonSchedule",
+    "CommonScheduleManager",
     "ITaskExecutionManagerCapability",
-    "CommonTaskExecution",
+    "CommonTaskExecutionManager",
     "ISystemResponseManagerCapability",
     "CommonSystemResponse"
 ]
