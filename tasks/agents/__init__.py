@@ -12,6 +12,18 @@ from . import agent_actor
 from . import tree
 from .agent_actor import AgentActor
 from .leaf_actor import LeafActor
+from .task_router import (
+    TaskRouter,
+    TaskRouterActor,
+    TaskRouterClient,
+    RouterNewTaskMessage,
+    RouterResumeTaskMessage,
+    RouterTaskAccepted,
+    RouterResumeAccepted,
+    get_task_router,
+    get_task_router_actor,
+    init_task_router
+)
 
 
 # 导出主要组件
@@ -24,6 +36,17 @@ __all__ = [
     # 类导出
     "AgentActor",
     "LeafActor",
+
+    "TaskRouter",
+    "TaskRouterActor",
+    "TaskRouterClient",
+    "RouterNewTaskMessage",
+    "RouterResumeTaskMessage",
+    "RouterTaskAccepted",
+    "RouterResumeAccepted",
+    "get_task_router",
+    "get_task_router_actor",
+    "init_task_router"
 
 ]
 

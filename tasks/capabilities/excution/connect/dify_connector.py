@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 import requests
+import json
 from external.clients import DifyClient
 from .base_connector import BaseConnector
 
@@ -56,7 +57,110 @@ class DifyConnector(BaseConnector):
                 missing.append(param)
         return missing
     
-    def _check_missing_inputs(self, inputs: Dict[str, Any]) -> Dict[str, str]:
+    def _coerce_text_value(self, value: Any, var_name: str = "") -> Any:
+        def normalize_candidate(candidate: Any) -> str:
+            if candidate is None:
+                return ""
+            if isinstance(candidate, bool):
+                return "true" if candidate else "false"
+            if isinstance(candidate, (int, float)):
+                if isinstance(candidate, bool):
+                    return str(candidate)
+                if isinstance(candidate, float) and candidate.is_integer():
+                    return str(int(candidate))
+                return str(candidate)
+            if isinstance(candidate, str):
+                return candidate.strip()
+            return str(candidate)
+
+        def is_numeric_str(text: str) -> bool:
+            if not text:
+                return False
+            if text.isdigit():
+                return True
+            if text.startswith("-") and text[1:].isdigit():
+                return True
+            return False
+
+        def is_placeholder(text: str) -> bool:
+            if not text:
+                return True
+            lowered = text.strip().lower()
+            if lowered in {"id", "null", "none", "nan"}:
+                return True
+            if var_name and lowered == var_name.strip().lower():
+                return True
+            return False
+
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            return "" if is_placeholder(candidate) else candidate
+        if isinstance(value, list):
+            if not value:
+                return ""
+            # Prefer numeric id-like values if present.
+            for item in value:
+                if isinstance(item, dict) and "id" in item:
+                    candidate = normalize_candidate(item.get("id"))
+                    if is_numeric_str(candidate):
+                        return candidate
+            for item in value:
+                if isinstance(item, dict):
+                    for v in item.values():
+                        candidate = normalize_candidate(v)
+                        if is_numeric_str(candidate):
+                            return candidate
+            first = value[0]
+            if isinstance(first, dict):
+                if "id" in first:
+                    candidate = normalize_candidate(first.get("id"))
+                    return "" if is_placeholder(candidate) else candidate
+                if len(first) == 1:
+                    candidate = normalize_candidate(next(iter(first.values())))
+                    return "" if is_placeholder(candidate) else candidate
+            candidate = normalize_candidate(first)
+            return "" if is_placeholder(candidate) else candidate
+        if isinstance(value, dict):
+            if "id" in value:
+                candidate = normalize_candidate(value.get("id"))
+                return "" if is_placeholder(candidate) else candidate
+            if len(value) == 1:
+                candidate = normalize_candidate(next(iter(value.values())))
+                return "" if is_placeholder(candidate) else candidate
+            candidate = normalize_candidate(value)
+            return "" if is_placeholder(candidate) else candidate
+        candidate = normalize_candidate(value)
+        return "" if is_placeholder(candidate) else candidate
+
+    def _normalize_inputs_by_schema(
+        self, inputs: Dict[str, Any], required_inputs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if not required_inputs:
+            return inputs
+        normalized = dict(inputs)
+        for var_name, meta in required_inputs.items():
+            if var_name not in normalized:
+                continue
+            field_type = meta.get("type")
+            if field_type in ("text-input", "paragraph"):
+                normalized[var_name] = self._coerce_text_value(normalized[var_name], var_name)
+        return normalized
+
+    @staticmethod
+    def _is_id_like_param(name: str, label: str = "") -> bool:
+        if name and name.lower().endswith("_id"):
+            return True
+        if name and name.lower() == "id":
+            return True
+        if label and "ID" in label.upper():
+            return True
+        return False
+    
+    def _check_missing_inputs(
+        self, inputs: Dict[str, Any], required_inputs: Dict[str, Any] = None
+        ) -> Dict[str, str]:
         """
         检查Dify连接器缺失的输入参数（仅检查 required=True 的字段）
         """
@@ -124,12 +228,23 @@ class DifyConnector(BaseConnector):
                     }
             logger.info(f"Dify schema: {schema}")
             return required_inputs
+        except requests.exceptions.HTTPError as e:
+            if getattr(e.response, "status_code", None) == 404:
+                logger.warning("Dify schema endpoint not found; skipping schema fetch.")
+                return {}
+            raise Exception(f"Failed to fetch Dify schema: {str(e)}")
+
         except Exception as e:
             raise Exception(f"Failed to fetch Dify schema: {str(e)}")
     
     def execute(self, inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
         执行Dify连接器操作
+        使用 BaseConnector._resolve_all_params() 统一补全流程：
+        1. pre_fill_known_params_with_llm() - 从 context 提取已有值
+        2. enhance_param_descriptions_with_context() - 增强描述
+        3. resolve_semantic_pointers() - 语义指针补全（消解歧义）
+        4. resolve_context() - text_to_sql 查询
         """
         try:
             # 1. 检查配置参数 - 直接报错，不返回NEED_INPUT
@@ -144,8 +259,8 @@ class DifyConnector(BaseConnector):
             api_key = self._resolve_param("api_key", params)
             base_url = self._resolve_param("base_url", params).rstrip('/')
             user = self._resolve_param("user", params) or "default_user"
-            agent_id = self._resolve_param("agent_id", params)
-            user_id = self._resolve_param("user_id", params)
+            agent_id = self._resolve_param("agent_id", params) or ""
+            user_id = self._resolve_param("user_id", params) or ""
             content = self._resolve_param("content", params) or ""
             description = self._resolve_param("description", params) or ""
 
@@ -153,14 +268,12 @@ class DifyConnector(BaseConnector):
             global_context = params.get("global_context", {})
             enriched_context = params.get("enriched_context", {})
 
-            # 3. 检查输入参数 - 去掉params参数
-            missing_inputs = self._check_missing_inputs(inputs)
+             # 4. 获取 Dify schema 并检查缺失参数
+            required_inputs = self._get_required_inputs(params)
+            missing_inputs = self._check_missing_inputs(inputs, required_inputs)
             logger.info(f"Missing inputs: {missing_inputs}")
             if missing_inputs:
 
-                from ... import get_capability
-                from ...context_resolver.interface import IContextResolverCapbility
-                context_resolver:IContextResolverCapbility = get_capability("context_resolver", IContextResolverCapbility)
                 
                  # 构造结构化上下文
                 full_context = {
@@ -173,31 +286,35 @@ class DifyConnector(BaseConnector):
                     "original_inputs": inputs,
                 }
                 
-                logger.info(f"Full context: {full_context}")
-                
-                filled_inputs, remaining_inputs = context_resolver.pre_fill_known_params_with_llm(
-                    base_param_descriptions=missing_inputs,
-                    current_context_str=full_context
+                logger.info(f"Full context for param resolution: {full_context}")
+
+                # 6. 调用统一补全方法（四步补全）
+                filled_params, still_missing = self._resolve_all_params(
+                    missing_params=missing_inputs,
+                    context=full_context,
+                    agent_id=agent_id,
+                    user_id=user_id
                 )
-                logger.info(f"params will be used: {params}")
-                enhanced_inputs = context_resolver.enhance_param_descriptions_with_context(
-                    base_param_descriptions=remaining_inputs,
-                    current_inputs=full_context
+
+                # 7. 合并结果
+                completed_inputs = {**inputs, **filled_params}
+                completed_inputs = self._normalize_inputs_by_schema(
+                    completed_inputs, required_inputs
                 )
-                logger.info(f"Enhanced inputs: {enhanced_inputs}")
-                completed_inputs = context_resolver.resolve_context(enhanced_inputs,agent_id)
-                completed_inputs.update(filled_inputs)
                 logger.info(f"Completed inputs: {completed_inputs}")
-                also_missing_inputs={}
+                # 8. 检查仍然缺失的参数
+                also_missing = {}
                 for key in missing_inputs:
-                    if completed_inputs[key] is  None:
-                        also_missing_inputs[key] = missing_inputs[key]
-                if also_missing_inputs:
+                    value = completed_inputs.get(key)
+                    if value is None or (isinstance(value, str) and value.strip() == ""):
+                        also_missing[key] = missing_inputs[key]
+
+                if also_missing:
                     
                     # 返回需要补充输入参数的结果
                     return {
                         "status": "NEED_INPUT",
-                        "missing": also_missing_inputs,
+                        "missing": also_missing,
                         "completed": completed_inputs,
                         "tool_schema": self._get_required_inputs()
                     }
@@ -235,6 +352,10 @@ class DifyConnector(BaseConnector):
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
+
+            completed_inputs = self._normalize_inputs_by_schema(
+                completed_inputs, required_inputs
+            )
             payload = {
                 "inputs": completed_inputs,
                 "response_mode": "blocking",
@@ -244,6 +365,13 @@ class DifyConnector(BaseConnector):
             try:
                 response = requests.post(url, json=payload, headers=headers, timeout=120)
                 logger.info(f"Dify response: {response.json()}")
+                content_type = response.headers.get("Content-Type", "")
+                logger.info(
+                    "Dify response status=%s content_type=%s body=%s",
+                    response.status_code,
+                    content_type,
+                    response.text[:200],
+                )
                 if response.status_code >= 500:
                 # 5xx 服务端错误 → 可重试
                     return {

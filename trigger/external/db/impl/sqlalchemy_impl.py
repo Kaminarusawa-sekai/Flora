@@ -70,6 +70,26 @@ class SQLAlchemyTaskDefinitionRepo(TaskDefinitionRepo):
         await self.session.execute(stmt)
         await self.session.commit()
 
+    async def update(self, def_id: str, **kwargs) -> Optional[TaskDefinitionDB]:
+        """更新任务定义"""
+        # 只允许更新特定字段
+        allowed_fields = {'cron_expr', 'loop_config', 'schedule_config', 'is_active', 'content', 'name', 'schedule_type'}
+        update_values = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
+
+        if not update_values:
+            return await self.get(def_id)
+
+        update_values['updated_at'] = datetime.now(timezone.utc)
+
+        stmt = update(TaskDefinitionDB).where(
+            TaskDefinitionDB.id == def_id
+        ).values(**update_values)
+
+        await self.session.execute(stmt)
+        await self.session.commit()
+
+        return await self.get(def_id)
+
 
 class SQLAlchemyTaskInstanceRepo(TaskInstanceRepo):
     """基于SQLAlchemy的任务实例仓库实现"""
@@ -228,3 +248,95 @@ class SQLAlchemyScheduledTaskRepo(ScheduledTaskRepo):
             task.error_msg = error_msg
             await self.session.commit()
             await self.session.refresh(task)
+    
+    async def update_scheduled_task(self, task_id: str, **kwargs) -> Optional[ScheduledTaskDB]:
+        """
+        更新调度任务
+
+        只允许修改 PENDING 状态的任务
+        """
+        # 先检查任务状态
+        task = await self.session.get(ScheduledTaskDB, task_id)
+        if not task:
+            return None
+
+        if task.status != "PENDING":
+            raise ValueError(f"Cannot update task in {task.status} status, only PENDING tasks can be updated")
+
+        # 只允许更新特定字段
+        allowed_fields = {'scheduled_time', 'schedule_config', 'input_params', 'priority', 'execute_after'}
+        update_values = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
+
+        if not update_values:
+            return task
+
+        stmt = update(ScheduledTaskDB).where(
+            ScheduledTaskDB.id == task_id
+        ).values(**update_values)
+
+        await self.session.execute(stmt)
+        await self.session.commit()
+
+        return await self.get(task_id)
+
+    async def reschedule_task(self, task_id: str, new_scheduled_time: datetime, new_schedule_config: dict = None) -> Optional[ScheduledTaskDB]:
+        """
+        重新调度任务
+
+        将任务状态重置为 PENDING，并更新调度时间
+        只允许对 FAILED、CANCELLED 状态的任务进行重新调度
+        """
+        task = await self.session.get(ScheduledTaskDB, task_id)
+        if not task:
+            return None
+
+        # 只允许重新调度已完成或已取消的任务
+        if task.status not in ("FAILED", "CANCELLED", "SUCCESS"):
+            raise ValueError(f"Cannot reschedule task in {task.status} status")
+
+        update_values = {
+            "status": "PENDING",
+            "scheduled_time": new_scheduled_time,
+            "retry_count": 0,
+            "error_msg": None,
+            "cancelled_at": None,
+            "started_at": None,
+            "finished_at": None
+        }
+
+        if new_schedule_config is not None:
+            update_values["schedule_config"] = new_schedule_config
+
+        stmt = update(ScheduledTaskDB).where(
+            ScheduledTaskDB.id == task_id
+        ).values(**update_values)
+
+        await self.session.execute(stmt)
+        await self.session.commit()
+
+        return await self.get(task_id)
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """
+        取消调度任务
+
+        只允许取消 PENDING 或 SCHEDULED 状态的任务
+        """
+        task = await self.session.get(ScheduledTaskDB, task_id)
+        if not task:
+            return False
+
+        if task.status not in ("PENDING", "SCHEDULED"):
+            return False
+
+        stmt = update(ScheduledTaskDB).where(
+            ScheduledTaskDB.id == task_id
+        ).values(
+            status="CANCELLED",
+            cancelled_at=datetime.now(timezone.utc)
+        )
+
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+
+        return result.rowcount > 0

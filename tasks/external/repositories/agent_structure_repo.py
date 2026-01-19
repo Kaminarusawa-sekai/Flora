@@ -1,8 +1,45 @@
 """Agent结构仓储，负责操作Neo4j，维护父子关系"""
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable, TypeVar
 import logging
+import time
+import functools
 import networkx as nx
 from ..database.neo4j_client import Neo4jClient
+
+
+# 定义泛型类型
+T = TypeVar('T')
+
+
+def retry_decorator(max_retries: int = 3, retry_interval: float = 1.0, exceptions: tuple = (Exception,)) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    重试装饰器，用于处理网络不稳定导致的查询失败
+    
+    Args:
+        max_retries: 最大重试次数
+        retry_interval: 重试间隔（秒）
+        exceptions: 需要重试的异常类型
+        
+    Returns:
+        装饰后的函数
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            retries = 0
+            while retries <= max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    retries += 1
+                    if retries > max_retries:
+                        logging.error(f"Function {func.__name__} failed after {max_retries} retries: {e}")
+                        raise
+                    logging.warning(f"Function {func.__name__} failed, retrying in {retry_interval} seconds... (Attempt {retries}/{max_retries})")
+                    time.sleep(retry_interval)
+            return func(*args, **kwargs)  # 这行理论上不会执行，但为了类型检查通过
+        return wrapper
+    return decorator
 
 
 class AgentStructureRepository:
@@ -22,6 +59,7 @@ class AgentStructureRepository:
         else:
             self.neo4j_client = neo4j_client
     
+    @retry_decorator()
     def get_agent_relationship(self, agent_id: str) -> Dict[str, Any]:
         """
         获取Agent的父子关系
@@ -54,6 +92,7 @@ class AgentStructureRepository:
             'children': child_ids
         }
     
+    @retry_decorator()
     def load_all_agents(self) -> List[Dict[str, Any]]:
         """
         加载所有Agent节点
@@ -90,6 +129,7 @@ class AgentStructureRepository:
             agents.append(agent)
         return agents
     
+    @retry_decorator()
     def add_agent_relationship(self, parent_id: str, child_id: str, relationship_type: str = 'HAS_CHILD') -> bool:
         """
         添加Agent间的父子关系
@@ -116,6 +156,7 @@ class AgentStructureRepository:
         except Exception:
             return False
     
+    @retry_decorator()
     def get_agent_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """
         获取指定Agent的信息
@@ -141,6 +182,7 @@ class AgentStructureRepository:
             agent.update(record['meta'])
         return agent
     
+    @retry_decorator()
     def remove_agent(self, agent_id: str) -> bool:
         """
         删除指定Agent及其所有关系
@@ -170,6 +212,7 @@ class AgentStructureRepository:
         except Exception:
             return False
     
+    @retry_decorator()
     def create_node(self, node_data: Dict[str, Any]) -> Optional[str]:
         """
         创建新的Agent节点
@@ -202,6 +245,7 @@ class AgentStructureRepository:
         except Exception:
             return None
     
+    @retry_decorator()
     def update_node(self, node_id: str, updates: Dict[str, Any]) -> bool:
         """
         更新节点信息
@@ -239,6 +283,7 @@ class AgentStructureRepository:
             return False
         
 
+    @retry_decorator()
     def get_influenced_subgraph_with_scc(
         self,
         root_code: str,
@@ -364,6 +409,7 @@ class AgentStructureRepository:
             return {"nodes": [], "edges": []}
 
 
+    @retry_decorator()
     def get_influenced_subgraph_with_scc_multi_roots(
             self,
             root_codes: List[str],
@@ -412,66 +458,73 @@ class AgentStructureRepository:
             """
 
             try:
-                with self.driver.session() as session:
-                    result = session.run(query, root_codes=root_codes, max_hops=max_hops)
-                    record = result.single()
-                    if not record:
-                        return {"nodes": [], "edges": []}
+                # 使用 self.neo4j_client 执行查询，受益于重试装饰器
+                result = self.neo4j_client.execute_query(query, {
+                    'root_codes': root_codes,
+                    'max_hops': max_hops
+                })
+                
+                if not result:
+                    return {"nodes": [], "edges": []}
+                
+                record = result[0]
+                if not record:
+                    return {"nodes": [], "edges": []}
 
-                    # --- 解析节点 ---
-                    raw_nodes = []
-                    node_id_set = set()
-                    for item in record["nodes"]:
-                        node_id = item.get("node_id")
-                        if not node_id:
-                            continue
-                        props = item.get("properties", {})
-                        if not isinstance(props, dict):
-                            props = {}
-                        raw_nodes.append({"node_id": node_id, "properties": props})
-                        node_id_set.add(node_id)
+                # --- 解析节点 ---
+                raw_nodes = []
+                node_id_set = set()
+                for item in record["nodes"]:
+                    node_id = item.get("node_id")
+                    if not node_id:
+                        continue
+                    props = item.get("properties", {})
+                    if not isinstance(props, dict):
+                        props = {}
+                    raw_nodes.append({"node_id": node_id, "properties": props})
+                    node_id_set.add(node_id)
 
                     # --- 解析边（仅保留两端都在子图中的边）---
-                    raw_edges = []
-                    for item in record["edges"]:
-                        src = item.get("from")
-                        dst = item.get("to")
-                        if src in node_id_set and dst in node_id_set:
-                            weight = float(item.get("weight", 1.0))
-                            raw_edges.append({"from": src, "to": dst, "weight": weight})
+                raw_edges = []
+                for item in record["edges"]:
+                    src = item.get("from")
+                    dst = item.get("to")
+                    if src in node_id_set and dst in node_id_set:
+                        weight = float(item.get("weight", 1.0))
+                        raw_edges.append({"from": src, "to": dst, "weight": weight})
 
-                    # --- 构建 NetworkX 有向图 ---
-                    G = nx.DiGraph()
-                    for node in raw_nodes:
-                        G.add_node(node["node_id"])
-                    for edge in raw_edges:
-                        G.add_edge(edge["from"], edge["to"], weight=edge["weight"])
+                # --- 构建 NetworkX 有向图 ---
+                G = nx.DiGraph()
+                for node in raw_nodes:
+                    G.add_node(node["node_id"])
+                for edge in raw_edges:
+                    G.add_edge(edge["from"], edge["to"], weight=edge["weight"])
 
-                    # --- 计算 SCC 并分配 ID ---
-                    scc_id_map = {}
-                    for idx, component in enumerate(nx.strongly_connected_components(G)):
-                        scc_id = str(idx)
-                        for node_id in component:
-                            scc_id_map[node_id] = scc_id
+                # --- 计算 SCC 并分配 ID ---
+                scc_id_map = {}
+                for idx, component in enumerate(nx.strongly_connected_components(G)):
+                    scc_id = str(idx)
+                    for node_id in component:
+                        scc_id_map[node_id] = scc_id
 
-                    # --- 注入 scc_id 到节点属性 ---
-                    final_nodes = []
-                    for node in raw_nodes:
-                        node_id = node["node_id"]
-                        props = node["properties"].copy()
-                        props["scc_id"] = scc_id_map.get(node_id, "-1")  # -1 表示异常（理论上不会发生）
-                        final_nodes.append({
-                            "node_id": node_id,
-                            "properties": props
-                        })
+                # --- 注入 scc_id 到节点属性 ---
+                final_nodes = []
+                for node in raw_nodes:
+                    node_id = node["node_id"]
+                    props = node["properties"].copy()
+                    props["scc_id"] = scc_id_map.get(node_id, "-1")  # -1 表示异常（理论上不会发生）
+                    final_nodes.append({
+                        "node_id": node_id,
+                        "properties": props
+                    })
 
-                    return {
-                        "nodes": final_nodes,
-                        "edges": raw_edges
-                    }
+                return {
+                    "nodes": final_nodes,
+                    "edges": raw_edges
+                }
 
             except Exception as e:
-                print(f"[ERROR] Failed to fetch subgraph for {root_codes}: {e}")
+                logging.error(f"Failed to fetch subgraph for {root_codes}: {e}", exc_info=True)
                 return {"nodes": [], "edges": []}
 
 

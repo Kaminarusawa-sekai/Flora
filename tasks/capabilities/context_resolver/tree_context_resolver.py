@@ -90,6 +90,9 @@ class TreeContextResolver(IContextResolverCapbility):
                 
                 # Step 1: 定位数据位置（库、表、列等）
                 leaf_meta = self._resolve_kv_via_layered_search(agent_id, query, key)
+                if not leaf_meta:
+                    leaf_meta = self._resolve_kv_globally(query)
+
                 
                 if not leaf_meta:
                     self.logger.warning(f"❌ Unresolved '{key}' (Desc: {value_desc}) – no location found")
@@ -123,11 +126,11 @@ class TreeContextResolver(IContextResolverCapbility):
                 }
 
                 # 初始化 Vanna 能力
-                from ..registry import capability_registry
+                from .. import get_capability
                 from ..text_to_sql.text_to_sql import ITextToSQLCapability
                 try:
-                    text_to_sql_cap: ITextToSQLCapability = capability_registry.get_capability(
-                        "text_to_sql", expected_type=ITextToSQLCapability
+                    text_to_sql_cap: ITextToSQLCapability = get_capability(
+                        "text_to_sql", ITextToSQLCapability
                     )
                 except Exception as e:
                     self.logger.warning(f"Text-to-SQL capability unavailable: {e}")
@@ -145,10 +148,14 @@ class TreeContextResolver(IContextResolverCapbility):
                     records = response.get("result", [])
                     
                     if records:
-                        # 假设返回的是单值或单行，可按需调整
-                        resolved_value = records[0] if len(records) == 1 else records
+                        # 使用 LLM 从查询结果中提取符合业务需求的值
+                        resolved_value = self._extract_value_from_records(
+                            key=key,
+                            value_desc=value_desc,
+                            records=records
+                        )
                         result[key] = resolved_value
-                        self.logger.info(f"✅ Resolved '{key}' with real data (rows: {len(records)})")
+                        self.logger.info(f"✅ Resolved '{key}' with real data (rows: {len(records)}, extracted: {type(resolved_value).__name__})")
                     else:
                         self.logger.warning(f"🔍 Located but no data returned for '{key}'")
                         result[key] = None  # 或保留 leaf_meta，视业务而定
@@ -196,6 +203,126 @@ class TreeContextResolver(IContextResolverCapbility):
                 table_name = parts[1].strip() or None
 
         return db_name, table_name
+    
+    def _extract_value_from_records(
+        self,
+        key: str,
+        value_desc: str,
+        records: list
+    ) -> Any:
+        """
+        使用 LLM 从 SQL 查询结果中提取符合业务需求的值。
+
+        Args:
+            key: 参数名称，如 "user_id"
+            value_desc: 业务描述，如 "当前登录用户的ID"
+            records: SQL 查询返回的记录列表
+
+        Returns:
+            提取后的值，可能是单值、列表或字典
+        """
+        # 快速路径：单行单列直接返回
+        if len(records) == 1:
+            row = records[0]
+            if isinstance(row, dict) and len(row) == 1:
+                # 单行单列，直接返回值
+                return list(row.values())[0]
+            elif not isinstance(row, dict):
+                # 单个值
+                return row
+
+        # 快速路径：单列多行，返回值列表
+        if records and isinstance(records[0], dict) and len(records[0]) == 1:
+            col_name = list(records[0].keys())[0]
+            values = [r.get(col_name) for r in records if r.get(col_name) is not None]
+            if len(values) == 1:
+                return values[0]
+            return values
+
+        # 复杂情况：多行多列，使用 LLM 提取
+        if not self.llm_client:
+            self.set_dependencies()
+            if not self.llm_client:
+                self.logger.warning("LLM client unavailable, returning first record")
+                return records[0] if len(records) == 1 else records
+
+        # 限制记录数量，避免 prompt 过长
+        max_records = 20
+        truncated = records[:max_records]
+        truncated_note = f"（仅展示前 {max_records} 条，共 {len(records)} 条）" if len(records) > max_records else ""
+        logger.info(f"LLM prompting with {truncated} records")
+
+        # 格式化记录为可读文本（处理不可序列化的类型）
+        def make_json_serializable(obj):
+            """递归处理不可 JSON 序列化的类型"""
+            if isinstance(obj, bytes):
+                # bytes 转为字符串（尝试 UTF-8 解码，失败则用 hex）
+                try:
+                    return obj.decode('utf-8')
+                except UnicodeDecodeError:
+                    return obj.hex()
+            elif isinstance(obj, dict):
+                return {k: make_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_json_serializable(item) for item in obj]
+            elif hasattr(obj, 'isoformat'):
+                # datetime/date/time 对象
+                return obj.isoformat()
+            elif hasattr(obj, '__dict__'):
+                # 其他对象尝试转为字典
+                return make_json_serializable(obj.__dict__)
+            else:
+                return obj
+
+        serializable_records = make_json_serializable(truncated)
+        records_text = json.dumps(serializable_records, ensure_ascii=False, indent=2)
+
+        prompt = f"""你是一个数据提取助手。请根据业务需求，从 SQL 查询结果中提取出最合适的值。
+
+【业务需求】
+参数名: {key}
+描述: {value_desc}
+
+【SQL 查询结果】{truncated_note}
+{records_text}
+
+【提取规则】
+1. 根据业务描述判断需要的是单个值、多个值还是完整记录
+2. 如果需要单个值（如 ID、名称），直接输出该值
+3. 如果需要多个值（如 ID 列表），输出 JSON 数组格式
+4. 如果需要完整记录，输出 JSON 对象或数组
+5. 如果查询结果与业务需求不匹配，输出 null
+
+【输出格式】
+只输出提取的值，不要任何解释。如果是字符串直接输出，如果是复杂结构输出 JSON。
+"""
+
+        try:
+            response = self.llm_client.generate(prompt=prompt)
+            result_text = response.strip() if isinstance(response, str) else str(response).strip()
+
+            # 尝试解析为 JSON
+            if result_text.lower() == "null":
+                return None
+
+            # 尝试 JSON 解析
+            try:
+                parsed = json.loads(result_text)
+                return parsed
+            except json.JSONDecodeError:
+                # 不是 JSON，作为字符串返回
+                # 去除可能的引号
+                if result_text.startswith('"') and result_text.endswith('"'):
+                    return result_text[1:-1]
+                if result_text.startswith("'") and result_text.endswith("'"):
+                    return result_text[1:-1]
+                return result_text
+
+        except Exception as e:
+            self.logger.error(f"LLM extraction failed for '{key}': {e}")
+            # 降级：返回第一条记录或全部
+            return records[0] if len(records) == 1 else records
+
 
     def _resolve_kv_via_layered_search(self, start_agent_id: str, query: str, key: str) -> Optional[Dict]:
         """
@@ -272,6 +399,38 @@ class TreeContextResolver(IContextResolverCapbility):
                 continue
         
         return None
+    
+    
+    def _resolve_kv_globally(self, query: str) -> Optional[Dict]:
+        """
+        全局兜底：在所有节点中进行关键词匹配，避免层级搜索无法定位时直接失败。
+        """
+        try:
+            node_service = getattr(self.tree_manager, "node_service", None)
+            if not node_service:
+                return None
+            nodes = node_service.get_all_nodes()
+            node_ids = []
+            for node in nodes:
+                agent_id = node.get("agent_id")
+                if not agent_id:
+                    continue
+                if any(
+                    node.get(field)
+                    for field in ("database", "db", "table", "tbl", "datascope", "data_scope")
+                ):
+                    node_ids.append(agent_id)
+            if not node_ids:
+                return None
+            matched_node_id = self._semantic_match_for_layer(query, node_ids)
+            if not matched_node_id:
+                matched_node_id = self._fallback_keyword_match(query, node_ids)
+            if not matched_node_id:
+                return None
+            return self.tree_manager.get_agent_meta(matched_node_id)
+        except Exception as e:
+            self.logger.warning(f"Global fallback failed: {e}")
+            return None
 
     def _semantic_match_for_layer(self, query: str, node_ids: List[str]) -> Optional[str]:
         """
@@ -703,3 +862,404 @@ class TreeContextResolver(IContextResolverCapbility):
                 "tenant_id": {"aliases": ["tid", "tenant"]}
             }
         }
+    
+    # ----------------------------------------------------------
+    # 语义指针补全：消解代词歧义
+    # ----------------------------------------------------------
+
+    # 常见的模糊引用模式
+    AMBIGUOUS_PATTERNS = [
+        # 代词
+        r'\b(他|她|它|他们|她们|它们)\b',
+        r'\b(这个|那个|这些|那些|该|此|其)\b',
+        # 指示性引用
+        r'\b(上述|前述|所述|上面的|之前的|刚才的)\b',
+        r'\b(该用户|该客户|该订单|该商品|该记录)\b',
+        r'\b(当前用户|当前客户|当前订单)\b',
+        # 英文代词
+        r'\b(this|that|these|those|the)\s+(user|customer|order|item|record)\b',
+        r'\b(he|she|it|they|him|her|them)\b',
+    ]
+
+    def resolve_semantic_pointers(
+        self,
+        param_descriptions: Dict[str, str],
+        current_context: Dict[str, Any],
+        agent_id: str,
+        user_id: str,
+        max_ancestor_levels: int = 3
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        将模糊的参数描述转化为语义指针，消解代词歧义。
+
+        核心机制：
+        1. 检测参数描述中的模糊引用（代词、指示词）
+        2. 沿树向上回溯父级 Agent 的业务记忆
+        3. 使用 LLM 将局部意图与父级记忆进行语义对齐
+        4. 生成自包含的语义指针
+
+        Args:
+            param_descriptions: 参数名 -> 原始描述，如 {"client_id": "该用户的ID"}
+            current_context: 当前任务上下文，包含 content, description, global_context, enriched_context
+            agent_id: 当前 Agent ID
+            user_id: 用户 ID
+            max_ancestor_levels: 最大回溯层数
+
+        Returns:
+            Dict[str, Dict]: 参数名 -> 语义指针信息
+            {
+                "client_id": {
+                    "original_desc": "该用户的ID",
+                    "resolved_desc": "昨天第二个需要退款资格检查的客户的ID",
+                    "confidence": 0.9,
+                    "resolution_chain": ["父级任务目标：处理昨天的第二个客户的投诉"],
+                    "has_ambiguity": True
+                }
+            }
+        """
+        if not param_descriptions:
+            return {}
+
+        if not self.tree_manager or not self.llm_client:
+            self.set_dependencies()
+
+        result = {}
+
+        # 1. 检测哪些参数包含模糊引用
+        params_with_ambiguity = {}
+        params_without_ambiguity = {}
+
+        for param_name, desc in param_descriptions.items():
+            if self._detect_ambiguous_references(desc):
+                params_with_ambiguity[param_name] = desc
+            else:
+                params_without_ambiguity[param_name] = desc
+
+        # 2. 对于没有模糊引用的参数，直接返回原始描述
+        for param_name, desc in params_without_ambiguity.items():
+            result[param_name] = {
+                "original_desc": desc,
+                "resolved_desc": desc,
+                "confidence": 1.0,
+                "resolution_chain": [],
+                "has_ambiguity": False
+            }
+
+        # 3. 如果没有需要解析的参数，直接返回
+        if not params_with_ambiguity:
+            return result
+
+        # 4. 获取父级上下文
+        ancestor_context_summary = ""
+        try:
+            from ..llm_memory.unified_memory import UnifiedMemory
+            from ..llm_memory.interface import IMemoryCapability
+            from .. import get_capability
+
+            memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+            if hasattr(memory_cap, '_memory_manager') and memory_cap._memory_manager:
+                ancestor_context_summary = memory_cap._memory_manager.build_ancestor_context_summary(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    tree_manager=self.tree_manager,
+                    max_levels=max_ancestor_levels
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to get ancestor context: {e}")
+
+        # 5. 如果没有父级上下文，尝试从当前上下文中解析
+        if not ancestor_context_summary:
+            # 使用当前上下文进行增强
+            for param_name, desc in params_with_ambiguity.items():
+                enhanced = self._enhance_with_current_context(
+                    param_name, desc, current_context
+                )
+                result[param_name] = enhanced
+            return result
+
+        # 6. 使用 LLM 批量解析模糊引用
+        resolved = self._batch_resolve_ambiguities(
+            params_with_ambiguity,
+            current_context,
+            ancestor_context_summary
+        )
+
+        result.update(resolved)
+        return result
+
+    def _detect_ambiguous_references(self, text: str) -> bool:
+        """
+        检测文本中是否包含模糊引用（代词、指示词等）
+
+        Args:
+            text: 待检测的文本
+
+        Returns:
+            bool: 是否包含模糊引用
+        """
+        if not text:
+            return False
+
+        text_lower = text.lower()
+
+        for pattern in self.AMBIGUOUS_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+
+        return False
+
+    def _enhance_with_current_context(
+        self,
+        param_name: str,
+        original_desc: str,
+        current_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        使用当前上下文增强参数描述（无父级上下文时的降级方案）
+
+        Args:
+            param_name: 参数名
+            original_desc: 原始描述
+            current_context: 当前上下文
+
+        Returns:
+            Dict: 语义指针信息
+        """
+        # 从当前上下文中提取相关信息
+        context_parts = []
+
+        content = current_context.get("content", "")
+        description = current_context.get("description", "")
+        global_ctx = current_context.get("global_context", {})
+        enriched_ctx = current_context.get("enriched_context", {})
+
+        if content:
+            context_parts.append(f"任务内容: {content[:200]}")
+        if description:
+            context_parts.append(f"任务描述: {description[:200]}")
+
+        # 从 global_context 和 enriched_context 中提取相关字段
+        for ctx in [global_ctx, enriched_ctx]:
+            if isinstance(ctx, dict):
+                for k, v in ctx.items():
+                    if isinstance(v, (str, int, float)) and v:
+                        # 检查是否与参数名相关
+                        if param_name.lower() in k.lower() or k.lower() in param_name.lower():
+                            context_parts.append(f"{k}: {v}")
+
+        if context_parts:
+            enhanced_desc = f"{original_desc}（上下文：{'; '.join(context_parts[:3])}）"
+        else:
+            enhanced_desc = original_desc
+
+        return {
+            "original_desc": original_desc,
+            "resolved_desc": enhanced_desc,
+            "confidence": 0.5,  # 较低置信度，因为没有父级上下文
+            "resolution_chain": context_parts[:3],
+            "has_ambiguity": True
+        }
+
+    def _batch_resolve_ambiguities(
+        self,
+        params_with_ambiguity: Dict[str, str],
+        current_context: Dict[str, Any],
+        ancestor_context_summary: str
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        使用 LLM 批量解析模糊引用
+
+        Args:
+            params_with_ambiguity: 包含模糊引用的参数
+            current_context: 当前上下文
+            ancestor_context_summary: 父级上下文摘要
+
+        Returns:
+            Dict: 参数名 -> 语义指针信息
+        """
+        if not self.llm_client:
+            # 降级：返回原始描述
+            return {
+                param_name: {
+                    "original_desc": desc,
+                    "resolved_desc": desc,
+                    "confidence": 0.3,
+                    "resolution_chain": [],
+                    "has_ambiguity": True
+                }
+                for param_name, desc in params_with_ambiguity.items()
+            }
+
+        # 构建当前上下文摘要
+        current_context_str = ""
+        content = current_context.get("content", "")
+        description = current_context.get("description", "")
+        if content:
+            current_context_str += f"任务内容: {content[:300]}\n"
+        if description:
+            current_context_str += f"任务描述: {description[:300]}\n"
+
+        # 构建参数列表
+        params_list = "\n".join([
+            f"- {name}: {desc}"
+            for name, desc in params_with_ambiguity.items()
+        ])
+
+        # 构建 Prompt
+        prompt = f"""你是一个语义消歧助手。请根据父级业务上下文，将模糊的参数描述转化为精确的语义描述。
+
+【当前任务上下文】
+{current_context_str}
+
+【父级业务记忆】（从近到远）
+{ancestor_context_summary}
+
+【待解析的参数】（包含模糊引用如"该用户"、"他"、"这个"等）
+{params_list}
+
+【任务】
+1. 分析每个参数描述中的模糊引用
+2. 从父级记忆中找到对应的精确信息
+3. 生成自包含的语义描述，使得仅凭此描述就能精确定位数据
+
+【输出格式】
+严格输出 JSON，格式如下：
+{{
+    "参数名1": {{
+        "resolved_desc": "完整的语义描述",
+        "confidence": 0.0-1.0,
+        "resolution_chain": ["从父级获取的关键信息1", "关键信息2"]
+    }},
+    "参数名2": {{
+        ...
+    }}
+}}
+
+【示例】
+输入参数: client_id: "该用户的ID"
+父级记忆: "任务目标：处理昨天的第二个客户的投诉"
+输出:
+{{
+    "client_id": {{
+        "resolved_desc": "昨天第二个需要处理投诉的客户的ID",
+        "confidence": 0.9,
+        "resolution_chain": ["父级任务目标：处理昨天的第二个客户的投诉"]
+    }}
+}}
+
+注意：
+- 如果无法从父级记忆中找到对应信息，confidence 设为 0.3-0.5
+- resolved_desc 必须是自包含的，不能包含代词
+- 只输出 JSON，不要任何解释
+"""
+
+        try:
+            response = self.llm_client.generate(
+                prompt=prompt,
+                parse_json=True,
+                max_tokens=1024
+            )
+
+            result = {}
+            for param_name, original_desc in params_with_ambiguity.items():
+                if param_name in response:
+                    resolved_info = response[param_name]
+                    result[param_name] = {
+                        "original_desc": original_desc,
+                        "resolved_desc": resolved_info.get("resolved_desc", original_desc),
+                        "confidence": float(resolved_info.get("confidence", 0.5)),
+                        "resolution_chain": resolved_info.get("resolution_chain", []),
+                        "has_ambiguity": True
+                    }
+                else:
+                    # LLM 未返回该参数，使用原始描述
+                    result[param_name] = {
+                        "original_desc": original_desc,
+                        "resolved_desc": original_desc,
+                        "confidence": 0.3,
+                        "resolution_chain": [],
+                        "has_ambiguity": True
+                    }
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"LLM batch resolve failed: {e}")
+            # 降级：返回原始描述
+            return {
+                param_name: {
+                    "original_desc": desc,
+                    "resolved_desc": desc,
+                    "confidence": 0.3,
+                    "resolution_chain": [],
+                    "has_ambiguity": True
+                }
+                for param_name, desc in params_with_ambiguity.items()
+            }
+
+    def enhance_param_descriptions_with_semantic_pointers(
+        self,
+        base_param_descriptions: Dict[str, str],
+        current_context: Dict[str, Any],
+        agent_id: str,
+        user_id: str
+    ) -> Dict[str, str]:
+        """
+        增强版参数描述：结合语义指针补全。
+
+        这是 enhance_param_descriptions_with_context 的增强版本，
+        会先进行语义指针补全，再进行上下文增强。
+
+        Args:
+            base_param_descriptions: 基础参数描述
+            current_context: 当前上下文（包含 content, description, global_context, enriched_context）
+            agent_id: 当前 Agent ID
+            user_id: 用户 ID
+
+        Returns:
+            Dict[str, str]: 增强后的参数描述
+        """
+        if not base_param_descriptions:
+            return {}
+
+        # 1. 先进行语义指针补全
+        semantic_pointers = self.resolve_semantic_pointers(
+            param_descriptions=base_param_descriptions,
+            current_context=current_context,
+            agent_id=agent_id,
+            user_id=user_id
+        )
+
+        # 2. 提取补全后的描述
+        enhanced_descriptions = {}
+        for param_name, pointer_info in semantic_pointers.items():
+            # 使用补全后的描述
+            resolved_desc = pointer_info.get("resolved_desc", base_param_descriptions.get(param_name, ""))
+            confidence = pointer_info.get("confidence", 1.0)
+
+            # 如果置信度较低，保留原始描述作为备注
+            if confidence < 0.6 and pointer_info.get("has_ambiguity"):
+                original = pointer_info.get("original_desc", "")
+                if original and original != resolved_desc:
+                    resolved_desc = f"{resolved_desc}（原始描述：{original}）"
+
+            enhanced_descriptions[param_name] = resolved_desc
+
+        # 3. 再进行常规的上下文增强（使用 enriched_context 中的具体值）
+        current_inputs = {}
+        enriched_ctx = current_context.get("enriched_context", {})
+        global_ctx = current_context.get("global_context", {})
+
+        if isinstance(enriched_ctx, dict):
+            current_inputs.update(enriched_ctx)
+        if isinstance(global_ctx, dict):
+            current_inputs.update(global_ctx)
+
+        if current_inputs:
+            enhanced_descriptions = self.enhance_param_descriptions_with_context(
+                enhanced_descriptions,
+                current_inputs
+            )
+
+        return enhanced_descriptions
+

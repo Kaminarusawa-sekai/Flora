@@ -94,7 +94,7 @@ def init_orchestrator():
 def get_current_user(x_user_id: Optional[str] = Header(None)):
     """获取当前用户ID"""
     if not x_user_id:
-        return "1"
+        return "<user_id:1,tenant_id:1>"
         raise HTTPException(status_code=401, detail="未提供X-User-ID")
     return x_user_id
 

@@ -6,10 +6,12 @@ from typing import Optional, List
 from datetime import datetime, timezone
 
 from external.db.session import get_db
-from external.db.impl import create_task_definition_repo, create_task_instance_repo
+from external.db.impl import create_task_definition_repo, create_task_instance_repo, create_scheduled_task_repo
 from external.db.session import dialect
 from services.lifecycle_service import LifecycleService
 from events.event_publisher import event_publisher
+from drivers.schedulers.cron_generator import CronGenerator
+
 
 router = APIRouter()
 
@@ -321,5 +323,224 @@ async def request_id_to_trace(
             "trace_id": None,
             "message": f"No trace_id found for request_id {request_id}"
         }
+
+
+# ============== 新增：任务定义和调度任务管理 API ==============
+
+class TaskDefinitionUpdateRequest(BaseModel):
+    """任务定义更新请求"""
+    cron_expr: Optional[str] = None
+    loop_config: Optional[dict] = None
+    schedule_config: Optional[dict] = None
+    is_active: Optional[bool] = None
+    content: Optional[dict] = None
+
+
+class ScheduledTaskRescheduleRequest(BaseModel):
+    """调度任务重新调度请求"""
+    scheduled_time: datetime
+    schedule_config: Optional[dict] = None
+
+
+class ScheduledTaskUpdateRequest(BaseModel):
+    """调度任务更新请求"""
+    scheduled_time: Optional[datetime] = None
+    schedule_config: Optional[dict] = None
+    input_params: Optional[dict] = None
+    priority: Optional[int] = None
+
+
+class ScheduledTaskResponse(BaseModel):
+    """调度任务响应"""
+    id: str
+    definition_id: str
+    trace_id: str
+    status: str
+    schedule_type: str
+    scheduled_time: datetime
+    round_index: int
+    input_params: Optional[dict] = None
+    error_msg: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.patch("/definitions/{def_id}", response_model=TaskDefResponse)
+async def update_task_definition(
+    def_id: str,
+    update_req: TaskDefinitionUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    更新任务定义
+
+    支持修改：
+    - cron_expr: CRON 表达式（会验证格式）
+    - loop_config: 循环配置
+    - schedule_config: 调度配置
+    - is_active: 是否激活
+    - content: 任务内容
+    """
+    def_repo = create_task_definition_repo(db, dialect)
+
+    # 检查定义是否存在
+    existing = await def_repo.get(def_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Task definition {def_id} not found")
+
+    # 验证 CRON 表达式
+    if update_req.cron_expr is not None and update_req.cron_expr != "":
+        if not CronGenerator.is_valid_cron(update_req.cron_expr):
+            raise HTTPException(status_code=400, detail=f"Invalid CRON expression: {update_req.cron_expr}")
+
+    # 构建更新参数
+    update_params = {}
+    if update_req.cron_expr is not None:
+        update_params["cron_expr"] = update_req.cron_expr if update_req.cron_expr else None
+    if update_req.loop_config is not None:
+        update_params["loop_config"] = update_req.loop_config
+    if update_req.schedule_config is not None:
+        update_params["schedule_config"] = update_req.schedule_config
+    if update_req.is_active is not None:
+        update_params["is_active"] = update_req.is_active
+    if update_req.content is not None:
+        update_params["content"] = update_req.content
+
+    if not update_params:
+        return existing
+
+    updated = await def_repo.update(def_id, **update_params)
+    return updated
+
+
+@router.get("/definitions/{def_id}", response_model=TaskDefResponse)
+async def get_task_definition(
+    def_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单个任务定义"""
+    def_repo = create_task_definition_repo(db, dialect)
+    definition = await def_repo.get(def_id)
+    if not definition:
+        raise HTTPException(status_code=404, detail=f"Task definition {def_id} not found")
+    return definition
+
+
+@router.get("/scheduled-tasks/{task_id}", response_model=ScheduledTaskResponse)
+async def get_scheduled_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单个调度任务"""
+    repo = create_scheduled_task_repo(db, dialect)
+    task = await repo.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Scheduled task {task_id} not found")
+    return task
+
+
+@router.patch("/scheduled-tasks/{task_id}", response_model=ScheduledTaskResponse)
+async def update_scheduled_task(
+    task_id: str,
+    update_req: ScheduledTaskUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    更新调度任务
+
+    只允许修改 PENDING 状态的任务
+
+    支持修改：
+    - scheduled_time: 调度时间
+    - schedule_config: 调度配置
+    - input_params: 输入参数
+    - priority: 优先级
+    """
+    repo = create_scheduled_task_repo(db, dialect)
+
+    # 构建更新参数
+    update_params = {}
+    if update_req.scheduled_time is not None:
+        update_params["scheduled_time"] = update_req.scheduled_time
+    if update_req.schedule_config is not None:
+        update_params["schedule_config"] = update_req.schedule_config
+    if update_req.input_params is not None:
+        update_params["input_params"] = update_req.input_params
+    if update_req.priority is not None:
+        update_params["priority"] = update_req.priority
+
+    if not update_params:
+        task = await repo.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Scheduled task {task_id} not found")
+        return task
+
+    try:
+        updated = await repo.update_scheduled_task(task_id, **update_params)
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Scheduled task {task_id} not found")
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scheduled-tasks/{task_id}/reschedule", response_model=ScheduledTaskResponse)
+async def reschedule_task(
+    task_id: str,
+    reschedule_req: ScheduledTaskRescheduleRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    重新调度任务
+
+    将任务状态重置为 PENDING，并更新调度时间
+    只允许对 FAILED、CANCELLED、SUCCESS 状态的任务进行重新调度
+    """
+    repo = create_scheduled_task_repo(db, dialect)
+
+    try:
+        rescheduled = await repo.reschedule_task(
+            task_id=task_id,
+            new_scheduled_time=reschedule_req.scheduled_time,
+            new_schedule_config=reschedule_req.schedule_config
+        )
+        if not rescheduled:
+            raise HTTPException(status_code=404, detail=f"Scheduled task {task_id} not found")
+        return rescheduled
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/scheduled-tasks/{task_id}/cancel", response_model=TaskControlResponse)
+async def cancel_scheduled_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    取消调度任务
+
+    只允许取消 PENDING 或 SCHEDULED 状态的任务
+    """
+    repo = create_scheduled_task_repo(db, dialect)
+
+    success = await repo.cancel_task(task_id)
+    if success:
+        return TaskControlResponse(
+            success=True,
+            message=f"Successfully cancelled scheduled task {task_id}",
+            details={"task_id": task_id}
+        )
+    else:
+        # 检查任务是否存在
+        task = await repo.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Scheduled task {task_id} not found")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel task in {task.status} status. Only PENDING or SCHEDULED tasks can be cancelled."
+            )
 
 

@@ -182,6 +182,7 @@ class EventPublisher:
         message_type: Optional[str] = None, 
         enriched_context_snapshot: Optional[Dict[str, Any]] = None, 
         error: Optional[str] = None, 
+        name: Optional[str] = None
     ) -> None: 
         """ 
         同步入口：非阻塞地将事件加入队列 
@@ -225,6 +226,7 @@ class EventPublisher:
                 "agent_id": agent_id, 
                 "data": safe_data, 
                 "error": error, 
+                "name": name,
                 "enriched_context_snapshot": enriched_context_snapshot, 
                 "timestamp": datetime.now().timestamp(), 
             } 

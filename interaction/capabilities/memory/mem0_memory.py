@@ -260,3 +260,95 @@ class Mem0Memory(IMemoryCapability):
             if meta.get("key") == key:
                 return item
         return None
+    
+    def extract_and_save_core_memories(self, user_id: str, conversation_text: str) -> List[Dict[str, Any]]:
+        """
+        从对话文本中提取核心记忆并保存
+
+        Args:
+            user_id: 用户ID
+            conversation_text: 格式化的对话文本
+
+        Returns:
+            List[Dict]: 提取并保存的记忆列表，格式为 [{"action": "add|update", "key": "...", "value": "..."}]
+        """
+        # 获取 LLM 能力
+        from ..llm.interface import ILLMCapability
+        from ..registry import capability_registry
+
+        try:
+            llm_cap = capability_registry.get_capability("llm", ILLMCapability)
+        except Exception as e:
+            logger.warning(f"[核心记忆提取] LLM 能力不可用: {e}")
+            return []
+
+        # 获取用户现有核心记忆
+        existing_memories = self.list_core_memories(user_id=user_id, limit=50)
+
+        # 格式化已有记忆
+        existing_memories_text = ""
+        if existing_memories:
+            for mem in existing_memories:
+                key = mem.get("key", "")
+                value = mem.get("value", "")
+                if key and value:
+                    existing_memories_text += f"- {key}: {value}\n"
+        if not existing_memories_text:
+            existing_memories_text = "（暂无已有记忆）"
+
+        prompt = f"""你是一个记忆提取助手。请从对话中提取用户的核心信息。
+
+【已有记忆】
+{existing_memories_text}
+
+【最近对话】
+{conversation_text}
+
+【任务】
+1. 从对话中识别用户的核心信息，包括但不限于：
+   - 用户身份信息（姓名、角色、部门等）
+   - 用户偏好（沟通方式、常用工具等）
+   - 用户联系方式（电话、邮箱、常用联系人等）
+   - 用户目标/需求（当前项目、关注点等）
+   - 业务上下文（负责的业务、关注的指标等）
+2. 对比已有记忆，判断是新增还是更新：
+   - 如果是全新的信息，action 为 "add"
+   - 如果用户明确表示更新（如"换成"、"改为"、"现在是"），action 为 "update"
+   - 如果信息与已有记忆相同，不要输出
+3. 只提取明确提到的信息，不要猜测或推断
+
+【输出格式】
+请严格输出 JSON 格式，不要包含其他文字：
+{{
+  "memories": [
+    {{"action": "add", "key": "记忆键名", "value": "记忆内容"}},
+    {{"action": "update", "key": "已有记忆键名", "value": "更新后的内容"}}
+  ]
+}}
+
+如果对话中没有值得提取的核心信息，返回：
+{{"memories": []}}
+"""
+
+        try:
+            result = llm_cap.generate(prompt, parse_json=True)
+            extracted_memories = []
+            if isinstance(result, dict) and "memories" in result:
+                extracted_memories = result["memories"]
+
+            # 存储提取的核心记忆
+            saved_memories = []
+            for mem in extracted_memories:
+                action = mem.get("action", "add")
+                key = mem.get("key", "")
+                value = mem.get("value", "")
+                if key and value:
+                    self.set_core_memory(user_id=user_id, key=key, value=value)
+                    saved_memories.append({"action": action, "key": key, "value": value})
+                    logger.info(f"[核心记忆] {action}: {key} = {value}")
+
+            return saved_memories
+        except Exception as e:
+            logger.warning(f"[核心记忆提取] LLM 调用或解析失败: {e}")
+            return []
+

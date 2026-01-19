@@ -154,7 +154,9 @@ class NodeService:
                 "code": node.get("code", ""),
                 "config": node.get("config", {}),
                 "dify": node.get("dify", {}),
-                "seq": node.get("seq", 100)
+                "seq": node.get("seq", 100),
+                "database": node.get("database", ""),
+                "http": node.get("http", {}),
             }
             return meta
         return None

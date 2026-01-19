@@ -57,7 +57,7 @@ class UnifiedMemoryManager():
             from ...registry import capability_registry
             from ...llm.interface import ILLMCapability
             self.qwen = capability_registry.get_capability(
-                "qwen", expected_type=ILLMCapability
+                "llm", expected_type=ILLMCapability
             )
         # Step 1: 存入短期记忆（原始内容）
         self.stm.add_message(content=content,role="user", user_id=user_id)
@@ -383,3 +383,189 @@ class UnifiedMemoryManager():
             scene="任务执行", 
             include_vault=include_sensitive
         )
+
+# ======================
+    # 4. 语义指针补全：父级记忆回溯
+    # ======================
+
+    def get_ancestor_context(
+        self,
+        user_id: str,
+        agent_id: str,
+        tree_manager: Any,
+        max_levels: int = 3,
+        query: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        沿树向上回溯，收集父级 Agent 的业务记忆，用于消解代词歧义。
+
+        机制：
+        - 从当前 agent_id 开始，沿树向上遍历父级 Agent
+        - 检索每级的对话历史和核心记忆
+        - 返回按层级排序的上下文列表（近到远）
+
+        Args:
+            user_id: 用户ID
+            agent_id: 当前 Agent ID
+            tree_manager: TreeManager 实例，用于获取父级关系
+            max_levels: 最大回溯层数，默认 3 层
+            query: 可选的查询关键词，用于相关性过滤
+
+        Returns:
+            List[Dict]: 每级父节点的上下文信息
+            [
+                {
+                    "agent_id": "parent_agent_1",
+                    "level": 1,
+                    "conversation_history": "...",
+                    "core_memory": "...",
+                    "agent_description": "...",
+                    "task_goal": "..."
+                },
+                ...
+            ]
+        """
+        if not tree_manager:
+            return []
+
+        ancestor_contexts = []
+        current_id = agent_id
+        level = 0
+
+        while level < max_levels:
+            # 获取父节点
+            parent_id = tree_manager.get_parent(current_id)
+            if not parent_id:
+                break  # 已到达根节点
+
+            level += 1
+
+            # 构建父节点的记忆 scope
+            # 格式: user_id:root_agent_id:parent_agent_id
+            root_path = tree_manager.get_full_path(parent_id)
+            root_agent_id = root_path[0] if root_path else parent_id
+            parent_scope = f"{user_id}:{root_agent_id}:{parent_id}"
+
+            # 获取父节点的对话历史
+            conversation_history = ""
+            try:
+                conversation_history = self.stm.format_history_by_scope(parent_scope, n=5)
+                if not conversation_history:
+                    # 尝试更宽松的 scope
+                    broader_scope = f"{user_id}:{root_agent_id}"
+                    conversation_history = self.stm.format_history_by_scope(broader_scope, n=5)
+            except Exception as e:
+                print(f"[AncestorContext] Failed to get conversation history for {parent_id}: {e}")
+
+            # 获取父节点的核心记忆
+            core_memory = ""
+            try:
+                core_memory = self.get_core_memory(user_id)
+            except Exception as e:
+                print(f"[AncestorContext] Failed to get core memory for {parent_id}: {e}")
+
+            # 获取父节点的元数据（描述、任务目标等）
+            agent_description = ""
+            task_goal = ""
+            try:
+                parent_meta = tree_manager.get_agent_meta(parent_id)
+                if parent_meta:
+                    agent_description = parent_meta.get("description", "")
+                    # 尝试从 datascope 或 capability 中提取任务目标
+                    datascope = parent_meta.get("datascope") or parent_meta.get("data_scope", "")
+                    capability = parent_meta.get("capability", "")
+                    if datascope:
+                        task_goal = f"数据范围: {datascope}"
+                    if capability:
+                        task_goal += f" 能力: {capability}"
+            except Exception as e:
+                print(f"[AncestorContext] Failed to get agent meta for {parent_id}: {e}")
+
+            # 如果有查询关键词，进行相关性过滤
+            if query:
+                # 简单的关键词匹配过滤
+                combined_text = f"{conversation_history} {core_memory} {agent_description} {task_goal}"
+                query_keywords = set(query.lower().split())
+                combined_lower = combined_text.lower()
+                relevance_score = sum(1 for kw in query_keywords if kw in combined_lower)
+
+                # 如果完全不相关，跳过这一层
+                if relevance_score == 0 and level > 1:
+                    current_id = parent_id
+                    continue
+
+            ancestor_context = {
+                "agent_id": parent_id,
+                "level": level,
+                "conversation_history": conversation_history,
+                "core_memory": core_memory,
+                "agent_description": agent_description,
+                "task_goal": task_goal
+            }
+
+            ancestor_contexts.append(ancestor_context)
+            current_id = parent_id
+
+        return ancestor_contexts
+
+    def build_ancestor_context_summary(
+        self,
+        user_id: str,
+        agent_id: str,
+        tree_manager: Any,
+        max_levels: int = 3,
+        query: str = ""
+    ) -> str:
+        """
+        构建父级上下文的摘要文本，用于注入到 LLM prompt 中。
+
+        Args:
+            user_id: 用户ID
+            agent_id: 当前 Agent ID
+            tree_manager: TreeManager 实例
+            max_levels: 最大回溯层数
+            query: 可选的查询关键词
+
+        Returns:
+            str: 格式化的父级上下文摘要
+        """
+        ancestors = self.get_ancestor_context(
+            user_id=user_id,
+            agent_id=agent_id,
+            tree_manager=tree_manager,
+            max_levels=max_levels,
+            query=query
+        )
+
+        if not ancestors:
+            return ""
+
+        summary_parts = []
+        for ctx in ancestors:
+            level = ctx["level"]
+            agent_id = ctx["agent_id"]
+
+            parts = [f"【父级 {level} - {agent_id}】"]
+
+            if ctx.get("agent_description"):
+                parts.append(f"描述: {ctx['agent_description']}")
+
+            if ctx.get("task_goal"):
+                parts.append(f"任务目标: {ctx['task_goal']}")
+
+            if ctx.get("conversation_history"):
+                # 截取最近的对话，避免过长
+                history = ctx["conversation_history"]
+                if len(history) > 500:
+                    history = history[-500:] + "..."
+                parts.append(f"近期对话:\n{history}")
+
+            if ctx.get("core_memory"):
+                memory = ctx["core_memory"]
+                if len(memory) > 300:
+                    memory = memory[:300] + "..."
+                parts.append(f"核心记忆: {memory}")
+
+            summary_parts.append("\n".join(parts))
+
+        return "\n\n".join(summary_parts)

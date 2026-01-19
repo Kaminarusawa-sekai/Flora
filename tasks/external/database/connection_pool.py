@@ -67,6 +67,16 @@ class MySQLConnectionPool(BaseConnectionPool):
     MySQL连接池管理类
     """
     
+    def __init__(self, config: Dict[str, Any] = None):
+        """
+        初始化连接池
+        
+        Args:
+            config: 数据库配置
+        """
+        super().__init__(config)
+        self.max_reconnect_attempts = self.config.get('max_reconnect_attempts', 3) if config else 3
+    
     def get_connection(self):
         """
         获取数据库连接
@@ -93,8 +103,56 @@ class MySQLConnectionPool(BaseConnectionPool):
             password=self.config['password'],
             database=self.config.get('database', ''),
             charset=self.config.get('charset', 'utf8mb4'),
-            cursorclass=DictCursor
+            cursorclass=DictCursor,
+            autocommit=False,
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30,
+            # 添加自动重连配置
+            max_allowed_packet=1024 * 1024 * 16
         )
+    
+    def _is_connection_healthy(self, conn):
+        """
+        检查连接是否健康
+        
+        Args:
+            conn: 数据库连接对象
+            
+        Returns:
+            bool: 连接是否健康
+        """
+        try:
+            # 执行简单的ping命令检查连接
+            conn.ping(reconnect=False)
+            return True
+        except (pymysql.Error, AttributeError):
+            return False
+    
+    def _get_healthy_connection(self):
+        """
+        获取健康的数据库连接
+        
+        Returns:
+            pymysql.connections.Connection: 健康的数据库连接对象
+        """
+        attempt = 0
+        while attempt < self.max_reconnect_attempts:
+            try:
+                conn = self.get_connection()
+                if self._is_connection_healthy(conn):
+                    return conn
+                conn.close()
+            except pymysql.Error as e:
+                logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
+            attempt += 1
+        
+        # 最后一次尝试，不捕获异常
+        conn = self.get_connection()
+        if self._is_connection_healthy(conn):
+            return conn
+        conn.close()
+        raise pymysql.Error(f"Failed to get healthy connection after {self.max_reconnect_attempts} attempts")
     
     def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """
@@ -107,7 +165,7 @@ class MySQLConnectionPool(BaseConnectionPool):
         Returns:
             list: 查询结果
         """
-        with self.get_connection() as conn:
+        with self._get_healthy_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or {})
                 return cursor.fetchall()
@@ -123,7 +181,7 @@ class MySQLConnectionPool(BaseConnectionPool):
         Returns:
             int: 受影响的行数
         """
-        with self.get_connection() as conn:
+        with self._get_healthy_connection() as conn:
             with conn.cursor() as cursor:
                 result = cursor.execute(query, params or {})
                 conn.commit()
@@ -415,7 +473,7 @@ class ConnectionPoolFactory:
     """
     
     @staticmethod
-    def create_pool(db_type: str, config: Dict[str, Any]) -> BaseConnectionPool:
+    def create_pool(db_type: str, config: Optional[Dict[str, Any]] = None) -> BaseConnectionPool:
         """
         根据数据库类型创建相应的连接池实例
         

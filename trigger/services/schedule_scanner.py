@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
+import json
 import logging
 
 from external.db.impl import create_scheduled_task_repo

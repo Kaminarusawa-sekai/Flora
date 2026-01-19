@@ -30,6 +30,8 @@ from .mcp_actor import MCPCapabilityActor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+##TODO：这里没有添加正确的NEED_INPUT和TASK_COmpleted消息
 class TaskGroupAggregatorActor(Actor):
     """
     任务组聚合器Actor (Workflow Orchestrator)

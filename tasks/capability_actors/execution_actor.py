@@ -247,19 +247,19 @@ class ExecutionActor(Actor):
             self.logger.exception(f"Dify execution failed: {e}")
             self._send_error(task_id, str(e), reply_to)
 
-        def _execute_http(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
-            """
-            执行 HTTP 请求
+    def _execute_http(self, task_id: str, running_config: Dict[str, Any], reply_to: str) -> None:
+        """
+        执行 HTTP 请求
 
-            running_config 应包含:
-            - url: 完整的请求 URL
-            - method: HTTP 方法 (GET/POST/PUT/DELETE)
-            - headers: 请求头
-            - args_schema: 参数 schema 列表（来自节点的 args 属性）
-            - inputs: 输入参数
-            - description: 任务描述（用于 LLM 提取参数）
-            - content: 任务内容
-            """
+        running_config 应包含:
+        - url: 完整的请求 URL
+        - method: HTTP 方法 (GET/POST/PUT/DELETE)
+        - headers: 请求头
+        - args_schema: 参数 schema 列表（来自节点的 args 属性）
+        - inputs: 输入参数
+        - description: 任务描述（用于 LLM 提取参数）
+        - content: 任务内容
+        """
         self.logger.info(f"Executing HTTP request for task {task_id}")
 
         try:

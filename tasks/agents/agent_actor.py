@@ -24,6 +24,9 @@ from capabilities.task_planning.interface import ITaskPlanningCapability
 from events.event_bus import event_bus
 from common.event import EventType
 
+# 导入RabbitMQ客户端
+from external.message_queue.rabbitmq_client import RabbitMQClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +152,7 @@ class AgentActor(Actor):
             task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
+            name=self.meta.get("name",""),
             data={
                 "user_input": user_input[:100],
                 "user_id": self.current_user_id+str(self.agent_id)
@@ -187,6 +191,7 @@ class AgentActor(Actor):
             task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
+            name=self.meta.get("name",""),
             data={
                 "message": "开始任务规划"
             },
@@ -260,6 +265,7 @@ class AgentActor(Actor):
             task_path=task_path,  # 使用ResumeTaskMessage的task_path
             source="AgentActor",
             agent_id=self.agent_id,
+            name=self.meta.get("name",""),
             data={
                 "parameters": list(parameters.keys()),
                 "user_id": self.current_user_id
@@ -380,8 +386,24 @@ class AgentActor(Actor):
             # 否则，直接返回给前台InteractionActor
             original_sender = self.task_id_to_sender.get(task_id, sender)
             if original_sender:
-                # 直接发送TaskCompletedMessage，不再使用InteractTaskPausedMessage
+                # 直接发送TaskCompletedMessage，推送至rabbitmq
                 self.send(original_sender, task_result)
+                
+                # 将结果发送到RabbitMQ的task.result队列
+                # try:
+                #     rabbitmq_client = RabbitMQClient()
+                #     # 构建RabbitMQ消息格式
+                #     rabbitmq_message = {
+                #         "trace_id": task_result.trace_id,
+                #         "status": task_result.status,
+                #         "result": task_result.result,
+                #         "error": None
+                #     }
+                #     # 发送到task.result队列
+                #     rabbitmq_client.publish_to_queue("task.result", rabbitmq_message)
+                #     rabbitmq_client.close()
+                # except Exception as e:
+                #     self.log.error(f"Failed to send task result to RabbitMQ: {str(e)}")
             else:
                 self.log.warning(f"No reply_to address found for task {task_id}, cannot forward need_input message")
 
@@ -516,6 +538,22 @@ class AgentActor(Actor):
 
             self.send(original_sender, task_result)
 
+            # # 5. 将结果发送到RabbitMQ的task.result队列
+            # try:
+            #     rabbitmq_client = RabbitMQClient()
+            #     # 构建RabbitMQ消息格式
+            #     rabbitmq_message = {
+            #         "trace_id": result_msg.trace_id or task_id,
+            #         "status": status,
+            #         "result": result_data,
+            #         "error": error_str
+            #     }
+            #     # 发送到task.result队列
+            #     rabbitmq_client.publish_to_queue("task.result", rabbitmq_message)
+            #     rabbitmq_client.close()
+            # except Exception as e:
+            #     self.log.error(f"Failed to send task result to RabbitMQ: {str(e)}")
+
             # 4. 发布事件
             event_type = EventType.TASK_COMPLETED.value if status == "SUCCESS" else EventType.TASK_FAILED.value
             event_bus.publish_task_event(
@@ -525,6 +563,7 @@ class AgentActor(Actor):
                 task_path=self._task_path or "",
                 source="AgentActor",
                 agent_id=self.agent_id,
+                name=self.meta.get("name",""),
                 data={"result": result_data},
                 user_id=self.current_user_id,
                 error=error_str

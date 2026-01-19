@@ -52,10 +52,6 @@ async def lifespan(app: FastAPI):
     # 启动CRON调度器
     tasks.append(asyncio.create_task(cron_scheduler(lifecycle_svc, async_session_factory)))
     
-    # 启动任务分发器 (旧版，兼容现有代码)
-    from drivers import TaskDispatcher
-    dispatcher = TaskDispatcher(broker=broker, lifecycle_service=lifecycle_svc)
-    tasks.append(asyncio.create_task(dispatcher.start()))
     
     # 启动新的调度扫描器
     scanner = ScheduleScanner(broker=broker, scan_interval=10)

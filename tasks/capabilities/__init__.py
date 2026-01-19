@@ -82,7 +82,8 @@ def get_capability_registry() -> CapabilityRegistry:
     Returns:
         能力注册表实例
     """
-    return CapabilityRegistry()
+    from .registry import capability_registry
+    return capability_registry
 
 
 def get_capability(name: str, expected_type: type) -> CapabilityBase:
@@ -97,4 +98,8 @@ def get_capability(name: str, expected_type: type) -> CapabilityBase:
         能力实例
     """
     manager = get_capability_manager()
+    # Ensure capabilities are auto-registered and initialized
+    if not manager._available_classes:  # Check if discovery has been done
+        manager.auto_register_capabilities()
+        manager.initialize_all_capabilities()
     return manager.get_capability(name, expected_type)

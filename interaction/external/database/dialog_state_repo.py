@@ -21,6 +21,7 @@ class DialogStateRepository:
         self.pool = pool or SQLiteConnectionPool(db_path="dialogs.db")
         # print(self.pool.db_path)
         self._create_table()
+        self._create_trace_mapping_table()
 
     def _create_table(self):
         conn = self.pool.get_connection()
@@ -37,6 +38,28 @@ class DialogStateRepository:
         finally:
             self.pool.return_connection(conn)
 
+    def _create_trace_mapping_table(self):
+        """创建 trace_id -> session_id 映射表"""
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trace_session_mapping (
+                    trace_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    user_id TEXT,
+                    created_at REAL NOT NULL
+                )
+            ''')
+            # 创建索引以加速按 session_id 查询
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_trace_session_mapping_session_id
+                ON trace_session_mapping(session_id)
+            ''')
+            conn.commit()
+        finally:
+            self.pool.return_connection(conn)
+
     def _serialize_state(self, state: DialogStateDTO) -> str:
         return state.model_dump_json(exclude_none=True)  # Pydantic v2, 排除None值以减少存储大小
 
@@ -45,7 +68,7 @@ class DialogStateRepository:
         
         # 处理必填字段的默认值，确保兼容旧数据
         if 'user_id' not in data:
-            data['user_id'] = ''
+            data['user_id'] = '' # 或根据业务逻辑设置合理默认值
         if 'name' not in data:
             data['name'] = ''
         if 'description' not in data:
@@ -230,5 +253,125 @@ class DialogStateRepository:
         except Exception as e:
             logger.error(f"Failed to get sessions by user id {user_id}: {e}")
             return []
+        finally:
+            self.pool.return_connection(conn)
+
+        # ============== trace_session_mapping 方法 ==============
+
+    def save_trace_mapping(self, trace_id: str, session_id: str, user_id: Optional[str] = None) -> bool:
+        """
+        保存 trace_id -> session_id 映射
+
+        Args:
+            trace_id: 任务追踪ID
+            session_id: 会话ID
+            user_id: 用户ID（可选）
+
+        Returns:
+            是否保存成功
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            timestamp = datetime.now(timezone.utc).timestamp()
+            cursor.execute('''
+                INSERT OR REPLACE INTO trace_session_mapping (trace_id, session_id, user_id, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (trace_id, session_id, user_id, timestamp))
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            self.pool.return_connection(conn)
+
+    def get_session_by_trace(self, trace_id: str) -> Optional[str]:
+        """
+        根据 trace_id 获取对应的 session_id
+
+        Args:
+            trace_id: 任务追踪ID
+
+        Returns:
+            session_id，如果不存在则返回 None
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT session_id FROM trace_session_mapping WHERE trace_id = ?
+            ''', (trace_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            self.pool.return_connection(conn)
+
+    def get_trace_mapping(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取完整的 trace 映射信息
+
+        Args:
+            trace_id: 任务追踪ID
+
+        Returns:
+            包含 trace_id, session_id, user_id, created_at 的字典
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT trace_id, session_id, user_id, created_at
+                FROM trace_session_mapping WHERE trace_id = ?
+            ''', (trace_id,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "trace_id": row[0],
+                    "session_id": row[1],
+                    "user_id": row[2],
+                    "created_at": datetime.fromtimestamp(row[3], timezone.utc)
+                }
+            return None
+        finally:
+            self.pool.return_connection(conn)
+
+    def get_traces_by_session(self, session_id: str) -> List[str]:
+        """
+        获取某个 session 下的所有 trace_id
+
+        Args:
+            session_id: 会话ID
+
+        Returns:
+            trace_id 列表
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT trace_id FROM trace_session_mapping
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+            ''', (session_id,))
+            return [row[0] for row in cursor.fetchall()]
+        finally:
+            self.pool.return_connection(conn)
+
+    def delete_trace_mapping(self, trace_id: str) -> bool:
+        """
+        删除 trace 映射
+
+        Args:
+            trace_id: 任务追踪ID
+
+        Returns:
+            是否删除成功
+        """
+        conn = self.pool.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM trace_session_mapping WHERE trace_id = ?', (trace_id,))
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             self.pool.return_connection(conn)

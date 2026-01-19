@@ -152,7 +152,9 @@ const completedTasks = ref<Task[]>([]);
 const fetchTasksFromApi = async () => {
   try {
     // 从localStorage获取userId，不存在则使用默认值1
-    const userId = localStorage.getItem('userId') || '1';
+    const userId = localStorage.getItem('userId') || '<user_id:1,tenant_id:1>';
+
+    
     
 
     // 获取用户所有活跃会话
@@ -303,7 +305,7 @@ const filteredCompletedTasks = computed(() => {
 const createNewConversation = async () => {
   try {
     // 从localStorage获取userId，不存在则使用默认值1
-    const userId = localStorage.getItem('userId') || '1';
+    const userId = localStorage.getItem('userId') || '<user_id:1,tenant_id:1>';
     
     // 调用API创建新对话
     const newConversation = await ConversationAPI.createConversation(userId);
