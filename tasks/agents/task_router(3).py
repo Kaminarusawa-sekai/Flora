@@ -13,7 +13,7 @@ TaskRouterActor - 统一任务路由层（Actor 模式）
          └── 立即返回 202       └◄──────── TaskCompletedMessage ◄──────────────┘
                                 │
                                 ▼
-                          RabbitMQ (work.result)
+                          RabbitMQ (task.result)
 """
 import logging
 import uuid
@@ -167,9 +167,9 @@ class TaskRouterActor(Actor):
         try:
             from agents.tree.tree_manager import treeManager
             root_agents = treeManager.get_root_agents()
-            return root_agents[0] if root_agents else "marketing"
+            return root_agents[0] if root_agents else "agent_root"
         except Exception:
-            return "marketing"
+            return "agent_root"
 
     def receiveMessage(self, message: Any, sender: ActorAddress):
         """接收并处理消息"""
@@ -210,7 +210,7 @@ class TaskRouterActor(Actor):
         # 保存 user_id 用于结果发布
         self._active_tasks[trace_id] = msg.user_id
 
-        # 构造消息，设置 reply_to 为自己
+        # 构造消息，设置 reply_to 和 root_reply_to 为自己
         agent_msg = AgentTaskMessage(
             task_id=task_id,
             trace_id=trace_id,
@@ -223,7 +223,6 @@ class TaskRouterActor(Actor):
             global_context=msg.global_context or {},
             reply_to=self.myAddress,  # 上一层回调地址
             root_reply_to=self.myAddress  # 根回调地址，用于 NEED_INPUT 直接回报
-        
         )
 
         # 保存初始状态
@@ -245,7 +244,7 @@ class TaskRouterActor(Actor):
         self.send(agent_ref, agent_msg)
 
         # 立即回复 API：任务已接受
-        # self.send(sender, RouterTaskAccepted(task_id=task_id, trace_id=trace_id))
+        self.send(sender, RouterTaskAccepted(task_id=task_id, trace_id=trace_id))
 
     def _handle_resume_task(self, msg: RouterResumeTaskMessage, sender: ActorAddress):
         """处理恢复任务请求"""
@@ -294,7 +293,6 @@ class TaskRouterActor(Actor):
             root_reply_to=self.myAddress  # 根回调地址，用于 NEED_INPUT 直接回报
         )
 
-        
         # 6. 获取目标 Actor：优先使用保存的 NEED_INPUT 发送者，否则使用 AgentActor
         target_actor = self._need_input_senders.pop(msg.trace_id, None)
         if target_actor:
@@ -307,9 +305,7 @@ class TaskRouterActor(Actor):
         self.send(target_actor, resume_msg)
 
         # 8. 立即回复 API：恢复请求已接受
-
-        # # 7. 立即回复 API：恢复请求已接受
-        # self.send(sender, RouterResumeAccepted(trace_id=msg.trace_id, success=True))
+        self.send(sender, RouterResumeAccepted(trace_id=msg.trace_id, success=True))
 
     def _handle_get_status(self, msg: RouterGetStatusMessage, sender: ActorAddress):
         """处理状态查询请求"""

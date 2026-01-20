@@ -212,23 +212,35 @@ class EventPublisher:
                     self._enqueue(event) 
                     return 
 
-            # 普通事件 
-            safe_data.update({ 
-                "task_path": task_path, 
-                "message_type": message_type, 
-                "user_id": user_id, 
-            }) 
-            payload = { 
-                "task_id": task_id, 
-                "event_type": event_type, 
-                "trace_id": trace_id, 
-                "source": source, 
-                "agent_id": agent_id, 
-                "data": safe_data, 
-                "error": error, 
+            # 普通事件
+            safe_data.update({
+                "task_path": task_path,
+                "message_type": message_type,
+                "user_id": user_id,
+            })
+            
+            # 转换事件类型为lifecycle服务能理解的简单类型
+            lifecycle_event_type = event_type
+            if event_type == "TASK_RUNNING":
+                lifecycle_event_type = "STARTED"
+            elif event_type == "TASK_COMPLETED":
+                lifecycle_event_type = "COMPLETED"
+            elif event_type == "TASK_FAILED":
+                lifecycle_event_type = "FAILED"
+            elif event_type == "TASK_PROGRESS":
+                lifecycle_event_type = "PROGRESS"
+            
+            payload = {
+                "task_id": task_id,
+                "event_type": lifecycle_event_type,
+                "trace_id": trace_id,
+                "source": source,
+                "agent_id": agent_id,
+                "data": safe_data,
+                "error": error,
                 "name": name,
-                "enriched_context_snapshot": enriched_context_snapshot, 
-                "timestamp": datetime.now().timestamp(), 
+                "enriched_context_snapshot": enriched_context_snapshot,
+                "timestamp": datetime.now().timestamp(),
             } 
             event = QueuedEvent(event_type=EventType.TASK_EVENT, payload=payload) 
             self._enqueue(event) 

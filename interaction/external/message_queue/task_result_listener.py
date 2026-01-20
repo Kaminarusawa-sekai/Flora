@@ -52,7 +52,7 @@ class TaskResultListener:
         self.connection = None
         self.channel = None
         self.thread = None
-        self.running = False
+        self.running = True
 
     def _parse_rabbitmq_url(self):
         """解析 RabbitMQ URL 为 pika 连接参数"""
@@ -129,39 +129,66 @@ class TaskResultListener:
             logger.warning("RabbitMQ (pika) not available, task result listener disabled")
             return
 
-        try:
-            connection_params = self._parse_rabbitmq_url()
-            self.connection = pika.BlockingConnection(connection_params)
-            self.channel = self.connection.channel()
+        import time
+        import pika.exceptions
 
-            # 声明交换机和队列
-            self.channel.exchange_declare(
-                exchange=self.queue_name,
-                exchange_type='direct',
-                durable=True
-            )
-            self.channel.queue_declare(queue=self.queue_name, durable=True)
-            self.channel.queue_bind(
-                exchange=self.queue_name,
-                queue=self.queue_name,
-                routing_key=self.queue_name
-            )
+        retry_delay = 5  # 初始重试延迟（秒）
+        max_retry_delay = 60  # 最大重试延迟（秒）
 
-            # 设置 QoS
-            self.channel.basic_qos(prefetch_count=10)
+        while self.running:
+            try:
+                connection_params = self._parse_rabbitmq_url()
+                self.connection = pika.BlockingConnection(connection_params)
+                self.channel = self.connection.channel()
 
-            logger.info(f"Task result listener started, queue: {self.queue_name}")
+                # 声明交换机和队列
+                self.channel.exchange_declare(
+                    exchange=self.queue_name,
+                    exchange_type='direct',
+                    durable=True
+                )
+                self.channel.queue_declare(queue=self.queue_name, durable=True)
+                self.channel.queue_bind(
+                    exchange=self.queue_name,
+                    queue=self.queue_name,
+                    routing_key=self.queue_name
+                )
 
-            self.running = True
-            self.channel.basic_consume(
-                queue=self.queue_name,
-                on_message_callback=self._callback
-            )
-            self.channel.start_consuming()
+                # 设置 QoS
+                self.channel.basic_qos(prefetch_count=10)
 
-        except Exception as e:
-            logger.error(f"Failed to start task result listener: {e}", exc_info=True)
-            self.running = False
+                logger.info(f"Task result listener started, queue: {self.queue_name}")
+
+                self.channel.basic_consume(
+                    queue=self.queue_name,
+                    on_message_callback=self._callback
+                )
+                self.channel.start_consuming()
+
+            except pika.exceptions.ConnectionClosedByBroker:
+                # 连接被 broker 关闭，重试
+                logger.warning("Connection closed by broker, reconnecting...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+            except pika.exceptions.AMQPChannelError as e:
+                # 通道错误，重试
+                logger.warning(f"Channel error: {e}, reconnecting...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+            except pika.exceptions.AMQPConnectionError:
+                # 连接错误，重试
+                logger.warning("Connection error, reconnecting...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+            except Exception as e:
+                # 其他未预期的异常，记录并退出
+                logger.error(f"Unexpected error in task result listener: {e}", exc_info=True)
+                self.running = False
+                break
+
+        # 重置状态
+        self.channel = None
+        self.connection = None
 
     def start_in_thread(self):
         """在独立线程中启动监听器"""

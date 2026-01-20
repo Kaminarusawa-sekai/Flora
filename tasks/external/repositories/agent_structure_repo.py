@@ -72,7 +72,8 @@ class AgentStructureRepository:
         """
         # 查询父节点
         parent_query = """
-        MATCH (parent)-[:HAS_CHILD]->(child {id: $agent_id})
+        MATCH (parent)-[r:HAS_CHILD]->(child {id: $agent_id})
+        WHERE r.hidden IS NULL
         RETURN parent.id as parent_id
         LIMIT 1
         """
@@ -81,7 +82,8 @@ class AgentStructureRepository:
         
         # 查询子节点
         children_query = """
-        MATCH (parent {id: $agent_id})-[:HAS_CHILD]->(child)
+        MATCH (parent {id: $agent_id})-[r:HAS_CHILD]->(child)
+        WHERE r.hidden IS NULL
         RETURN child.id as child_id
         """
         children_result = self.neo4j_client.execute_query(children_query, {'agent_id': agent_id})
@@ -298,13 +300,19 @@ class AgentStructureRepository:
         - SCC 在该子图内部计算（Python 端）
         """
         # Step 1: 查询所有满足条件的路径，并提取节点和边
+        # 关键：只保留 hidden 为 null 或 false 的关系
         node_query = """
         MATCH (start:Agent {code: $rootCode})
         CALL apoc.path.expandConfig(start, {
             relationshipFilter: 'HAS_CHILD>',
             minLevel: 0,
             maxLevel: $maxHops,
-            uniqueness: 'NODE_GLOBAL'
+            uniqueness: 'NODE_GLOBAL',
+            filter: 'RELATIONSHIP_GLOBAL',
+            filterStartNode: false,
+            relationshipFilterFunction: '
+                (r) => r.hidden IS NULL OR r.hidden = false
+            '
         }) YIELD path
         WITH path,
             reduce(acc = 1.0, r IN relationships(path) | 
@@ -321,7 +329,12 @@ class AgentStructureRepository:
             relationshipFilter: 'HAS_CHILD>',
             minLevel: 1,
             maxLevel: $maxHops,
-            uniqueness: 'RELATIONSHIP_GLOBAL'
+            uniqueness: 'RELATIONSHIP_GLOBAL',
+            filter: 'RELATIONSHIP_GLOBAL',
+            filterStartNode: false,
+            relationshipFilterFunction: '
+                (r) => r.hidden IS NULL OR r.hidden = false
+            '
         }) YIELD path
         WITH startNode(path) AS from_node, endNode(path) AS to_node,
             reduce(acc = 1.0, r IN relationships(path) | 

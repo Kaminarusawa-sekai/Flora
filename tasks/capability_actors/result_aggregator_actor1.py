@@ -59,10 +59,9 @@ class ResultAggregatorActor(Actor):
         self._trace_id: Optional[str] = None
         self._base_task_path: Optional[str] = None
         self.task_spec: Optional[TaskSpec] = None
-        
+
         # 根回调地址（TaskRouter），用于 NEED_INPUT 直接回报
         self._root_reply_to: Optional[Any] = None
-  
         
     def _check_signal_status(self, trace_id: str) -> None:
         """
@@ -79,7 +78,7 @@ class ResultAggregatorActor(Actor):
         while True:
             try:
                 # 使用asyncio.run()在同步上下文中运行异步方法
-                signal_status = event_bus.get_signal_status(trace_id)
+                signal_status = asyncio.run(event_bus.get_signal_status(trace_id))
                 signal = signal_status.get("signal", SignalStatus.NORMAL)
                 
                 logger.info(f"Signal status check for trace_id {trace_id}: {signal}")
@@ -159,7 +158,7 @@ class ResultAggregatorActor(Actor):
         self.task_spec = task_spec
         agent_id = task_spec.executor
 
-        task_id = msg.task_id
+        task_id = f"step_{task_spec.step}"
         merged_context = self._get_merged_context(
             task_id=task_id,
             global_ctx=msg.global_context,
@@ -170,21 +169,21 @@ class ResultAggregatorActor(Actor):
         self._check_signal_status(self._trace_id)
 
         # 发布任务开始事件
-        # event_bus.publish_task_event(
-        #     task_id=self._root_task_id,
-        #     event_type=EventType.TASK_RUNNING.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._base_task_path,
-        #     source="ResultAggregatorActor",
-        #     agent_id="result_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "task_spec": task_spec.__dict__,
-        #         "agent_id": agent_id,
-        #         "merged_context": merged_context
-        #     },
-        #     enriched_context_snapshot=msg.enriched_context.copy()
-        # )
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "task_spec": task_spec.__dict__,
+                "agent_id": agent_id,
+                "merged_context": merged_context
+            },
+            enriched_context_snapshot=msg.enriched_context.copy()
+        )
 
         if not agent_id:
             self._process_failure(self._root_task_id, "Missing 'executor' in task spec", sender)
@@ -212,11 +211,11 @@ class ResultAggregatorActor(Actor):
                 description=task_spec.description,      # ← 辅助说明
                 user_id=self.current_user_id,
                 reply_to=self.myAddress,
-                root_reply_to=self._root_reply_to,  # 传递根回调地址
+                root_reply_to=self._root_reply_to,      # 传递根回调地址
                 global_context=msg.global_context,       # ← 从消息继承全局上下文
                 enriched_context=msg.enriched_context,
                 is_parameter_completion=False,
-                parameters={}                           # ← 留空或后续扩展
+                parameters=getattr(task_spec, "parameters", {}) or {}
             )
 
             self.send(agent_ref, task_msg)
@@ -283,23 +282,23 @@ class ResultAggregatorActor(Actor):
         self._completed_tasks[task_id] = result
 
         # 发布任务成功事件
-        # event_bus.publish_task_event(
-        #     task_id=self._root_task_id,
-        #     event_type=EventType.TASK_PROGRESS.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._base_task_path,
-        #     source="ResultAggregatorActor",
-        #     agent_id="result_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "sub_task_id": task_id,
-        #         "result": result,
-        #         "completed_tasks": len(self._completed_tasks),
-        #         "failed_tasks": len(self._failed_tasks),
-        #         "pending_tasks": len(self._pending_tasks)
-        #     },
-        #     enriched_context_snapshot={}
-        # )
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_PROGRESS.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "sub_task_id": task_id,
+                "result": result,
+                "completed_tasks": len(self._completed_tasks),
+                "failed_tasks": len(self._failed_tasks),
+                "pending_tasks": len(self._pending_tasks)
+            },
+            enriched_context_snapshot={}
+        )
 
         self._check_completion()
 
@@ -314,23 +313,23 @@ class ResultAggregatorActor(Actor):
             logger.warning(f"Task {task_id} failed. Retrying ({self._retries[task_id]}/{self._max_retries}). Error: {error}")
             
             # 发布任务重试事件
-            # event_bus.publish_task_event(
-            #     task_id=self._root_task_id,
-            #     event_type=EventType.TASK_RUNNING.value,
-            #     trace_id=self._trace_id,
-            #     task_path=self._base_task_path,
-            #     source="ResultAggregatorActor",
-            #     agent_id="result_aggregator",
-            #     user_id=self.current_user_id,
-            #     data={
-            #         "sub_task_id": task_id,
-            #         "status": "RETRYING",
-            #         "retry_count": self._retries[task_id],
-            #         "max_retries": self._max_retries,
-            #         "error": error
-            #     },
-            #     enriched_context_snapshot={}
-            # )
+            event_bus.publish_task_event(
+                task_id=self._root_task_id,
+                event_type=EventType.TASK_RUNNING.value,
+                trace_id=self._trace_id,
+                task_path=self._base_task_path,
+                source="ResultAggregatorActor",
+                agent_id="result_aggregator",
+                user_id=self.current_user_id,
+                data={
+                    "sub_task_id": task_id,
+                    "status": "RETRYING",
+                    "retry_count": self._retries[task_id],
+                    "max_retries": self._max_retries,
+                    "error": error
+                },
+                enriched_context_snapshot={}
+            )
 
             task_info = self._pending_tasks.get(task_id)
             merged_context = self._get_merged_context(
@@ -341,7 +340,7 @@ class ResultAggregatorActor(Actor):
                 try:
                     # ✅ 信号检查：在重试前检查信号状态
                     self._check_signal_status(self._trace_id)
-                    
+
                     agent_ref = self._get_or_create_actor_ref(agent_id)
                     retry_msg = AgentTaskMessage(
                         agent_id=agent_id,
@@ -352,7 +351,7 @@ class ResultAggregatorActor(Actor):
                         description=self.task_spec.description,
                         user_id=self.current_user_id,
                         reply_to=self.myAddress,
-                        root_reply_to=self._root_reply_to,  # 传递根回调地址
+                        root_reply_to=self._root_reply_to,            # 传递根回调地址
                         context=merged_context,                         # 或从原消息恢复
                         is_parameter_completion=False,
                         parameters={}
@@ -369,23 +368,23 @@ class ResultAggregatorActor(Actor):
         logger.error(f"Task {task_id} finally failed: {error}")
         
         # 发布任务最终失败事件
-        # event_bus.publish_task_event(
-        #     task_id=self._root_task_id,
-        #     event_type=EventType.TASK_FAILED.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._base_task_path,
-        #     source="ResultAggregatorActor",
-        #     agent_id="result_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "sub_task_id": task_id,
-        #         "error": error,
-        #         "retry_count": self._retries.get(task_id, 0),
-        #         "max_retries": self._max_retries
-        #     },
-        #     enriched_context_snapshot={},
-        #     error=error
-        # )
+        event_bus.publish_task_event(
+            task_id=self._root_task_id,
+            event_type=EventType.TASK_FAILED.value,
+            trace_id=self._trace_id,
+            task_path=self._base_task_path,
+            source="ResultAggregatorActor",
+            agent_id="result_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "sub_task_id": task_id,
+                "error": error,
+                "retry_count": self._retries.get(task_id, 0),
+                "max_retries": self._max_retries
+            },
+            enriched_context_snapshot={},
+            error=error
+        )
         
         self._failed_tasks[task_id] = error
         self._pending_tasks.pop(task_id, None)
@@ -406,22 +405,22 @@ class ResultAggregatorActor(Actor):
                 error_msg = self._failed_tasks[first_failed]
                 
                 # 发布最终失败事件
-                # event_bus.publish_task_event(
-                #     task_id=self._root_task_id,
-                #     event_type=EventType.TASK_FAILED.value,
-                #     trace_id=self._trace_id,
-                #     task_path=self._base_task_path,
-                #     source="ResultAggregatorActor",
-                #     agent_id="result_aggregator",
-                #     user_id=self.current_user_id,
-                #     data={
-                #         "failed_tasks": self._failed_tasks,
-                #         "completed_tasks": self._completed_tasks,
-                #         "total_tasks": len(self._completed_tasks) + len(self._failed_tasks)
-                #     },
-                #     enriched_context_snapshot={},
-                #     error=error_msg
-                # )
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_FAILED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "failed_tasks": self._failed_tasks,
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks) + len(self._failed_tasks)
+                    },
+                    enriched_context_snapshot={},
+                    error=error_msg
+                )
                 
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,
@@ -437,21 +436,21 @@ class ResultAggregatorActor(Actor):
                 result = next(iter(self._completed_tasks.values()))
                 
                 # 发布最终成功事件
-                # event_bus.publish_task_event(
-                #     task_id=self._root_task_id,
-                #     event_type=EventType.TASK_COMPLETED.value,
-                #     trace_id=self._trace_id,
-                #     task_path=self._base_task_path,
-                #     source="ResultAggregatorActor",
-                #     agent_id="result_aggregator",
-                #     user_id=self.current_user_id,
-                #     data={
-                #         "result": result,
-                #         "completed_tasks": self._completed_tasks,
-                #         "total_tasks": len(self._completed_tasks)
-                #     },
-                #     enriched_context_snapshot={}
-                # )
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "result": result,
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks)
+                    },
+                    enriched_context_snapshot={}
+                )
                 
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,
@@ -466,20 +465,20 @@ class ResultAggregatorActor(Actor):
                 # 多个结果（batch）
                 
                 # 发布最终成功事件
-                # event_bus.publish_task_event(
-                #     task_id=self._root_task_id,
-                #     event_type=EventType.TASK_COMPLETED.value,
-                #     trace_id=self._trace_id,
-                #     task_path=self._base_task_path,
-                #     source="ResultAggregatorActor",
-                #     agent_id="result_aggregator",
-                #     user_id=self.current_user_id,
-                #     data={
-                #         "completed_tasks": self._completed_tasks,
-                #         "total_tasks": len(self._completed_tasks)
-                #     },
-                #     enriched_context_snapshot={}
-                # )
+                event_bus.publish_task_event(
+                    task_id=self._root_task_id,
+                    event_type=EventType.TASK_COMPLETED.value,
+                    trace_id=self._trace_id,
+                    task_path=self._base_task_path,
+                    source="ResultAggregatorActor",
+                    agent_id="result_aggregator",
+                    user_id=self.current_user_id,
+                    data={
+                        "completed_tasks": self._completed_tasks,
+                        "total_tasks": len(self._completed_tasks)
+                    },
+                    enriched_context_snapshot={}
+                )
                 
                 self.send(self._creator, TaskCompletedMessage(
                     task_id=self._root_task_id,

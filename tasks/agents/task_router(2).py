@@ -13,7 +13,7 @@ TaskRouterActor - 统一任务路由层（Actor 模式）
          └── 立即返回 202       └◄──────── TaskCompletedMessage ◄──────────────┘
                                 │
                                 ▼
-                          RabbitMQ (work.result)
+                          RabbitMQ (task.result)
 """
 import logging
 import uuid
@@ -130,10 +130,6 @@ class TaskRouterActor(Actor):
         # 活跃任务映射: trace_id -> user_id（用于结果发布时获取 user_id）
         self._active_tasks: Dict[str, str] = {}
 
-        # NEED_INPUT 任务的发送者映射: trace_id -> sender ActorAddress
-        # 用于 resume 时将消息发送回正确的 Actor
-        self._need_input_senders: Dict[str, ActorAddress] = {}
-
         self._logger = logging.getLogger("TaskRouterActor")
 
     def _ensure_initialized(self):
@@ -167,9 +163,9 @@ class TaskRouterActor(Actor):
         try:
             from agents.tree.tree_manager import treeManager
             root_agents = treeManager.get_root_agents()
-            return root_agents[0] if root_agents else "marketing"
+            return root_agents[0] if root_agents else "agent_root"
         except Exception:
-            return "marketing"
+            return "agent_root"
 
     def receiveMessage(self, message: Any, sender: ActorAddress):
         """接收并处理消息"""
@@ -210,7 +206,7 @@ class TaskRouterActor(Actor):
         # 保存 user_id 用于结果发布
         self._active_tasks[trace_id] = msg.user_id
 
-        # 构造消息，设置 reply_to 为自己
+        # 构造消息，设置 reply_to 和 root_reply_to 为自己
         agent_msg = AgentTaskMessage(
             task_id=task_id,
             trace_id=trace_id,
@@ -223,7 +219,6 @@ class TaskRouterActor(Actor):
             global_context=msg.global_context or {},
             reply_to=self.myAddress,  # 上一层回调地址
             root_reply_to=self.myAddress  # 根回调地址，用于 NEED_INPUT 直接回报
-        
         )
 
         # 保存初始状态
@@ -245,7 +240,7 @@ class TaskRouterActor(Actor):
         self.send(agent_ref, agent_msg)
 
         # 立即回复 API：任务已接受
-        # self.send(sender, RouterTaskAccepted(task_id=task_id, trace_id=trace_id))
+        self.send(sender, RouterTaskAccepted(task_id=task_id, trace_id=trace_id))
 
     def _handle_resume_task(self, msg: RouterResumeTaskMessage, sender: ActorAddress):
         """处理恢复任务请求"""
@@ -294,22 +289,12 @@ class TaskRouterActor(Actor):
             root_reply_to=self.myAddress  # 根回调地址，用于 NEED_INPUT 直接回报
         )
 
-        
-        # 6. 获取目标 Actor：优先使用保存的 NEED_INPUT 发送者，否则使用 AgentActor
-        target_actor = self._need_input_senders.pop(msg.trace_id, None)
-        if target_actor:
-            self._logger.info(f"Resuming task to saved sender for trace_id={msg.trace_id}")
-        else:
-            target_actor = self._ensure_agent_actor()
-            self._logger.info(f"Resuming task to AgentActor for trace_id={msg.trace_id}")
+        # 6. 异步发送到 AgentActor
+        agent_ref = self._ensure_agent_actor()
+        self.send(agent_ref, resume_msg)
 
-        # 7. 异步发送恢复消息
-        self.send(target_actor, resume_msg)
-
-        # 8. 立即回复 API：恢复请求已接受
-
-        # # 7. 立即回复 API：恢复请求已接受
-        # self.send(sender, RouterResumeAccepted(trace_id=msg.trace_id, success=True))
+        # 7. 立即回复 API：恢复请求已接受
+        self.send(sender, RouterResumeAccepted(trace_id=msg.trace_id, success=True))
 
     def _handle_get_status(self, msg: RouterGetStatusMessage, sender: ActorAddress):
         """处理状态查询请求"""
@@ -351,9 +336,8 @@ class TaskRouterActor(Actor):
                 task_path=task_path,
                 user_id=user_id
             )
-            # 清理活跃任务和 NEED_INPUT 映射
+            # 清理活跃任务
             self._active_tasks.pop(trace_id, None)
-            self._need_input_senders.pop(trace_id, None)
 
         elif status == "NEED_INPUT":
             result_data = msg.result or {}
@@ -369,9 +353,6 @@ class TaskRouterActor(Actor):
                 task_path=task_path,
                 user_id=user_id
             )
-            # 保存发送者地址，用于 resume 时发送回正确的 Actor
-            self._need_input_senders[trace_id] = sender
-            self._logger.info(f"Saved NEED_INPUT sender for trace_id={trace_id}")
             # 不清理活跃任务，等待恢复
 
         else:  # FAILED, ERROR, CANCELLED
@@ -386,9 +367,8 @@ class TaskRouterActor(Actor):
                 task_path=task_path,
                 user_id=user_id
             )
-            # 清理活跃任务和 NEED_INPUT 映射
+            # 清理活跃任务
             self._active_tasks.pop(trace_id, None)
-            self._need_input_senders.pop(trace_id, None)
 
     def _publish_result_to_rabbitmq(
         self,

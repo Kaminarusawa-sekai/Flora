@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional
-import re
 from datetime import datetime, timedelta
+import re
 from .interface import IScheduleManagerCapability
 from common import (
     ScheduleDTO,
@@ -9,17 +9,15 @@ from common import (
 from ..llm.interface import ILLMCapability
 from external.client.task_client import TaskClient
 
-class CommonScheduleManager(IScheduleManagerCapability):
+class CommonSchedule(IScheduleManagerCapability):
     """调度管理器 - 处理任务的调度"""
     
     def initialize(self, config: Dict[str, Any]) -> None:
         """初始化调度管理器"""
-        self.logger.info("初始化调度管理器")
         self.config = config
         self._llm = None
         # 初始化外部任务执行客户端
         self.external_task_client = TaskClient()
-        self.logger.info("调度管理器初始化完成")
     
     @property
     def llm(self):
@@ -47,22 +45,18 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             调度信息DTO，解析失败返回None
         """
-        self.logger.info(f"解析自然语言调度表达式，natural_language={natural_language}, user_timezone={user_timezone}")
         if not natural_language:
-            self.logger.debug("自然语言调度表达式为空，返回None")
             return None
         text = natural_language.strip()
         if not text:
-            self.logger.debug("自然语言调度表达式为空，返回None")
             return None
         if not self._looks_like_schedule(text):
-            self.logger.debug(f"文本不像是调度表达式，返回None，text={text}")
             return None
         try:
             # 1. 快速解析 cron 文本
             cron_match = self._extract_cron_expression(text)
             if cron_match:
-                schedule = ScheduleDTO(
+                return ScheduleDTO(
                     type="RECURRING",
                     cron_expression=cron_match,
                     natural_language=natural_language,
@@ -71,13 +65,11 @@ class CommonScheduleManager(IScheduleManagerCapability):
                     max_runs=None,
                     end_time=None
                 )
-                self.logger.info(f"快速解析cron表达式成功，cron_expression={cron_match}")
-                return schedule
 
             # 2. 解析周期/延迟
             interval_seconds = self._extract_interval_seconds(text)
             if interval_seconds:
-                schedule = ScheduleDTO(
+                return ScheduleDTO(
                     type="RECURRING",
                     cron_expression=None,
                     natural_language=natural_language,
@@ -87,12 +79,10 @@ class CommonScheduleManager(IScheduleManagerCapability):
                     end_time=None,
                     interval_seconds=interval_seconds
                 )
-                self.logger.info(f"解析周期成功，interval_seconds={interval_seconds}")
-                return schedule
 
             delay_seconds = self._extract_delay_seconds(text)
             if delay_seconds:
-                schedule = ScheduleDTO(
+                return ScheduleDTO(
                     type="ONCE",
                     cron_expression=None,
                     natural_language=natural_language,
@@ -102,13 +92,11 @@ class CommonScheduleManager(IScheduleManagerCapability):
                     end_time=None,
                     delay_seconds=delay_seconds
                 )
-                self.logger.info(f"解析延迟成功，delay_seconds={delay_seconds}")
-                return schedule
 
             # 3. 解析周/月/工作日
             derived_cron = self._derive_cron_expression(text)
             if derived_cron:
-                schedule = ScheduleDTO(
+                return ScheduleDTO(
                     type="RECURRING",
                     cron_expression=derived_cron,
                     natural_language=natural_language,
@@ -117,15 +105,13 @@ class CommonScheduleManager(IScheduleManagerCapability):
                     max_runs=None,
                     end_time=None
                 )
-                self.logger.info(f"解析周/月/工作日成功，cron_expression={derived_cron}")
-                return schedule
 
             # 4. 尝试外部解析（如果客户端支持）
             if hasattr(self.external_task_client, "parse_schedule_expression"):
                 parse_result = self.external_task_client.parse_schedule_expression(natural_language, user_timezone)
                 if parse_result and parse_result.get("success"):
                     schedule_data = parse_result["schedule"]
-                    schedule = ScheduleDTO(
+                    return ScheduleDTO(
                         type=schedule_data.get("type"),
                         cron_expression=schedule_data.get("cron_expression"),
                         natural_language=schedule_data.get("natural_language"),
@@ -134,8 +120,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
                         max_runs=None,
                         end_time=None
                     )
-                    self.logger.info(f"外部解析成功，schedule_type={schedule.type}, cron_expression={schedule.cron_expression}")
-                    return schedule
             
             # 2. 如果外部解析失败，尝试使用LLM解析
             prompt = f"""
@@ -165,7 +149,7 @@ class CommonScheduleManager(IScheduleManagerCapability):
             if cron_expression and not self.validate_cron_expression(cron_expression):
                 cron_expression = None
             
-            schedule = ScheduleDTO(
+            return ScheduleDTO(
                 type=schedule_type,
                 cron_expression=cron_expression,
                 natural_language=natural_language,
@@ -174,8 +158,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
                 max_runs=None,
                 end_time=None
             )
-            self.logger.info(f"LLM解析成功，schedule_type={schedule.type}, cron_expression={schedule.cron_expression}")
-            return schedule
         except Exception as e:
             # 降级到基础的硬编码解析
             schedule_type = "ONCE"
@@ -191,7 +173,7 @@ class CommonScheduleManager(IScheduleManagerCapability):
             elif "每小时" in natural_language:
                 cron_expression = "0 * * * *"
             
-            schedule = ScheduleDTO(
+            return ScheduleDTO(
                 type=schedule_type,
                 cron_expression=cron_expression,
                 natural_language=natural_language,
@@ -200,8 +182,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
                 max_runs=None,
                 end_time=None
             )
-            self.logger.info(f"降级解析成功，schedule_type={schedule.type}, cron_expression={schedule.cron_expression}")
-            return schedule
 
     def _looks_like_schedule(self, text: str) -> bool:
         pattern = r"(?:定时|每隔|每天|每周|每月|每小时|延迟|稍后|明天|后天|大后天|这周|本周|下周|周[一二三四五六日天]|\bcron\b|[一二三四五六七八九十百千万\d]+\s*(秒|分钟|小时|天)(?:后|之后)?)"
@@ -356,7 +336,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
         delta = target_datetime - now
         return int(delta.total_seconds())
 
-
     def _derive_cron_expression(self, text: str) -> Optional[str]:
         def parse_time() -> tuple[int, int]:
             hour = None
@@ -410,19 +389,15 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             是否合法
         """
-        self.logger.info(f"验证cron表达式，cron_expression={cron_expression}")
         if not cron_expression:
-            self.logger.debug("cron表达式为空，返回False")
             return False
         
         parts = cron_expression.split()
         if len(parts) != 5:
-            self.logger.debug(f"cron表达式格式不正确，parts_count={len(parts)}, 返回False")
             return False
         
         # 这里可以添加更详细的cron验证逻辑
         
-        self.logger.info(f"cron表达式验证通过，cron_expression={cron_expression}")
         return True
     
     def register_scheduled_task(self, task_id: str, schedule: ScheduleDTO) -> bool:
@@ -435,7 +410,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             是否注册成功
         """
-        self.logger.info(f"向调度引擎注册定时任务，task_id={task_id}, schedule={schedule}")
         try:
             # 1. 将ScheduleDTO转换为字典格式
             schedule_dict = {
@@ -454,12 +428,10 @@ class CommonScheduleManager(IScheduleManagerCapability):
             # 这里可以添加调用task_storage更新任务元数据的逻辑
             # 例如：self.task_storage.update_task_metadata(task_id, {"schedule": schedule_dict})
             
-            success = result["success"]
-            self.logger.info(f"定时任务注册{'成功' if success else '失败'}，task_id={task_id}")
-            return success
+            return result["success"]
         except Exception as e:
             # 记录错误日志
-            self.logger.exception(f"注册定时任务失败，task_id={task_id}")
+            print(f"注册定时任务失败: {e}")
             return False
     
     def unregister_scheduled_task(self, task_id: str) -> bool:
@@ -471,7 +443,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             是否取消成功
         """
-        self.logger.info(f"取消注册定时任务，task_id={task_id}")
         try:
             # 调用外部客户端取消注册任务
             result = self.external_task_client.unregister_scheduled_task(task_id)
@@ -479,12 +450,10 @@ class CommonScheduleManager(IScheduleManagerCapability):
             # 取消成功后，更新任务元数据（如果需要）
             # 例如：self.task_storage.update_task_metadata(task_id, {"schedule": None})
             
-            success = result["success"]
-            self.logger.info(f"取消注册定时任务{'成功' if success else '失败'}，task_id={task_id}")
-            return success
+            return result["success"]
         except Exception as e:
             # 记录错误日志
-            self.logger.exception(f"取消注册定时任务失败，task_id={task_id}")
+            print(f"取消注册定时任务失败: {e}")
             return False
     
     def update_scheduled_task(self, task_id: str, new_schedule: ScheduleDTO) -> bool:
@@ -497,7 +466,6 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             是否更新成功
         """
-        self.logger.info(f"更新已注册的定时任务，task_id={task_id}, new_schedule={new_schedule}")
         try:
             # 1. 将ScheduleDTO转换为字典格式
             new_schedule_dict = {
@@ -515,12 +483,10 @@ class CommonScheduleManager(IScheduleManagerCapability):
             # 3. 更新成功后，将新的调度规则持久化到任务元数据（如果需要）
             # 例如：self.task_storage.update_task_metadata(task_id, {"schedule": new_schedule_dict})
             
-            success = result["success"]
-            self.logger.info(f"更新定时任务{'成功' if success else '失败'}，task_id={task_id}")
-            return success
+            return result["success"]
         except Exception as e:
             # 记录错误日志
-            self.logger.exception(f"更新定时任务失败，task_id={task_id}")
+            print(f"更新定时任务失败: {e}")
             return False
     
     def calculate_next_trigger_time(self, schedule: ScheduleDTO) -> Optional[float]:
@@ -532,11 +498,8 @@ class CommonScheduleManager(IScheduleManagerCapability):
         Returns:
             下次触发时间戳，计算失败返回None
         """
-        self.logger.info(f"计算下次触发时间，schedule={schedule}")
         # 这里可以调用外部服务计算下次触发时间
         # 例如：self.external_task_client.calculate_next_trigger_time(schedule.cron_expression, schedule.timezone)
         
         # 简化实现，返回None表示需要进一步计算
-        result = schedule.next_trigger_time
-        self.logger.debug(f"计算下次触发时间完成，result={result}")
-        return result
+        return schedule.next_trigger_time

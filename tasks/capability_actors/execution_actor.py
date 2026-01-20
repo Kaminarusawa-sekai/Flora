@@ -173,15 +173,15 @@ class ExecutionActor(Actor):
         }
 
         # 发布执行开始事件
-        event_bus.publish_task_event(
-            task_id=task_id,
-            trace_id=self.trace_id,
-            task_path=self.task_path,
-            event_type=EventType.CAPABILITY_EXECUTED.value,
-            source="ExecutionActor",
-            agent_id="excution",
-            data={"capability": capability, "status": "started"}
-        )
+        # event_bus.publish_task_event(
+        #     task_id=task_id,
+        #     trace_id=self.trace_id,
+        #     task_path=self.task_path,
+        #     event_type=EventType.CAPABILITY_EXECUTED.value,
+        #     source="ExecutionActor",
+        #     agent_id="excution",
+        #     data={"capability": capability, "status": "started"}
+        # )
 
         # 根据能力类型分发
         if capability == "dify" or capability == "dify_workflow":
@@ -337,15 +337,15 @@ class ExecutionActor(Actor):
         self.send(reply_to, response)
         
         # 发布任务暂停事件
-        event_bus.publish_task_event(
-            task_id=task_id,
-            trace_id=self.trace_id,
-            task_path=self.task_path,
-            event_type=EventType.TASK_PAUSED.value,
-            source="ExecutionActor",
-            agent_id="system",
-            data={"missing_params": missing_params}
-        )
+        # event_bus.publish_task_event(
+        #     task_id=task_id,
+        #     trace_id=self.trace_id,
+        #     task_path=self.task_path,
+        #     event_type=EventType.TASK_PAUSED.value,
+        #     source="ExecutionActor",
+        #     agent_id="system",
+        #     data={"missing_params": missing_params}
+        # )
 
    
   
@@ -366,15 +366,15 @@ class ExecutionActor(Actor):
         self.send(reply_to, response)
 
         # 发布执行成功事件
-        event_bus.publish_task_event(
-            task_id=task_id,
-            trace_id=self.trace_id,
-            task_path=self.task_path,
-            event_type=EventType.CAPABILITY_EXECUTED.value,
-            source="ExecutionActor",
-            agent_id="system",
-            data={"status": "success", "result": result}
-        )
+        # event_bus.publish_task_event(
+        #     task_id=task_id,
+        #     trace_id=self.trace_id,
+        #     task_path=self.task_path,
+        #     event_type=EventType.CAPABILITY_EXECUTED.value,
+        #     source="ExecutionActor",
+        #     agent_id="system",
+        #     data={"status": "success", "result": result}
+        # )
 
         # 清理请求信息
         if task_id in self._pending_requests:
@@ -393,13 +393,13 @@ class ExecutionActor(Actor):
         )
         self.send(reply_to, response)
         # 发布可重试事件（调度器可监听并重试）
-        event_bus.publish_task_event(
-            task_id=task_id,
-            event_type=EventType.CAPABILITY_FAILED.value,
-            source="ExecutionActor",
-            agent_id="system",
-            data={"error": error, "retryable": True}
-        )
+        # event_bus.publish_task_event(
+        #     task_id=task_id,
+        #     event_type=EventType.CAPABILITY_FAILED.value,
+        #     source="ExecutionActor",
+        #     agent_id="system",
+        #     data={"error": error, "retryable": True}
+        # )
         if task_id in self._pending_requests:
             del self._pending_requests[task_id]
 
@@ -419,15 +419,15 @@ class ExecutionActor(Actor):
         self.send(reply_to, response)
 
         # 发布执行失败事件
-        event_bus.publish_task_event(
-            task_id=task_id,
-            trace_id=self.trace_id,
-            task_path=self.task_path,
-            event_type=EventType.CAPABILITY_ERROR.value,
-            source="ExecutionActor",
-            agent_id="system",
-            data={"status": "failed", "error": error}
-        )
+        # event_bus.publish_task_event(
+        #     task_id=task_id,
+        #     trace_id=self.trace_id,
+        #     task_path=self.task_path,
+        #     event_type=EventType.CAPABILITY_ERROR.value,
+        #     source="ExecutionActor",
+        #     agent_id="system",
+        #     data={"status": "failed", "error": error}
+        # )
 
         # 清理请求信息
         if task_id in self._pending_requests:

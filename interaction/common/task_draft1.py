@@ -30,7 +30,6 @@ class ScheduleDTO(BaseModel):
     interval_seconds: Optional[int] = None  # 周期循环间隔（秒）
     delay_seconds: Optional[int] = None  # 延迟执行（秒）
 
-
 class TaskDraftDTO(BaseModel):
     """📝 [3. TaskDraftDTO] 任务草稿"""
     draft_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -65,6 +64,6 @@ class TaskDraftDTO(BaseModel):
     
     # 新增：LLM对当前任务完整度的信心 (0.0 - 1.0)
     completeness_score: float = 0.0
-    
+
     # 新增：LLM 生成的任务描述（动态更新）
     description: Optional[str] = None

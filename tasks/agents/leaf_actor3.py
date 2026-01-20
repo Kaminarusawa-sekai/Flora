@@ -1,15 +1,18 @@
 import logging
 from typing import Dict, Any, Optional
-from thespian.actors import ActorAddress, Actor, ActorExitRequest,ChildActorExited
-from common.messages.task_messages import ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage, AgentTaskMessage, ResumeTaskMessage
+from thespian.actors import ActorAddress, Actor, ActorExitRequest, ChildActorExited
+from common.messages.task_messages import (
+    ExecuteTaskMessage, ExecutionResultMessage, TaskCompletedMessage,
+    AgentTaskMessage, ResumeTaskMessage
+)
 from capabilities import get_capability
 from capabilities.llm_memory.interface import IMemoryCapability
 from events.event_bus import event_bus
 from common.event.event_type import EventType
+from common.noop_memory import NoopMemory
 from external.repositories.task_state_repo import (
     get_task_state_repo, TaskStateRepository, TaskStatus, PausedLayer
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +25,8 @@ class LeafActor(Actor):
         self.log = logging.getLogger("LeafActor")
         self.current_user_id: Optional[str] = None
         self.task_id_to_sender: Dict[str, ActorAddress] = {}
-         # 任务状态存储库
+        # 任务状态存储库
         self._state_repo: Optional[TaskStateRepository] = None
-        # 根回调地址（TaskRouter），用于 NEED_INPUT 直接回报
-        self._root_reply_to: Optional[ActorAddress] = None
 
     def _get_state_repo(self) -> TaskStateRepository:
         """懒加载获取状态存储库"""
@@ -61,7 +62,11 @@ class LeafActor(Actor):
         tree_manager = TreeManager()
         self.meta = tree_manager.get_agent_meta(self.agent_id)
         try:
-            self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+            try:
+                self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+            except Exception as e:
+                self.log.warning(f"llm_memory unavailable, using NoopMemory: {e}")
+                self.memory_cap = NoopMemory()
             self.log = logging.getLogger(f"LeafActor_{self.agent_id}")
             self.log.info(f"LeafActor initialized for {self.agent_id}")
             self.send(sender, {"status": "initialized", "agent_id": self.agent_id})
@@ -81,7 +86,11 @@ class LeafActor(Actor):
             tree_manager = TreeManager()
             self.meta = tree_manager.get_agent_meta(self.agent_id)
             try:
-                self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+                try:
+                    self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+                except Exception as e:
+                    self.log.warning(f"llm_memory unavailable, using NoopMemory: {e}")
+                    self.memory_cap = NoopMemory()
                 self.log = logging.getLogger(f"LeafActor_{self.agent_id}")
                 self.log.info(f"LeafActor initialized for {self.agent_id}")
             except Exception as e:
@@ -106,9 +115,6 @@ class LeafActor(Actor):
 
         self.task_id_to_sender[parent_task_id] = reply_to
         self.current_user_id = user_id
-        # 保存根回调地址（用于 NEED_INPUT 直接回报 TaskRouter）
-        if task.root_reply_to:
-            self._root_reply_to = task.root_reply_to
 
         self.log.info(f"[LeafActor] Handling task {parent_task_id}: {user_input[:50]}...")
 
@@ -132,7 +138,6 @@ class LeafActor(Actor):
                 task_path=task.task_path,
                 source="LeafActor",
                 agent_id=self.agent_id,
-                name=self.meta.get("name",""),
                 user_id=self.current_user_id,
                 data={"error": "Agent meta not found", "status": "ERROR"}
             )
@@ -149,25 +154,10 @@ class LeafActor(Actor):
         from capability_actors.execution_actor import ExecutionActor
         exec_actor = self.createActor(ExecutionActor)
 
-        # 构建 running_config（原 params 内容）
-        # running_config = {
-        #     "api_key": self.meta["dify"],
-        #     "inputs": task.parameters,
-        #     "agent_id": self.agent_id,
-        #     "user_id": self.current_user_id,
-        #     # 如果执行器仍需要原始内容/描述，可显式传入
-        #     "content": str(task.content or ""),
-        #     "description": str(task.description or ""),
-        #     # 注意：task.context 可能已通过 enriched_context 或 global_context 传递，
-        #     # 若仍需在此透传，可加一行：
-        #     # "context": task.context,
-        # }
-         # 根据 meta 中的 dify 和 http 属性判断使用哪种能力
+        # 根据 meta 中的 dify 和 http 属性判断使用哪种能力
         dify_config = self.meta.get("dify", "")
         http_config = self.meta.get("http", "")
         args_config = self.meta.get("args", "")
-
-        
 
         # 判断使用哪种能力：优先 http（如果有值），否则用 dify
         if http_config and http_config.strip():
@@ -176,7 +166,6 @@ class LeafActor(Actor):
         else:
             capability = "dify"
             running_config = self._build_dify_running_config(task, dify_config)
-
 
         # 构建执行请求消息
         exec_request = ExecuteTaskMessage(
@@ -194,7 +183,6 @@ class LeafActor(Actor):
             reply_to=self.myAddress
         )
 
-        
         # 发布任务开始事件
         event_bus.publish_task_event(
             task_id=task.task_id,
@@ -203,13 +191,11 @@ class LeafActor(Actor):
             task_path=task.task_path,
             source="LeafActor",
             agent_id=self.agent_id,
-            name=self.meta.get("name",""),
             user_id=self.current_user_id,
             data={"node_id": self.agent_id, "type": "leaf_execution", "capability": capability}
         )
-        
-        self.send(exec_actor, exec_request)
 
+        self.send(exec_actor, exec_request)
 
     def _build_dify_running_config(self, task: AgentTaskMessage, dify_api_key: str) -> Dict[str, Any]:
         """构建 Dify 执行配置"""
@@ -220,16 +206,18 @@ class LeafActor(Actor):
             "user_id": self.current_user_id,
             "content": str(task.content or ""),
             "description": str(task.description or ""),
-             # 传递上下文，用于 Connector 层的参数补全
+            # 传递上下文，用于 Connector 层的参数补全
             "global_context": task.global_context or {},
             "enriched_context": task.enriched_context or {},
         }
         try:
-            from config import  DIFY_URI
-            if DIFY_URI and not running_config.get("base_url"):
-                running_config["base_url"] = DIFY_URI
+            from env import DIFY_API_KEY, DIFY_BASE_URL
+            if DIFY_BASE_URL and not running_config.get("base_url"):
+                running_config["base_url"] = DIFY_BASE_URL
             api_key_val = running_config.get("api_key")
-
+            if not isinstance(api_key_val, str) or not api_key_val:
+                if DIFY_API_KEY:
+                    running_config["api_key"] = DIFY_API_KEY
         except Exception:
             pass
         return running_config
@@ -258,10 +246,13 @@ class LeafActor(Actor):
             except json.JSONDecodeError:
                 self.log.warning(f"Failed to parse args_config: {args_config}")
 
-        ##TODO：excution里自己去获得地址与认证信息
         # 从环境变量获取 base_url
         base_url = ""
-
+        try:
+            from env import ERP_API_BASE_URL
+            base_url = ERP_API_BASE_URL
+        except Exception:
+            pass
 
         # 构建完整 URL
         url = f"{base_url.rstrip('/')}{path}" if base_url else path
@@ -276,7 +267,7 @@ class LeafActor(Actor):
             "content": str(task.content or ""),
             "description": str(task.description or ""),
             "inputs": task.parameters or {},
-            # 关键：传递上下文，用于参数提取
+            # 传递上下文，用于 Connector 层的参数补全
             "global_context": task.global_context or {},
             "enriched_context": task.enriched_context or {},
             # 传递节点元数据，便于 connector 使用
@@ -287,7 +278,16 @@ class LeafActor(Actor):
             }
         }
 
-
+        # 尝试从环境变量获取认证信息
+        try:
+            from env import ERP_API_TOKEN
+            if ERP_API_TOKEN:
+                running_config["headers"] = {
+                    "Authorization": f"Bearer {ERP_API_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+        except Exception:
+            running_config["headers"] = {"Content-Type": "application/json"}
 
         return running_config
 
@@ -299,7 +299,6 @@ class LeafActor(Actor):
         error = result_msg.error
         missing_params = result_msg.missing_params
 
-        
         if status == "NEED_INPUT":
             if not isinstance(result_data, dict):
                 result_data = {"message": result_data}
@@ -315,23 +314,12 @@ class LeafActor(Actor):
             status=status,
             agent_id=self.agent_id
         )
-        # 根据状态选择发送目标
-        if status == "NEED_INPUT" and self._root_reply_to:
-            # NEED_INPUT 直接发送给 TaskRouter（跳过中间层）
-            self.log.info(f"Task {task_id} needs input, sending directly to TaskRouter via root_reply_to")
-            self.send(self._root_reply_to, task_completed_msg)
-        else:
-            # 其他状态发送给原始发送者（逐层回传）
-            original_sender = self.task_id_to_sender.get(task_id, sender)
-            self.send(original_sender, task_completed_msg)
+
+        # 发送结果给原始发送者
+        original_sender = self.task_id_to_sender.get(task_id, sender)
+        self.send(original_sender, task_completed_msg)
 
         # 处理断点续传逻辑
-
-        # # 发送结果给原始发送者
-        # original_sender = self.task_id_to_sender.get(task_id, sender)
-        # self.send(original_sender, task_completed_msg)
-
-        # 处理断点续传逻辑，
         if status == "NEED_INPUT":
             # 1. 发布任务暂停事件
             event_bus.publish_task_event(
@@ -341,15 +329,13 @@ class LeafActor(Actor):
                 task_path=result_msg.task_path,
                 source="LeafActor",
                 agent_id=self.agent_id,
-                name=self.meta.get("name",""),
                 user_id=self.current_user_id,
                 data={"result": result_data, "status": status, "missing_params": missing_params}
             )
-            
-             # 2. 保存当前上下文到 Redis，用于断点续传
+
+            # 2. 保存当前上下文到 Redis，用于断点续传
             self._save_execution_state(task_id, missing_params=missing_params)
 
-            
             # 3. 清理映射（等待外部输入后再恢复）
             self.task_id_to_sender.pop(task_id, None)
             return
@@ -367,7 +353,6 @@ class LeafActor(Actor):
             task_path=result_msg.task_path,
             source="LeafActor",
             agent_id=self.agent_id,
-            name=self.meta.get("name",""),
             user_id=self.current_user_id,
             data={"result": result_data, "status": status}
         )
@@ -617,11 +602,11 @@ class LeafActor(Actor):
             "description": description,
         }
         try:
-            from config import DIFY_URI
-            if DIFY_URI:
-                running_config["base_url"] = DIFY_URI
-            if not running_config.get("api_key"):
-                running_config["api_key"] = self.meta.get("dify", "")
+            from env import DIFY_API_KEY, DIFY_BASE_URL
+            if DIFY_BASE_URL:
+                running_config["base_url"] = DIFY_BASE_URL
+            if not running_config.get("api_key") and DIFY_API_KEY:
+                running_config["api_key"] = DIFY_API_KEY
         except Exception:
             pass
         return running_config
@@ -653,10 +638,13 @@ class LeafActor(Actor):
             except json.JSONDecodeError:
                 pass
 
-        # 从环境变量获取 base_url,
-        # TODO:自行获取
+        # 从环境变量获取 base_url
         base_url = ""
-        
+        try:
+            from env import ERP_API_BASE_URL
+            base_url = ERP_API_BASE_URL
+        except Exception:
+            pass
 
         url = f"{base_url.rstrip('/')}{path}" if base_url else path
 
@@ -679,12 +667,19 @@ class LeafActor(Actor):
             }
         }
 
-       
-        running_config["headers"] = {"Content-Type": "application/json"}
+        # 认证信息
+        try:
+            from env import ERP_API_TOKEN
+            if ERP_API_TOKEN:
+                running_config["headers"] = {
+                    "Authorization": f"Bearer {ERP_API_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+        except Exception:
+            running_config["headers"] = {"Content-Type": "application/json"}
 
         return running_config
 
-    
     def _handle_user_input(self, msg: Dict[str, Any], sender: ActorAddress) -> None:
         """
         处理用户输入，恢复中断的任务

@@ -30,8 +30,6 @@ from .mcp_actor import MCPCapabilityActor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-##TODO：这里没有添加正确的NEED_INPUT和TASK_COmpleted消息
 class TaskGroupAggregatorActor(Actor):
     """
     任务组聚合器Actor (Workflow Orchestrator)
@@ -56,14 +54,14 @@ class TaskGroupAggregatorActor(Actor):
         self.step_results: Dict[str, Any] = {}  # step_id -> result
         self.global_context: Dict[str, Any] = {}  # 【不变】全局上下文
         self.enriched_context: Dict[str, ContextEntry] = {}  # 【动态】富上下文
-        
+
         # 当前工作的 Worker (用于验证回复来源)
-        self.current_worker: Optional[Actor] = None 
+        self.current_worker: Optional[Actor] = None
 
         self.source=None
 
         self._pending_tasks: Dict[str, Any] = {}
-        
+
         # 保存任务 ID 信息
         self._task_id: Optional[str] = None
         self._trace_id: Optional[str] = None
@@ -73,7 +71,6 @@ class TaskGroupAggregatorActor(Actor):
         self._root_reply_to: Optional[Any] = None
         
     def receiveMessage(self, msg: Any, sender: Actor) -> None:
-        logger.info(f"Received message: {msg} from {sender}")
         if isinstance(msg, ActorExitRequest):
             # 可选：做清理工作
             logger.info("Received ActorExitRequest, shutting down.")
@@ -93,6 +90,8 @@ class TaskGroupAggregatorActor(Actor):
                 if msg.status in ["SUCCESS"]:
                     result_data = msg.result
                     self._handle_step_success(result_data, sender)
+                elif msg.status in ["NEED_INPUT"]:
+                    self._handle_step_need_input(msg, sender)
                 elif msg.status in ["FAILED", "ERROR", "CANCELLED"]:
                     # 处理失败情况
                     self._handle_step_failure(msg, sender)
@@ -148,31 +147,29 @@ class TaskGroupAggregatorActor(Actor):
         self.step_results = {}
         self.source=sender
 
-        
         # 保存根回调地址（用于 NEED_INPUT 直接回报 TaskRouter）
         self._root_reply_to = msg.root_reply_to
 
-        
         # 保存任务 ID 信息
         self._task_id = msg.task_id
         self._trace_id = msg.trace_id
         self._task_path = msg.add_task_path("task_group")
         
         # 发布工作流启动事件
-        # event_bus.publish_task_event(
-        #     task_id=self._task_id,
-        #     event_type=EventType.TASK_RUNNING.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._task_path,
-        #     source="TaskGroupAggregatorActor",
-        #     agent_id="task_group_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "step_count": len(msg.subtasks),
-        #         "workflow_name": msg.description or "TaskGroupWorkflow"
-        #     },
-        #     enriched_context_snapshot=self.enriched_context.copy()
-        # )
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(msg.subtasks),
+                "workflow_name": msg.description or "TaskGroupWorkflow"
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
         
         # 按 Step 排序
         self.sorted_subtasks = sorted(
@@ -213,22 +210,22 @@ class TaskGroupAggregatorActor(Actor):
         logger.info(f"Executing Step {current_task.step}: '{current_task.description}' (type={current_task.type})")
         
         # 发布任务步骤执行事件
-        # event_bus.publish_task_event(
-        #     task_id=self._task_id,
-        #     event_type=EventType.TASK_RUNNING.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._task_path,
-        #     source="TaskGroupAggregatorActor",
-        #     agent_id="task_group_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "step": current_task.step,
-        #         "step_description": current_task.description,
-        #         "step_type": current_task.type,
-        #         "is_parallel": current_task.is_parallel
-        #     },
-        #     enriched_context_snapshot=self.enriched_context.copy()
-        # )
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_RUNNING.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step": current_task.step,
+                "step_description": current_task.description,
+                "step_type": current_task.type,
+                "is_parallel": current_task.is_parallel
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
        
         # 2. 路由分发
         if current_task.is_parallel:
@@ -257,14 +254,12 @@ class TaskGroupAggregatorActor(Actor):
         场景：需要生成"几个方案"，或者进行参数优化
         """
         logger.info(f"--> Route: Parallel Optimizer for Step {task.step}")
-        
+
         parallel_aggregator = self.createActor(ParallelTaskAggregatorActor)
         self.current_worker = parallel_aggregator
-        
 
-        
         msg = ParallelTaskRequestMessage(
-            task_id=task.task_id,
+            task_id=str(uuid.uuid4()),
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
@@ -283,13 +278,13 @@ class TaskGroupAggregatorActor(Actor):
     def _dispatch_to_result_aggregator(self, task: TaskSpec) -> None:
         """分发给 ResultAggregator (Agent 任务代理)"""
         logger.info(f"--> Route: ResultAggregator for Step {task.step} (Agent)")
-        
+
         aggregator = self.createActor(ResultAggregatorActor)
         self.current_worker = aggregator
-        
+
         # 发送 ResultAggregatorTaskRequestMessage - 统一上下文传播与富集方案
         msg = ResultAggregatorTaskRequestMessage(
-            task_id=task.task_id,
+            task_id=str(uuid.uuid4()),
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
@@ -308,19 +303,20 @@ class TaskGroupAggregatorActor(Actor):
     def _dispatch_to_mcp_executor(self, task: TaskSpec) -> None:
         """分发给 MCP Actor (工具调用)"""
         logger.info(f"--> Route: MCP Executor for Step {task.step}")
-        
+
         mcp_worker = self.createActor(MCPCapabilityActor)
         self.current_worker = mcp_worker
 
         # 使用 MCPTaskRequestMessage 替代 ExecuteTaskMessage - 统一上下文传播与富集方案
         msg = MCPTaskRequestMessage(
-            task_id=task.task_id,
+            task_id=str(uuid.uuid4()),
             trace_id=self._trace_id,
             task_path=self._task_path,
             step=task.step,
             content=task.content or "",
             description=task.description or "",
             executor=task.executor,  # ← 关键：MCP 消息需要 executor 字段
+            params=task.parameters or {},
             reply_to=self.myAddress,
             root_reply_to=self._root_reply_to,  # 传递根回调地址
             user_id=self.current_user_id,
@@ -338,23 +334,23 @@ class TaskGroupAggregatorActor(Actor):
         logger.info(f"Step {step} succeeded.")
 
         # 发布任务步骤成功事件
-        # event_bus.publish_task_event(
-        #     task_id=self._task_id,
-        #     event_type=EventType.TASK_PROGRESS.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._task_path,
-        #     source="TaskGroupAggregatorActor",
-        #     agent_id="task_group_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "step": step,
-        #         "step_description": current_task.description,
-        #         "step_result": result,
-        #         "completed_steps": self.current_step_index + 1,
-        #         "total_steps": len(self.sorted_subtasks)
-        #     },
-        #     enriched_context_snapshot=self.enriched_context.copy()
-        # )
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_PROGRESS.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step": step,
+                "step_description": current_task.description,
+                "step_result": result,
+                "completed_steps": self.current_step_index + 1,
+                "total_steps": len(self.sorted_subtasks)
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
 
         # 存储结果
         step_key = f"step_{step}_output"
@@ -378,6 +374,32 @@ class TaskGroupAggregatorActor(Actor):
         self.current_step_index += 1
         self._execute_next_step()
 
+    def _handle_step_need_input(self, msg: TaskCompletedMessage, sender: Actor) -> None:
+        """步骤需要补充参数时，直接向上层返回并暂停工作流"""
+        if not self._has_current_step():
+            logger.warning("NEED_INPUT received with no current step context.")
+            return
+
+        current_task = self._get_current_step()
+        step_key = f"step_{current_task.step}_output"
+        self.step_results[step_key] = msg.result
+
+        response = TaskCompletedMessage(
+            message_type=MessageType.TASK_COMPLETED,
+            status="NEED_INPUT",
+            result={
+                "step": current_task.step,
+                "step_result": msg.result,
+                "step_results": self.step_results,
+            },
+            task_id=self._task_id,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            step=current_task.step,
+        )
+        target = self.source
+        self.send(target, response)
+
     def _enrich_context_from_result(self, result: Any, prefix: str, source: str = "tool_output", task_path: str = "") -> None:
         """
         将 result 整体作为 value 封装进 ContextEntry，存入 enriched_context[prefix]
@@ -391,16 +413,16 @@ class TaskGroupAggregatorActor(Actor):
         # 只有当 result 不是 None 时才记录（可选：也可保留 None）
         if result is None:
             return
-        
-         # Expose top-level scalar outputs as direct context keys for later param resolution.
-        # if isinstance(result, dict):
-        #     for key, value in result.items():
-        #         if key in self.enriched_context:
-        #             continue
-        #         if isinstance(value, ContextEntry):
-        #             self.enriched_context[key] = value.value
-        #         elif isinstance(value, (str, int, float, bool)):
-        #             self.enriched_context[key] = value
+
+        # Expose top-level scalar outputs as direct context keys for later param resolution.
+        if isinstance(result, dict):
+            for key, value in result.items():
+                if key in self.enriched_context:
+                    continue
+                if isinstance(value, ContextEntry):
+                    self.enriched_context[key] = value.value
+                elif isinstance(value, (str, int, float, bool)):
+                    self.enriched_context[key] = value
 
         entry = ContextEntry(
             value=result,
@@ -460,21 +482,21 @@ class TaskGroupAggregatorActor(Actor):
         logger.info(f"Workflow {self.request_msg.task_id} Completed.")
         
         # 发布工作流完成事件
-        # event_bus.publish_task_event(
-        #     task_id=self._task_id,
-        #     event_type=EventType.TASK_COMPLETED.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._task_path,
-        #     source="TaskGroupAggregatorActor",
-        #     agent_id="task_group_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "step_count": len(self.sorted_subtasks),
-        #         "completed_steps": self.current_step_index,
-        #         "workflow_result": {"step_results": self.step_results}
-        #     },
-        #     enriched_context_snapshot=self.enriched_context.copy()
-        # )
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_COMPLETED.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(self.sorted_subtasks),
+                "completed_steps": self.current_step_index,
+                "workflow_result": {"step_results": self.step_results}
+            },
+            enriched_context_snapshot=self.enriched_context.copy()
+        )
         
         # 构造最终结果，使用TaskCompletedMessage
         final_msg = TaskCompletedMessage(
@@ -496,22 +518,22 @@ class TaskGroupAggregatorActor(Actor):
         logger.error(f"Workflow Terminated: {error_msg}")
         
         # 发布工作流失败事件
-        # event_bus.publish_task_event(
-        #     task_id=self._task_id,
-        #     event_type=EventType.TASK_FAILED.value,
-        #     trace_id=self._trace_id,
-        #     task_path=self._task_path,
-        #     source="TaskGroupAggregatorActor",
-        #     agent_id="task_group_aggregator",
-        #     user_id=self.current_user_id,
-        #     data={
-        #         "step_count": len(self.sorted_subtasks),
-        #         "completed_steps": self.current_step_index,
-        #         "step_results": self.step_results
-        #     },
-        #     enriched_context_snapshot=self.enriched_context.copy(),
-        #     error=error_msg
-        # )
+        event_bus.publish_task_event(
+            task_id=self._task_id,
+            event_type=EventType.TASK_FAILED.value,
+            trace_id=self._trace_id,
+            task_path=self._task_path,
+            source="TaskGroupAggregatorActor",
+            agent_id="task_group_aggregator",
+            user_id=self.current_user_id,
+            data={
+                "step_count": len(self.sorted_subtasks),
+                "completed_steps": self.current_step_index,
+                "step_results": self.step_results
+            },
+            enriched_context_snapshot=self.enriched_context.copy(),
+            error=error_msg
+        )
         
         current_step = self._get_current_step().step if self._has_current_step() else None
         fail_msg = TaskCompletedMessage(

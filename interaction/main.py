@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     with open(config_path, 'r', encoding='utf-8') as f:
         config = json.load(f)
     rabbitmq_url = config.get('global_config', {}).get('rabbitmq', 'amqp://guest:guest@localhost:5672/')
-    task_result_queue = os.getenv('TASK_RESULT_QUEUE', 'task.result')
+    task_result_queue = os.getenv('TASK_RESULT_QUEUE', 'work.result')
 
     # 初始化对话状态仓库
     dialog_repo = DialogStateRepository()

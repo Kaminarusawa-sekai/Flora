@@ -23,9 +23,7 @@ from capabilities.task_planning.interface import ITaskPlanningCapability
 # 导入事件总线和EventType
 from events.event_bus import event_bus
 from common.event import EventType
-
-# 导入RabbitMQ客户端
-from external.message_queue.rabbitmq_client import RabbitMQClient
+from common.noop_memory import NoopMemory
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +40,6 @@ class AgentActor(Actor):
 
         self._aggregation_state: Dict[str, Dict] = {}
         self.task_id_to_sender: Dict[str, ActorAddress] = {}
-
         # 新增：保存 trace_id 到 sender 的映射（用于 NEED_INPUT 传导）
         self.trace_id_to_sender: Dict[str, ActorAddress] = {}
         # 新增：保存task_id到ExecutionActor地址的映射（用于恢复暂停的任务）
@@ -55,7 +52,7 @@ class AgentActor(Actor):
         # 添加当前聚合器和原始客户端地址
         self.current_aggregator = None
         self.original_client_addr = None
-        
+
         self._task_path: Optional[str] = None
 
         self.memory_cap: Optional[IMemoryCapability] = None
@@ -105,7 +102,11 @@ class AgentActor(Actor):
         self.meta=tree_manager.get_agent_meta(self.agent_id)
         try:
             # 使用新的能力获取方式
-            self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+            try:
+                self.memory_cap = get_capability("llm_memory", expected_type=IMemoryCapability)
+            except Exception as e:
+                self.log.warning(f"llm_memory unavailable, using NoopMemory: {e}")
+                self.memory_cap = NoopMemory()
             self.task_planner = get_capability("task_planning", expected_type=ITaskPlanningCapability)
             
             self.log = logging.getLogger(f"AgentActor_{self.agent_id}")
@@ -144,6 +145,9 @@ class AgentActor(Actor):
 
         # 记录回复地址和当前用户ID
         self.task_id_to_sender[task_id] = reply_to
+        # 同时保存 trace_id 到 sender 的映射（用于 NEED_INPUT 传导，因为子任务的 task_id 会变化）
+        if trace_id:
+            self.trace_id_to_sender[trace_id] = reply_to
         self.current_user_id = user_id
 
         self.log.info(f"[AgentActor] Handling task {task_id}: {user_input[:50]}...")
@@ -156,14 +160,12 @@ class AgentActor(Actor):
             task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
-            name=self.meta.get("name",""),
             data={
                 "user_input": user_input[:100],
                 "user_id": self.current_user_id+str(self.agent_id)
             },
             user_id=self.current_user_id
         )
-
 
         # 写入记忆（按单节点存储，检索按 scope 聚合）
         try:
@@ -179,8 +181,6 @@ class AgentActor(Actor):
         except Exception as e:
             self.log.warning(f"Memory write skipped: {e}")
 
-
-
         # 构建对话上下文
         conversation_context = self.memory_cap.build_conversation_context(
             self._build_memory_scope(self.current_user_id, task.task_path),
@@ -195,7 +195,6 @@ class AgentActor(Actor):
             task_path=self._task_path or "",
             source="AgentActor",
             agent_id=self.agent_id,
-            name=self.meta.get("name",""),
             data={
                 "message": "开始任务规划"
             },
@@ -218,7 +217,7 @@ class AgentActor(Actor):
             task_group_request = self._build_task_group_request(plans, task)
 
             # --- 流程 ⑧: 发送给TaskGroupAggregatorActor ---
-            self._send_to_task_group_aggregator(task_group_request)
+            self._send_to_task_group_aggregator(task_group_request, reply_to)
             
             # 发布任务分发事件
             event_bus.publish_task_event(
@@ -269,7 +268,6 @@ class AgentActor(Actor):
             task_path=task_path,  # 使用ResumeTaskMessage的task_path
             source="AgentActor",
             agent_id=self.agent_id,
-            name=self.meta.get("name",""),
             data={
                 "parameters": list(parameters.keys()),
                 "user_id": self.current_user_id
@@ -279,7 +277,6 @@ class AgentActor(Actor):
 
         # 关键：从映射中获取原来的ExecutionActor地址
         exec_actor = self.task_id_to_execution_actor.get(task_id)
-
         if not exec_actor:
             self.log.error(f"Cannot find ExecutionActor for task {task_id}, task cannot be resumed")
             # 通知前台恢复失败，使用ResumeTaskMessage的参数
@@ -310,6 +307,8 @@ class AgentActor(Actor):
 
         # 记录sender以便接收结果（更新，因为可能是新的前台请求）
         self.task_id_to_sender[task_id] = reply_to
+
+   
     @staticmethod
     def _extract_root_agent_id(task_path: Optional[str]) -> str:
         if not task_path:
@@ -332,7 +331,7 @@ class AgentActor(Actor):
         if root_agent_id:
             return f"{user_id}:{root_agent_id}:{self.agent_id}"
         return f"{user_id}:{self.agent_id}"
-   
+
 
     def _handle_task_paused_from_execution(self, message: Any, sender: ActorAddress):
         """
@@ -387,29 +386,18 @@ class AgentActor(Actor):
         if self.current_aggregator:
             self.send(self.current_aggregator, task_result)
         else:
-            # 否则，直接返回给前台InteractionActor
-            original_sender = self.task_id_to_sender.get(task_id, sender)
+            # 否则，直接返回给前台（TaskRouter）
+            # 优先使用 trace_id 查找 sender（因为子任务的 task_id 会变化，但 trace_id 不变）
+            original_sender = self.trace_id_to_sender.get(trace_id)
+            if not original_sender:
+                # 回退到 task_id 查找
+                original_sender = self.task_id_to_sender.get(task_id, sender)
+
             if original_sender:
-                # 直接发送TaskCompletedMessage，推送至rabbitmq
+                self.log.info(f"Forwarding NEED_INPUT to sender for trace_id={trace_id}, task_id={task_id}")
                 self.send(original_sender, task_result)
-                
-                # 将结果发送到RabbitMQ的work.result队列
-                # try:
-                #     rabbitmq_client = RabbitMQClient()
-                #     # 构建RabbitMQ消息格式
-                #     rabbitmq_message = {
-                #         "trace_id": task_result.trace_id,
-                #         "status": task_result.status,
-                #         "result": task_result.result,
-                #         "error": None
-                #     }
-                #     # 发送到work.result队列
-                #     rabbitmq_client.publish_to_queue("work.result", rabbitmq_message)
-                #     rabbitmq_client.close()
-                # except Exception as e:
-                #     self.log.error(f"Failed to send task result to RabbitMQ: {str(e)}")
             else:
-                self.log.warning(f"No reply_to address found for task {task_id}, cannot forward need_input message")
+                self.log.warning(f"No reply_to address found for trace_id={trace_id}, task_id={task_id}, cannot forward need_input message")
 
     def _plan_task_execution(self, task_description: str, memory_context: str = None) -> Dict[str, Any]:
         """
@@ -445,6 +433,14 @@ class AgentActor(Actor):
         """
         task_specs = []
         for plan in plans:
+            base_params = task.parameters or {}
+            plan_params = plan.get("params")
+            if plan_params is None:
+                plan_params = plan.get("parameters")
+            merged_params = base_params.copy() if isinstance(base_params, dict) else {}
+            if isinstance(plan_params, dict):
+                merged_params.update(plan_params)
+
             # 防御性处理：确保必要字段存在
             task_clean = {
                 "step": int(plan.get("step", 0)),
@@ -457,7 +453,7 @@ class AgentActor(Actor):
                 "is_dependency_expanded": bool(plan.get("is_dependency_expanded", False)),
                 "original_parent": plan.get("original_parent"),
                 "user_id": getattr(self, 'current_user_id', task.user_id),  # 优先用 self.current_user_id
-                "task_id": str(uuid.uuid4()),
+                "parameters": merged_params,
             }
 
             # 允许 plan 中包含额外字段（因 TaskSpec.Config.extra='allow'）
@@ -480,13 +476,13 @@ class AgentActor(Actor):
             enriched_context=task.enriched_context.copy(),
             user_id=getattr(self, 'current_user_id', task.user_id),
             reply_to=task.reply_to,
-            root_reply_to=task.root_reply_to,
+            root_reply_to=task.root_reply_to,  # 传递根回调地址
             subtasks=task_specs,
             strategy="standard",  # 可根据需要从 task 或 plans 中提取策略
         )
         return request
 
-    def _send_to_task_group_aggregator(self, task_group_request):
+    def _send_to_task_group_aggregator(self, task_group_request, sender: ActorAddress):
         """
         ⑧ 发送到TaskGroupAggregatorActor
 
@@ -509,6 +505,7 @@ class AgentActor(Actor):
         统一处理任务结果（成功、失败、错误、需要输入），使用TaskCompletedMessage向上报告
         """
         task_id = result_msg.task_id
+        trace_id = result_msg.trace_id
         result_data = result_msg.result
         status = result_msg.status
 
@@ -520,8 +517,12 @@ class AgentActor(Actor):
             # 2. 如果有聚合器，通知聚合器
             self.send(self.current_aggregator, result_msg)
         else:
-            # 3. 如果是根任务，直接返回给前台InteractionActor
-            original_sender = self.task_id_to_sender.get(task_id, sender)
+            # 3. 如果是根任务，直接返回给前台（TaskRouter）
+            # 优先使用 trace_id 查找 sender（因为子任务的 task_id 会变化，但 trace_id 不变）
+            original_sender = self.trace_id_to_sender.get(trace_id)
+            if not original_sender:
+                # 回退到 task_id 查找
+                original_sender = self.task_id_to_sender.get(task_id, sender)
 
             # 构建前台交互消息，使用TaskCompletedMessage代替TaskResultMessage
             error_str = None
@@ -529,11 +530,11 @@ class AgentActor(Actor):
                 error_str = str(result_data["error"])
             elif hasattr(result_msg, "error") and result_msg.error:
                 error_str = str(result_msg.error)
-            
+
             # 构建TaskCompletedMessage，使用SUCCESS或FAILED状态
             task_result = TaskCompletedMessage(
                 task_id=task_id,
-                trace_id=result_msg.trace_id,
+                trace_id=trace_id,
                 task_path=result_msg.task_path,
                 result=result_data,
                 status=status,  # 使用传入的status，可能是SUCCESS、FAILED、NEED_INPUT等
@@ -542,22 +543,6 @@ class AgentActor(Actor):
             )
 
             self.send(original_sender, task_result)
-
-            # # 5. 将结果发送到RabbitMQ的work.result队列
-            # try:
-            #     rabbitmq_client = RabbitMQClient()
-            #     # 构建RabbitMQ消息格式
-            #     rabbitmq_message = {
-            #         "trace_id": result_msg.trace_id or task_id,
-            #         "status": status,
-            #         "result": result_data,
-            #         "error": error_str
-            #     }
-            #     # 发送到work.result队列
-            #     rabbitmq_client.publish_to_queue("work.result", rabbitmq_message)
-            #     rabbitmq_client.close()
-            # except Exception as e:
-            #     self.log.error(f"Failed to send task result to RabbitMQ: {str(e)}")
 
             # 4. 发布事件
             event_type = EventType.TASK_COMPLETED.value if status == "SUCCESS" else EventType.TASK_FAILED.value
@@ -568,7 +553,6 @@ class AgentActor(Actor):
                 task_path=self._task_path or "",
                 source="AgentActor",
                 agent_id=self.agent_id,
-                name=self.meta.get("name",""),
                 data={"result": result_data},
                 user_id=self.current_user_id,
                 error=error_str
@@ -620,8 +604,8 @@ class AgentActor(Actor):
 
         try:
             # 使用新的能力获取方式获取LLM能力
-            from ..capabilities.llm.interface import ILLMCapability
-            from ..capabilities import get_capability
+            from capabilities.llm.interface import ILLMCapability
+            from capabilities import get_capability
             llm = get_capability("llm", expected_type=ILLMCapability)
             result = llm.generate(prompt, parse_json=True, max_tokens=300)
 

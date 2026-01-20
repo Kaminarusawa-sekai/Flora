@@ -6,6 +6,7 @@
 import logging
 import json
 import os
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
@@ -22,11 +23,11 @@ class TaskResultPublisher:
     """
     任务结果发布器
 
-    将任务结果发布到 task.result 队列，供 interaction 服务消费
+    将任务结果发布到 work.result 队列，供 interaction 服务消费
     """
 
     # 默认队列名称（与 interaction 服务的 TaskResultListener 一致）
-    DEFAULT_QUEUE_NAME = "task.result"
+    DEFAULT_QUEUE_NAME = "work.result"
 
     def __init__(
         self,
@@ -40,10 +41,8 @@ class TaskResultPublisher:
             rabbitmq_url: RabbitMQ 连接 URL
             queue_name: 队列名称
         """
-        self.rabbitmq_url = rabbitmq_url or os.getenv(
-            'RABBITMQ_URL',
-            'amqp://guest:guest@localhost:5672/'
-        )
+        import config
+        self.rabbitmq_url = rabbitmq_url or config.RABBITMQ_URL
         self.queue_name = queue_name
         self._connection: Optional[pika.BlockingConnection] = None
         self._channel = None
@@ -103,7 +102,9 @@ class TaskResultPublisher:
         error: Optional[str] = None,
         task_path: Optional[str] = None,
         user_id: Optional[str] = None,
-        extra_data: Optional[Dict[str, Any]] = None
+        extra_data: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+        retry_delay: int = 2
     ) -> bool:
         """
         发布任务结果
@@ -117,49 +118,66 @@ class TaskResultPublisher:
             task_path: 任务路径（可选）
             user_id: 用户 ID（可选）
             extra_data: 额外数据（可选）
+            max_retries: 最大重试次数
+            retry_delay: 重试延迟（秒）
 
         Returns:
             bool: 是否发布成功
         """
-        if not self._ensure_connected():
-            logger.error("Cannot publish result: not connected to RabbitMQ")
-            return False
+        # 构建消息体
+        message = {
+            "trace_id": trace_id,
+            "task_id": task_id,
+            "status": status,
+            "result": self._serialize_result(result),
+            "error": error,
+            "task_path": task_path,
+            "user_id": user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
 
-        try:
-            # 构建消息体
-            message = {
-                "trace_id": trace_id,
-                "task_id": task_id,
-                "status": status,
-                "result": self._serialize_result(result),
-                "error": error,
-                "task_path": task_path,
-                "user_id": user_id,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
+        # 合并额外数据
+        if extra_data:
+            message.update(extra_data)
 
-            # 合并额外数据
-            if extra_data:
-                message.update(extra_data)
+        for attempt in range(max_retries + 1):
+            # 尝试确保连接
+            if not self._ensure_connected():
+                if attempt < max_retries:
+                    logger.warning(
+                        f"RabbitMQ connection failed (attempt {attempt + 1}/{max_retries + 1}), "
+                        f"retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error("Failed to connect to RabbitMQ after retries. Message lost.")
+                    return False
 
-            # 发布消息
-            self._channel.basic_publish(
-                exchange=self.queue_name,
-                routing_key=self.queue_name,
-                body=json.dumps(message, ensure_ascii=False, default=str),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # 持久化消息
-                    content_type='application/json'
+            try:
+                # 发布消息
+                self._channel.basic_publish(
+                    exchange=self.queue_name,
+                    routing_key=self.queue_name,
+                    body=json.dumps(message, ensure_ascii=False, default=str),
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # 持久化消息
+                        content_type='application/json'
+                    )
                 )
-            )
 
-            logger.info(f"Published task result: trace_id={trace_id}, status={status}")
-            return True
+                logger.info(f"Published task result: trace_id={trace_id}, status={status}")
+                return True
 
-        except Exception as e:
-            logger.error(f"Failed to publish task result: {e}")
-            self._is_connected = False
-            return False
+            except Exception as e:
+                logger.error(f"Failed to publish task result (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                self._is_connected = False
+                if attempt < max_retries:
+                    logger.warning(f"Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("Failed to publish task result after retries. Message lost.")
+                    return False
 
     def publish_need_input(
         self,
