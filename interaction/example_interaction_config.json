@@ -1,0 +1,128 @@
+{
+  "global_config": {
+    "log_level": "INFO",
+    "rabbitmq":"amqp://your-rabbitmq-username:your-rabbitmq-password@your-rabbitmq-host:5672/vhost"
+  },
+  "capabilities": {
+    "llm": {
+      "active_impl": "qwen_llm",
+      "enabled": true,
+      "qwen_llm": {
+        "api_key": "your-qwen-api-key-here",
+        "model": "qwen-max",
+        "vl_model": "qwen-vl-max"
+      },
+      "doubao": {
+        "api_key": "your-doubao-api-key-here",
+        "model": "doubao-pro"
+      }
+    },
+    "user_input": {
+      "active_impl": "common_user_input",
+      "enabled": true,
+      "common_user_input": {
+        "config": {}
+      }
+    },
+    "intent_recognition": {
+      "active_impl": "common_intent_recognition",
+      "enabled": true,
+      "common_intent_recognition": {
+        "config": {}
+      }
+    },
+    "dialog_state": {
+      "active_impl": "common_dialog_state",
+      "enabled": true,
+      "common_dialog_state": {
+        "config": {}
+      }
+    },
+    "task_draft": {
+      "active_impl": "common_task_draft",
+      "enabled": true,
+      "common_task_draft": {
+        "config": {}
+      }
+    },
+    "task_query": {
+      "active_impl": "common_task_query",
+      "enabled": true,
+      "common_task_query": {
+        "config": {}
+      }
+    },
+    "task_control": {
+      "active_impl": "common_task_control",
+      "enabled": true,
+      "common_task_control": {
+        "config": {}
+      }
+    },
+    "schedule": {
+      "active_impl": "common_schedule_manager",
+      "enabled": true,
+      "common_schedule_manager": {
+        "config": {}
+      }
+    },
+    "task_execution": {
+      "active_impl": "common_task_execution_manager",
+      "enabled": true,
+      "common_task_execution_manager": {
+        "config": {}
+      }
+    },
+    "system_response": {
+      "active_impl": "common_system_response",
+      "enabled": true,
+      "common_system_response": {
+        "config": {}
+      }
+    },
+    "context_manager": {
+      "active_impl": "common_context_manager",
+      "enabled": true,
+      "common_context_manager": {
+        "config": {}
+      }
+    },
+    "memory": {
+      "active_impl": "mem0_memory",
+      "enabled": true,
+      "mem0_memory": {
+        "mem0": {
+          "vector_store": {
+            "provider": "chroma",
+            "config": {
+              "collection_name": "user_memories",
+              "path": "./data/memory_chroma"
+            }
+          },
+          "embedder": {
+            "provider": "openai",
+            "config": {
+              "model": "text-embedding-v2"
+            }
+          },
+          "memory": {
+            "type": "graph",
+            "enable_reasoning": true
+          },
+          "llm": {
+            "provider": "openai",
+            "config": {
+              "model": "qwen-plus"
+            }
+          }
+        },
+        "rag": {
+            "api_key": "your-rag-api-key-here",
+            "dataset_id": "your-dataset-id-here",
+            "base_url": "http://your-dify-server:81/v1",
+            "enabled": true
+        }
+      }
+    }
+  }
+}

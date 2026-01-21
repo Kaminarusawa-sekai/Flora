@@ -1,0 +1,12 @@
+{
+  "db_url": "sqlite+aiosqlite:///./event.db",
+  "redis_url": "redis://:your-redis-password@your-redis-host:6379/0",
+  "use_redis": true,
+  "rabbitmq_url": "amqp://your-rabbitmq-username:your-rabbitmq-password@your-rabbitmq-host:5672/vhost",
+  "worker_callback_url": "http://your-worker-service:8000",
+  "host": "0.0.0.0",
+  "port": 8004,
+  "health_check_interval": 60,
+  "task_timeout_sec": 300,
+  "pending_timeout_sec": 3600
+}

@@ -1,0 +1,10 @@
+{
+  "task_timeout_sec": 3600,
+  "pending_timeout_sec": 1800,
+  "health_check_interval": 60,
+  "database_url": "sqlite+aiosqlite:///./trigger.db",
+  "redis_url": "redis://localhost:6379/0",
+  "rabbitmq_url": "amqp://your-rabbitmq-username:your-rabbitmq-password@your-rabbitmq-host:5672/vhost",
+  "worker_url": "http://localhost:8001",
+  "message_broker_type": "rabbitmq" 
+}

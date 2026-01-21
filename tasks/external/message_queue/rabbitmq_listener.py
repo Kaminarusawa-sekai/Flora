@@ -109,7 +109,7 @@ class RabbitMQListenerImpl(MessageQueueListener):
             data = json.loads(body)
             msg_type = data.get("msg_type")
             # 确认消费
-            # ch.basic_ack(delivery_tag=method.delivery_tag)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
 
             if msg_type == "START_TASK":
                 # 从 schedule_meta 中提取额外信息

@@ -1,0 +1,76 @@
+{
+  "global_config": {
+    "log_level": "INFO"
+  },
+  "capabilities": {
+    "llm": {
+      "active_impl": "qwen_llm",
+      "qwen_llm": {
+        "api_key": "your-qwen-api-key-here",
+        "model": "qwen-max",
+        "vl_model": "qwen-vl-max"
+      },
+      "doubao": {
+        "api_key": "your-doubao-api-key-here",
+        "model": "doubao-pro"
+      }
+    },
+    "execution": {
+      "active_impl": "universal_execution",
+      "universal_execution": {
+        "dify": {
+          "base_url": "http://your-dify-server-url:port/v1"
+        },
+        "http": {
+          "timeout": 30,
+          "retries": 3
+        }
+      }
+    },
+    "conversation": {
+      "active_impl": "common_conversation_manager",
+      "common_conversation_manager": {
+        "max_drafts_per_user": 5,
+        "draft_expiration_hours": 24,
+        "parameter_completion": {
+          "max_retries": 3
+        }
+      }
+    },
+    "intent_router": {
+      "active_impl": "common_intent_router",
+      "common_intent_router": {
+      }
+    },
+    "llm_memory": {
+      "active_impl": "unified_memory",
+      "unified_memory": {
+        "cache_size": 100
+      }
+    },
+    "text_to_sql": {
+      "active_impl": "vanna_text_to_sql",
+      "vanna_text_to_sql": {}
+    },
+    "task_operation": {
+      "active_impl": "common_task_operation",
+      "common_task_operation": {
+      }
+    },
+    "task_planning": {
+      "active_impl": "common_task_planning",
+      "common_task_planning": {
+      }
+    },
+    "context_resolver": {
+      "active_impl": "tree_context_resolver",
+      "tree_context_resolver": {
+      }
+    },
+    "draw_charts": {
+      "active_impl": "common_chart_drawer",
+      "common_chart_drawer": {
+      }
+    }
+  }
+}
